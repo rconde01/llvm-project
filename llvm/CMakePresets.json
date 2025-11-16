@@ -13,7 +13,14 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "FLANG_ENABLE_WERROR": "ON",
+        "LLVM_ENABLE_ASSERTIONS": "ON",
+        "LLVM_TARGETS_TO_BUILD":"host",
+        "LLVM_LIT_ARGS":"-v",
+        "LLVM_ENABLE_PROJECTS":"clang;mlir;flang",
+        "LLVM_ENABLE_RUNTIMES":"compiler-rt;flang-rt;openmp"
       }
     },
     {
@@ -23,7 +30,14 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "FLANG_ENABLE_WERROR": "ON",
+        "LLVM_ENABLE_ASSERTIONS": "ON",
+        "LLVM_TARGETS_TO_BUILD":"host",
+        "LLVM_LIT_ARGS":"-v",
+        "LLVM_ENABLE_PROJECTS":"clang;mlir;flang",
+        "LLVM_ENABLE_RUNTIMES":"compiler-rt;flang-rt;openmp"
       }
     }
   ],
