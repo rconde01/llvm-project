@@ -23,7 +23,7 @@ add_flang_library(flangFrontend
   LINK_LIBS
   CUFDialect
   FortranParser
-  FortranSemantics
+  ${FORTRAN_SEMANTIC_LIBS}
   FortranEvaluate
   FortranSupport
   FortranLower

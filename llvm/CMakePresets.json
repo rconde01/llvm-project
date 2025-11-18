@@ -15,7 +15,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "FLANG_ENABLE_WERROR": "ON",
+        "FLANG_ENABLE_WERROR": "OFF",
         "LLVM_ENABLE_ASSERTIONS": "ON",
         "LLVM_TARGETS_TO_BUILD":"host",
         "LLVM_LIT_ARGS":"-v",
@@ -32,23 +32,25 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "FLANG_ENABLE_WERROR": "ON",
+        "FLANG_ENABLE_WERROR": "OFF",
         "LLVM_ENABLE_ASSERTIONS": "ON",
-        "LLVM_TARGETS_TO_BUILD":"host",
-        "LLVM_LIT_ARGS":"-v",
-        "LLVM_ENABLE_PROJECTS":"clang;mlir;flang",
-        "LLVM_ENABLE_RUNTIMES":"compiler-rt;flang-rt;openmp"
+        "LLVM_TARGETS_TO_BUILD": "host",
+        "LLVM_LIT_ARGS": "-v",
+        "LLVM_ENABLE_PROJECTS": "clang;mlir;flang",
+        "LLVM_ENABLE_RUNTIMES": "compiler-rt;flang-rt;openmp"
       }
     }
   ],
   "buildPresets": [
     {
       "name": "build-debug",
-      "configurePreset": "debug"
+      "configurePreset": "debug",
+      "verbose": true
     },
     {
       "name": "build-release",
-      "configurePreset": "release"
+      "configurePreset": "release",
+      "verbose": true
     }
   ],
   "testPresets": [

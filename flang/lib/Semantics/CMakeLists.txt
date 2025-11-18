@@ -1,4 +1,4 @@
-add_flang_library(FortranSemantics
+set(FortranSemanticSources1 
   assignment.cpp
   attr.cpp
   canonicalize-acc.cpp
@@ -8,14 +8,11 @@ add_flang_library(FortranSemantics
   check-acc-structure.cpp
   check-allocate.cpp
   check-arithmeticif.cpp
-  check-call.cpp
   check-case.cpp
   check-coarray.cpp
-  check-cuda.cpp
   check-data.cpp
   check-deallocate.cpp
   check-declarations.cpp
-  check-do-forall.cpp
   check-if-stmt.cpp
   check-io.cpp
   check-namelist.cpp
@@ -23,7 +20,6 @@ add_flang_library(FortranSemantics
   check-omp-atomic.cpp
   check-omp-loop.cpp
   check-omp-metadirective.cpp
-  check-omp-structure.cpp
   check-purity.cpp
   check-return.cpp
   check-select-rank.cpp
@@ -33,7 +29,6 @@ add_flang_library(FortranSemantics
   data-to-inits.cpp
   definable.cpp
   dump-expr.cpp
-  expression.cpp
   mod-file.cpp
   openmp-dsa.cpp
   openmp-modifiers.cpp
@@ -42,38 +37,102 @@ add_flang_library(FortranSemantics
   program-tree.cpp
   resolve-directives.cpp
   resolve-labels.cpp
-  resolve-names.cpp
   resolve-names-utils.cpp
   rewrite-parse-tree.cpp
   runtime-type-info.cpp
   scope.cpp
-  semantics.cpp
   symbol.cpp
   tools.cpp
   type.cpp
   unparse-with-symbols.cpp
-
-  DEPENDS
-  acc_gen
-  omp_gen
-
-  LINK_LIBS
-  FortranSupport
-  FortranParser
-  FortranEvaluate
-
-  LINK_COMPONENTS
-  Support
-  FrontendOpenMP
-  FrontendOpenACC
-  TargetParser
 )
 
-target_precompile_headers(FortranSemantics PRIVATE
-  [["flang/Semantics/semantics.h"]]
-  [["flang/Semantics/type.h"]]
-  [["flang/Semantics/openmp-modifiers.h"]]
-  [["flang/Semantics/expression.h"]]
-  [["flang/Semantics/tools.h"]]
-  [["flang/Semantics/symbol.h"]]
+set(FortranSemanticSources2
+  check-call.cpp
+  check-cuda.cpp
+  check-do-forall.cpp
+  check-omp-structure.cpp
+  expression.cpp
+  resolve-names.cpp
+  semantics.cpp
 )
+
+if(MSVC)
+  set(FORTRAN_SEMANTIC_LIBS FortranSemantics1 FortranSemantics2)
+
+  add_flang_library(FortranSemantics1 ${FortranSemanticSources1} PARTIAL_SOURCES_INTENDED
+    DEPENDS
+    acc_gen
+    omp_gen
+
+    LINK_LIBS PUBLIC
+    FortranSupport
+    FortranParser
+    FortranEvaluate
+
+    LINK_COMPONENTS
+    Support
+    FrontendOpenMP
+    FrontendOpenACC
+    TargetParser
+  )
+  add_flang_library(FortranSemantics2 ${FortranSemanticSources2} PARTIAL_SOURCES_INTENDED
+    DEPENDS
+    acc_gen
+    omp_gen
+
+    LINK_LIBS PUBLIC
+    FortranSupport
+    FortranParser
+    FortranEvaluate
+
+    LINK_COMPONENTS
+    Support
+    FrontendOpenMP
+    FrontendOpenACC
+    TargetParser
+  )
+
+  target_precompile_headers(FortranSemantics2 PRIVATE
+    [["flang/Semantics/semantics.h"]]
+    [["flang/Semantics/type.h"]]
+    [["flang/Semantics/openmp-modifiers.h"]]
+    [["flang/Semantics/expression.h"]]
+    [["flang/Semantics/tools.h"]]
+    [["flang/Semantics/symbol.h"]]
+  )
+else()
+  set(FORTRAN_SEMANTIC_LIBS FortranSemantics)
+
+  add_flang_library(FortranSemantics
+    ${FortranSemanticSources1}
+    ${FortranSemanticSources2}
+
+    DEPENDS
+    acc_gen
+    omp_gen
+
+    LINK_LIBS
+    FortranSupport
+    FortranParser
+    FortranEvaluate
+
+    LINK_COMPONENTS
+    Support
+    FrontendOpenMP
+    FrontendOpenACC
+    TargetParser
+  )
+
+  target_precompile_headers(FortranSemantics PRIVATE
+    [["flang/Semantics/semantics.h"]]
+    [["flang/Semantics/type.h"]]
+    [["flang/Semantics/openmp-modifiers.h"]]
+    [["flang/Semantics/expression.h"]]
+    [["flang/Semantics/tools.h"]]
+    [["flang/Semantics/symbol.h"]]
+  )
+endif()
+
+
+
