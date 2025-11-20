@@ -33,7 +33,8 @@ target_link_libraries(bbc PRIVATE
   FortranSupport
   FortranParser
   FortranEvaluate
-  ${FORTRAN_SEMANTIC_LIBS}
+  FortranSemantics1
+  FortranSemantics2
   FortranLower
 )
 

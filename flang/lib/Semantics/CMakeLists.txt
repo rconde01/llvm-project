@@ -58,8 +58,6 @@ set(FortranSemanticSources2
 )
 
 if(MSVC)
-  set(FORTRAN_SEMANTIC_LIBS FortranSemantics1 FortranSemantics2)
-
   add_flang_library(FortranSemantics1 ${FortranSemanticSources1} PARTIAL_SOURCES_INTENDED
     DEPENDS
     acc_gen
@@ -102,8 +100,6 @@ if(MSVC)
     [["flang/Semantics/symbol.h"]]
   )
 else()
-  set(FORTRAN_SEMANTIC_LIBS FortranSemantics)
-
   add_flang_library(FortranSemantics
     ${FortranSemanticSources1}
     ${FortranSemanticSources2}
