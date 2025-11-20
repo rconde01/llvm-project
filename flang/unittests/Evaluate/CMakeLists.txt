@@ -16,14 +16,16 @@ add_flang_nongtest_unittest(expression
   FortranSupport
   NonGTestTesting
   FortranEvaluate
-  FortranSemantics
+  FortranSemantics1
+  FortranSemantics2
   FortranParser
 )
 
 add_flang_nongtest_unittest(integer
   NonGTestTesting
   FortranEvaluate
-  FortranSemantics
+  FortranSemantics1
+  FortranSemantics2
 )
 
 add_flang_nongtest_unittest(intrinsics
@@ -31,14 +33,16 @@ add_flang_nongtest_unittest(intrinsics
   NonGTestTesting
   FortranEvaluate
   FortranDecimal
-  FortranSemantics
+  FortranSemantics1
+  FortranSemantics2
   FortranParser
 )
 
 add_flang_nongtest_unittest(logical
   NonGTestTesting
   FortranEvaluate
-  FortranSemantics
+  FortranSemantics1
+  FortranSemantics2
 )
 
 # GCC -fno-exceptions breaks the fenv.h interfaces needed to capture
@@ -51,7 +55,8 @@ add_flang_nongtest_unittest(real
   NonGTestTesting
   FortranEvaluate
   FortranDecimal
-  FortranSemantics
+  FortranSemantics1
+  FortranSemantics2
 )
 llvm_update_compile_flags(real.test)
 
@@ -59,5 +64,6 @@ add_flang_nongtest_unittest(folding
   FortranSupport
   NonGTestTesting
   FortranEvaluate
-  FortranSemantics
+  FortranSemantics1
+  FortranSemantics2
 )

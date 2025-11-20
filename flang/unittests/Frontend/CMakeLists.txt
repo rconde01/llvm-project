@@ -16,7 +16,8 @@ target_link_libraries(FlangFrontendTests
   flangFrontendTool
   FortranLower
   FortranParser
-  FortranSemantics
+  FortranSemantics1
+  FortranSemantics2
   FortranSupport
   FortranEvaluate
 )
