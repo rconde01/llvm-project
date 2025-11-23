@@ -17,6 +17,7 @@
 #include "flang/Parser/dump-parse-tree.h"
 #include "flang/Parser/parsing.h"
 #include "flang/Parser/provenance.h"
+#include "flang/Parser/rob_dump.h"
 #include "flang/Parser/source.h"
 #include "flang/Parser/unparse.h"
 #include "flang/Semantics/unparse-with-symbols.h"
@@ -34,11 +35,12 @@ void parseAndLowerTree(CompilerInstance &ci, lower::LoweringBridge &lb) {
 }
 
 void dumpTree(CompilerInstance &ci) {
-  auto &parseTree{ci.getParsing().parseTree()};
   llvm::outs() << "========================";
   llvm::outs() << " Flang: parse tree dump ";
   llvm::outs() << "========================\n";
-  parser::DumpTree(llvm::outs(), parseTree, &ci.getInvocation().getAsFortran());
+  // parser::DumpTree(llvm::outs(), parseTree,
+  // &ci.getInvocation().getAsFortran());
+  parser::DumpTreeRob(llvm::outs(), ci);
 }
 
 void dumpProvenance(CompilerInstance &ci) {

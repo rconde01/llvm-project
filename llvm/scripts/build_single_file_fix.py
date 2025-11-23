@@ -41,7 +41,7 @@ script_dir = os.path.dirname(os.path.realpath(__file__))
 # This is a known location in our config
 cmake_bin_root_dir = os.path.abspath(os.path.join(script_dir, "..", "build"))
 
-toolset = "14.42"
+toolset = "14.44"
 vs_version = "17"
 
 
