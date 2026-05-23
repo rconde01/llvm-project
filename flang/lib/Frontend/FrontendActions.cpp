@@ -501,8 +501,19 @@ void DebugDumpParseTreeNoSemaAction::executeAction() {
   dumpTree(this->getInstance());
 }
 
+void DebugDumpParseTreeJSONNoSemaAction::executeAction() {
+  dumpTreeJSON(this->getInstance());
+}
+
 void DebugDumpParseTreeAction::executeAction() {
   dumpTree(this->getInstance());
+
+  // Report fatal semantic errors
+  reportFatalSemanticErrors();
+}
+
+void DebugDumpParseTreeJSONAction::executeAction() {
+  dumpTreeJSON(this->getInstance());
 
   // Report fatal semantic errors
   reportFatalSemanticErrors();

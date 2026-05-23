@@ -45,6 +45,8 @@ void parseAndLowerTree(CompilerInstance &ci, lower::LoweringBridge &lb);
 
 void dumpTree(CompilerInstance &ci);
 
+void dumpTreeJSON(CompilerInstance &ci);
+
 void dumpProvenance(CompilerInstance &ci);
 
 void dumpPreFIRTree(CompilerInstance &ci);
