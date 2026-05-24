@@ -141,10 +141,17 @@ We will hand-write `fortran::Array<T, Rank>` targeting C++20 (no
   * Move-only ownership semantics; copying is an explicit `clone()`
     to keep the cost visible.
 
-### D2 — Where does the program's state live?
+### D2 — Where does the program's state live? **(resolved: D2.b — granular per-routine state)**
 
-Three reasonable shapes.  Examples below use this tiny Fortran program
-throughout so the differences are easy to compare:
+Each subprogram declares only the state it actually touches.  The
+translator computes the per-subprogram read/write set from the AST
+plus the call graph (we already have the pieces in `flang-ast-py`)
+and emits signatures that take exactly those state structs.  Routines
+that touch no state stay parameter-free.
+
+Three reasonable shapes were considered.  Examples below use this
+tiny Fortran program throughout so the differences are easy to
+compare:
 
 ```fortran
 module physics
@@ -309,7 +316,25 @@ reference and lifetime management is on the caller.
 | `const` correctness      | only at object level | per parameter | per parameter |
 | Feels like C++           | utilitarian | utilitarian | idiomatic |
 
-### D3 — Character variable representation
+### D3 — Character variable representation **(resolved: D3.c — hybrid)**
+
+  * `std::string_view`  for read-only views — character literals
+    (already R5) and `intent(in)` `CHARACTER` parameters.
+  * `fortran::FortranString<N>`  for declared fixed-length variables
+    (the common case).  Owns `std::array<char, N>` storage; assignment
+    pads with blanks or truncates; equality is length-padded; the
+    substring operator `name(lo, hi)` returns a writable proxy when
+    used as an lvalue.
+  * `std::string`  only when the Fortran source itself uses a
+    variable-length representation (`character(len=:), allocatable`,
+    deferred-length function results, etc.).
+
+The hybrid keeps the type as informative as Fortran's was, costs no
+extra heap for the common fixed-length case, and lets us pass
+read-only character data through the program without ever forcing an
+allocation.
+
+#### Reasoning preserved for posterity
 
 `std::string_view` (already mandated by R5 for character *literals*)
 is not a candidate for character *variables*.  `string_view` is a
@@ -460,8 +485,11 @@ and so the intermediate model is inspectable.
 ## Status
 
   * `flang-ast-py` (parse + annotate + dependency order):  **done**
-  * Decisions resolved:                                    D1, D5
-  * Decisions pending:                                     D2, D3, D4, D6, D7
+  * Decisions resolved:                                    D1, D2, D3, D5
+  * Decisions pending:                                     D4 (naming),
+                                                           D6 (modules / USE),
+                                                           D7 (untranslatable
+                                                           constructs)
   * Lowering pass:                                         **not started**
   * Emitter:                                               **not started**
   * Runtime support library (Array, FortranString, format helpers):
