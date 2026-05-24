@@ -854,6 +854,7 @@ _NON_ELEMENTAL: frozenset[str] = frozenset(
         "fortran::all", "fortran::dot_product", "fortran::size",
         "fortran::lbound", "fortran::ubound",
         "fortran::matmul", "fortran::transpose",
+        "fortran::maxloc", "fortran::minloc",
     }
 )
 
@@ -1764,8 +1765,9 @@ _INTRINSIC_MAP: dict[str, str] = {
     "atan2": "std::atan2", "sinh": "std::sinh", "cosh": "std::cosh",
     "tanh": "std::tanh", "floor": "std::floor", "ceiling": "std::ceil",
     "min": "std::min", "max": "std::max",
-    "mod": "std::fmod",  # Fortran MOD follows truncation, like fmod
-    "modulo": "std::fmod",
+    "mod": "fortran::mod",       # generic: integer % or std::fmod
+    "modulo": "fortran::modulo",  # remainder with sign of divisor
+    "merge": "fortran::merge",
     "sign": "std::copysign",
     # Array intrinsics -> fortran:: runtime helpers (intrinsics.hpp).
     "size": "fortran::size", "lbound": "fortran::lbound",
@@ -1775,6 +1777,7 @@ _INTRINSIC_MAP: dict[str, str] = {
     "any": "fortran::any", "all": "fortran::all",
     "dot_product": "fortran::dot_product",
     "matmul": "fortran::matmul", "transpose": "fortran::transpose",
+    "maxloc": "fortran::maxloc", "minloc": "fortran::minloc",
     # Character intrinsics.
     "trim": "fortran::trim", "len": "fortran::len",
     "len_trim": "fortran::len_trim", "index": "fortran::index",

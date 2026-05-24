@@ -30,8 +30,41 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 namespace fortran {
+
+// ---- Generic scalar intrinsics that differ for integer vs real ------------
+
+/// MOD — remainder with the sign of the dividend (C-style for ints,
+/// std::fmod for reals).  Fortran's MOD is generic, so we dispatch on T.
+template <typename T> T mod(T a, T p) {
+  if constexpr (std::is_integral_v<T>) {
+    return a % p;
+  } else {
+    return std::fmod(a, p);
+  }
+}
+
+/// MODULO — remainder with the sign of the divisor.
+template <typename T> T modulo(T a, T p) {
+  T r;
+  if constexpr (std::is_integral_v<T>) {
+    r = a % p;
+  } else {
+    r = std::fmod(a, p);
+  }
+  if (r != T{} && (r < T{}) != (p < T{})) {
+    r += p;
+  }
+  return r;
+}
+
+/// MERGE — elemental select: tsource where mask, else fsource.
+template <typename T>
+T merge(const T &t_source, const T &f_source, bool mask) {
+  return mask ? t_source : f_source;
+}
 
 // ---- Numeric conversion helpers (rounding / truncating forms) -------------
 // The plain casts INT/REAL/DBLE are emitted as static_cast directly; these
@@ -160,6 +193,38 @@ template <typename A> auto minval(const A &a) {
     }
   });
   return best;
+}
+
+/// MAXLOC — 1-based position of the first maximum element (rank-1).
+/// An optional trailing ``dim`` argument is accepted and ignored
+/// (rank-1 input has only one dimension).
+template <typename A, typename... D> index_t maxloc(const A &a, D...) {
+  using T = typename A::value_type;
+  T best = std::numeric_limits<T>::lowest();
+  index_t pos = 0, best_pos = 0;
+  a.for_each([&](const auto &v) {
+    ++pos;
+    if (best_pos == 0 || v > best) {
+      best = v;
+      best_pos = pos;
+    }
+  });
+  return best_pos;
+}
+
+/// MINLOC — 1-based position of the first minimum element (rank-1).
+template <typename A, typename... D> index_t minloc(const A &a, D...) {
+  using T = typename A::value_type;
+  T best = std::numeric_limits<T>::max();
+  index_t pos = 0, best_pos = 0;
+  a.for_each([&](const auto &v) {
+    ++pos;
+    if (best_pos == 0 || v < best) {
+      best = v;
+      best_pos = pos;
+    }
+  });
+  return best_pos;
 }
 
 /// COUNT of true elements in a logical array.
