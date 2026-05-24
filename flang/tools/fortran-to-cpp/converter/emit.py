@@ -18,6 +18,7 @@ from flang_ast import Comment
 
 from .ir import (
     IRAllocate,
+    IRArrayConstructor,
     IRAssignment,
     IRBinaryOp,
     IRCall,
@@ -595,6 +596,9 @@ def _render_expr(expr: IRExpr) -> str:
         return f"{_render_expr(expr.base)}.{expr.field}"
     if isinstance(expr, IRCast):
         return f"static_cast<{expr.cpp_type}>({_render_expr(expr.operand)})"
+    if isinstance(expr, IRArrayConstructor):
+        elems = ", ".join(_render_expr(e) for e in expr.elements)
+        return f"fortran::array_of({{{elems}}})"
     if isinstance(expr, IRSection):
         return _render_section(expr)
     if isinstance(expr, IRRaw):

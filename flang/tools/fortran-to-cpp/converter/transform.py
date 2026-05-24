@@ -25,6 +25,7 @@ from typing import Callable
 
 from .ir import (
     IRAllocate,
+    IRArrayConstructor,
     IRAssignment,
     IRBinaryOp,
     IRCall,
@@ -84,6 +85,10 @@ def map_expr(expr: IRExpr, fn: ExprFn) -> IRExpr:
         expr = IRMember(base=map_expr(expr.base, fn), field=expr.field)
     elif isinstance(expr, IRCast):
         expr = IRCast(cpp_type=expr.cpp_type, operand=map_expr(expr.operand, fn))
+    elif isinstance(expr, IRArrayConstructor):
+        expr = IRArrayConstructor(
+            elements=tuple(map_expr(e, fn) for e in expr.elements)
+        )
     elif isinstance(expr, IRSection):
         new_subs = []
         for s in expr.subscripts:

@@ -54,6 +54,7 @@ from .ir import (
 )
 from .ir import (
     IRAllocate,
+    IRArrayConstructor,
     IRCast,
     IRCaseClause,
     IRCycle,
@@ -894,7 +895,7 @@ def _expand_array_assignments(sub: IRSubprogram) -> None:
         if isinstance(tgt, IRName) and tgt.name in arrays:
             # An array-returning intrinsic (matmul/transpose) stays a
             # whole-array move-assignment, not an element loop.
-            if (
+            if isinstance(stmt.value, IRArrayConstructor) or (
                 isinstance(stmt.value, IRFunctionCall)
                 and stmt.value.callee in _ARRAY_RETURNING
             ):
@@ -1588,9 +1589,30 @@ def _lower_expression(node: Node) -> IRExpr:
             return _lower_array_element(target)
         case "StructureComponent":
             return _lower_structure_component(target)
+        case "ArrayConstructor":
+            return _lower_array_constructor(target)
     if target.kind in _BINARY_OP_MAP or target.kind in _UNARY_OP_MAP:
         return _lower_expr_operator(target)
     return _expr_raw(node)
+
+
+def _lower_array_constructor(node: Node) -> IRExpr:
+    """Lower ``[e1, e2, ...]`` to an IRArrayConstructor.
+
+    Only the plain element-list form is handled; implied-do array
+    constructors (``[(i, i=1,n)]``) fall back to a TODO.
+    """
+    elements: list[IRExpr] = []
+    spec = node.first_child("AcSpec")
+    if spec is None:
+        return _expr_raw(node)
+    for ac in spec.children_of_kind("AcValue"):
+        if ac.find_first("AcImpliedDo") is not None:
+            return _expr_raw(node)  # TODO: implied-do constructors
+        expr = ac.find_first("Expr")
+        if expr is not None:
+            elements.append(_lower_expression(expr))
+    return IRArrayConstructor(elements=tuple(elements))
 
 
 def _lower_structure_component(node: Node) -> IRExpr:

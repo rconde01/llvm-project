@@ -140,6 +140,13 @@ class IRSection:
 
 
 @dataclass(frozen=True, slots=True)
+class IRArrayConstructor:
+    """``[e1, e2, ...]`` / ``(/ ... /)`` — a rank-1 array literal."""
+
+    elements: tuple  # tuple[IRExpr, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class IRCast:
     """A type conversion: ``static_cast<cpp_type>(operand)``.
 
@@ -165,7 +172,7 @@ class IRRaw:
 
 IRExpr = Union[
     IRLiteral, IRName, IRBinaryOp, IRUnaryOp, IRFunctionCall, IRMember,
-    IRCast, IRSection, IRRaw
+    IRCast, IRSection, IRArrayConstructor, IRRaw
 ]
 
 

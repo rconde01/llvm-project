@@ -29,10 +29,27 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <initializer_list>
 #include <string_view>
 #include <type_traits>
 
 namespace fortran {
+
+// ---- Array constructor ----------------------------------------------------
+
+/// Build a 1-based rank-1 Array from a braced element list — the
+/// translation of Fortran's ``[e1, e2, ...]`` / ``(/ ... /)``.  The
+/// element type is deduced from the initializer list, so the C++
+/// literal types drive it (``{10, 20}`` -> int, ``{1.0f}`` -> float).
+template <typename T>
+Array<T, 1> array_of(std::initializer_list<T> elems) {
+  Array<T, 1> r({static_cast<index_t>(elems.size())});
+  index_t i = 1;
+  for (const T &e : elems) {
+    r(i++) = e;
+  }
+  return r;
+}
 
 // ---- Generic scalar intrinsics that differ for integer vs real ------------
 
