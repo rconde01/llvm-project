@@ -21,6 +21,7 @@ from .ir import (
     IRArrayConstructor,
     IRAssignment,
     IRBinaryOp,
+    IRBlock,
     IRCall,
     IRCast,
     IRCaseClause,
@@ -365,10 +366,29 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         out.write(f"{pad}break;")
         _emit_trailing(out, stmt.trailing_comments)
         return
+    if isinstance(stmt, IRBlock):
+        _emit_block(out, stmt, indent=indent)
+        return
     if isinstance(stmt, IRUnsupported):
         _emit_unsupported(out, stmt, indent=indent)
         return
     out.write(f"{pad}// TODO: unhandled IR statement {type(stmt).__name__}\n")
+
+
+def _emit_block(out: StringIO, node: IRBlock, *, indent: int) -> None:
+    pad = "  " * indent
+    _emit_comment_block(out, node.leading_comments, indent=indent)
+    out.write(f"{pad}{{\n")
+    # ASSOCIATE bindings (auto&& binds to lvalue or rvalue selectors).
+    for name, expr in node.bindings:
+        out.write(f"{pad}  auto&& {name} = {_render_expr(expr)};\n")
+    # BLOCK local declarations.
+    for loc in node.locals:
+        _emit_local(out, loc, indent=indent + 1)
+    for s in node.body:
+        _emit_statement(out, s, indent=indent + 1)
+    out.write(f"{pad}}}\n")
+    _emit_trailing(out, node.trailing_comments)
 
 
 def _emit_formatted_chunks(out: StringIO, stmt: "IRPrint") -> None:

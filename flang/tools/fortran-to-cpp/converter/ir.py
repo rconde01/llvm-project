@@ -364,6 +364,23 @@ class IRDeallocate:
 
 
 @dataclass(slots=True)
+class IRBlock:
+    """A scoped block: ``associate`` (``auto&&`` bindings) or ``block``
+    (local declarations), each followed by a body and a closing brace.
+    """
+
+    bindings: list[tuple[str, "IRExpr"]] = field(default_factory=list)
+    """``auto&& name = expr;`` pairs (from ASSOCIATE)."""
+
+    locals: list["IRLocal"] = field(default_factory=list)
+    """Block-local declarations (from BLOCK)."""
+
+    body: list["IRStatement"] = field(default_factory=list)
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class IRWhere:
     """``where (mask) ... elsewhere ... end where`` — masked array
     assignment.
@@ -418,6 +435,7 @@ IRStatement = Union[
     IRCycle,
     IRExit,
     IRReturn,
+    IRBlock,
     IRComment,
     IRUnsupported,
 ]

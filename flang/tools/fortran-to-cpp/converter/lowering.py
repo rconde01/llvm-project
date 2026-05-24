@@ -55,6 +55,7 @@ from .ir import (
 from .ir import (
     IRAllocate,
     IRArrayConstructor,
+    IRBlock,
     IRCast,
     IRCaseClause,
     IRCycle,
@@ -723,7 +724,52 @@ def _lower_construct(construct: Node) -> IRStatement | None:
         return _lower_case_construct(target)
     if target.kind == "WhereConstruct":
         return _lower_where_construct(target)
+    if target.kind == "AssociateConstruct":
+        return _lower_associate_construct(target)
+    if target.kind == "BlockConstruct":
+        return _lower_block_construct(target)
     return _unsupported(target, kind=target.kind)
+
+
+def _lower_associate_construct(node: Node) -> IRStatement:
+    """``associate (h => expr) ... end associate`` -> a scoped block of
+    ``auto&& h = expr;`` bindings around the body."""
+    bindings: list[tuple[str, IRExpr]] = []
+    body: list[IRStatement] = []
+    for child in node.children:
+        if child.kind == "Statement":
+            stmt = child.find_first("AssociateStmt")
+            if stmt is not None:
+                for assoc in stmt.find_all("Association"):
+                    name = assoc.first_child("Name")
+                    sel = assoc.find_first("Selector")
+                    if name is None or not name.fortran or sel is None:
+                        continue
+                    # The selector's *direct* child is the Expr/Variable;
+                    # a recursive search would wrongly grab a nested
+                    # sub-expression (e.g. sqrt's argument).
+                    expr = sel.first_child("Expr") or sel.first_child("Variable")
+                    if expr is not None:
+                        bindings.append(
+                            (name.fortran.lower(), _lower_expression(expr))
+                        )
+        elif child.kind == "Block":
+            body = _lower_block(child)
+    return IRBlock(bindings=bindings, body=body)
+
+
+def _lower_block_construct(node: Node) -> IRStatement:
+    """``block ... end block`` -> a scoped block with local declarations."""
+    locals_: list[IRLocal] = []
+    body: list[IRStatement] = []
+    for child in node.children:
+        if child.kind == "BlockSpecificationPart":
+            spec = child.first_child("SpecificationPart")
+            if spec is not None:
+                locals_ = _lower_specification(spec)
+        elif child.kind == "Block":
+            body = _lower_block(child)
+    return IRBlock(locals=locals_, body=body)
 
 
 def _lower_where_construct(node: Node) -> IRStatement:

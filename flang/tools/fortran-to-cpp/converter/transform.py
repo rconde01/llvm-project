@@ -28,6 +28,7 @@ from .ir import (
     IRArrayConstructor,
     IRAssignment,
     IRBinaryOp,
+    IRBlock,
     IRCall,
     IRCaseClause,
     IRComment,
@@ -272,6 +273,14 @@ def _map_statement_children(
                 if stmt.default_body is not None
                 else None
             ),
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    if isinstance(stmt, IRBlock):
+        return IRBlock(
+            bindings=[(n, _e(v, on_expr)) for n, v in stmt.bindings],
+            locals=stmt.locals,
+            body=_b(stmt.body, on_expr, on_stmt),
             leading_comments=stmt.leading_comments,
             trailing_comments=stmt.trailing_comments,
         )
