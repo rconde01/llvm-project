@@ -335,6 +335,40 @@ auto reshape(const A &src, Dims... dims) {
   return r;
 }
 
+/// PACK — gather the elements of ``a`` (array-element order) where the
+/// corresponding ``mask`` element is true, into a rank-1 array.
+template <typename A, typename M> auto pack(const A &a, const M &mask) {
+  using T = typename A::value_type;
+  const index_t n = a.size();
+  index_t cnt = 0;
+  for (index_t i = 0; i < n; ++i) {
+    if (mask.data()[i]) {
+      ++cnt;
+    }
+  }
+  Array<T, 1> r({cnt});
+  index_t k = 1;
+  for (index_t i = 0; i < n; ++i) {
+    if (mask.data()[i]) {
+      r(k++) = a.data()[i];
+    }
+  }
+  return r;
+}
+
+/// CSHIFT — circular shift of a rank-1 array by ``shift`` positions
+/// (positive shifts toward lower indices, per Fortran).
+template <typename A> auto cshift(const A &a, index_t shift) {
+  using T = typename A::value_type;
+  const index_t n = a.size();
+  Array<T, 1> r({n});
+  for (index_t i = 0; i < n; ++i) {
+    index_t src = ((i + shift) % n + n) % n;
+    r.data()[i] = a.data()[src];
+  }
+  return r;
+}
+
 /// TRANSPOSE of a rank-2 array.
 template <typename A>
 Array<typename A::value_type, 2> transpose(const A &a) {

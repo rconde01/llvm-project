@@ -16,6 +16,7 @@
 #define FORTRAN_RT_RUNTIME_HPP
 
 #include "fortran/array.hpp"
+#include "fortran/array_ops.hpp"
 #include "fortran/array_ref.hpp"
 #include "fortran/equiv.hpp"
 #include "fortran/intrinsics.hpp"

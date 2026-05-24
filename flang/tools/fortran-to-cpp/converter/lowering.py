@@ -956,6 +956,7 @@ _NON_ELEMENTAL: frozenset[str] = frozenset(
         "fortran::lbound", "fortran::ubound",
         "fortran::matmul", "fortran::transpose",
         "fortran::maxloc", "fortran::minloc",
+        "fortran::pack", "fortran::cshift",
     }
 )
 
@@ -963,7 +964,8 @@ _NON_ELEMENTAL: frozenset[str] = frozenset(
 # be expanded into an element loop (you can't index the call result);
 # it stays a move-assignment of the returned Array.
 _ARRAY_RETURNING: frozenset[str] = frozenset(
-    {"fortran::matmul", "fortran::transpose", "fortran::reshape"}
+    {"fortran::matmul", "fortran::transpose", "fortran::reshape",
+     "fortran::pack", "fortran::cshift"}
 )
 
 
@@ -2041,6 +2043,7 @@ _INTRINSIC_MAP: dict[str, str] = {
     "dot_product": "fortran::dot_product",
     "matmul": "fortran::matmul", "transpose": "fortran::transpose",
     "maxloc": "fortran::maxloc", "minloc": "fortran::minloc",
+    "pack": "fortran::pack", "cshift": "fortran::cshift",
     # Character intrinsics.
     "trim": "fortran::trim", "len": "fortran::len",
     "len_trim": "fortran::len_trim", "index": "fortran::index",
