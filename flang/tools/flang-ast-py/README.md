@@ -147,6 +147,51 @@ flang -fc1 -fdebug-dump-parse-tree-json hello.f90 > dump.json
 flang-ast-annotate --ast dump.json --source-file hello.f90 --report
 ```
 
+### Dependency-ordered subprograms
+
+`flang_ast.depgraph` finds every `MainProgram`, `FunctionSubprogram`,
+and `SubroutineSubprogram` (including those nested in modules and
+`CONTAINS` blocks), builds the call graph, and topologically sorts it
+so that **every callee appears before its caller**.  Mutually recursive
+groups stay together as a single SCC, sorted by source line internally.
+
+```python
+from flang_ast import order_by_dependencies, parse_fortran_file
+
+result = order_by_dependencies(parse_fortran_file("hello.f90"))
+for sub in result.order:
+    print(sub.kind, sub.display_name, "calls:", sub.calls)
+
+if result.cycles:
+    print("warning: mutually-recursive groups present")
+    for scc in result.cycles:
+        print(" ", " <-> ".join(s.display_name for s in scc))
+```
+
+Each `Subprogram` carries its parse tree `node`, source range, list of
+in-graph `calls`, `external_calls` (intrinsics or names imported via
+`USE` that don't resolve to a local definition), and a `source_text()`
+method that returns the original source slice for the unit.
+
+CLI:
+
+```bash
+# Human-readable listing (default)
+flang-ast-deporder hello.f90
+
+# Just the ordered names, one per line — handy for shell pipelines
+flang-ast-deporder hello.f90 --names
+
+# Full structured output
+flang-ast-deporder hello.f90 --json
+
+# Graphviz dot
+flang-ast-deporder hello.f90 --dot | dot -Tsvg -o callgraph.svg
+```
+
+Exit code is `2` when the call graph contains a cycle, so wrapper
+scripts can detect mutual recursion without parsing the output.
+
 ## Why a single `Node` class instead of one per kind?
 
 The flang parse tree defines ~600 node classes.  Mirroring each one as a

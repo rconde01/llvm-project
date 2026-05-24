@@ -23,6 +23,13 @@ from .annotate import (
     extract_comments,
     render_report,
 )
+from .depgraph import (
+    OrderingResult,
+    Subprogram,
+    collect_subprograms,
+    iter_in_order,
+    order_by_dependencies,
+)
 from .nodes import (
     Comment,
     Node,
@@ -49,9 +56,14 @@ __all__ = [
     "NodeKind",
     "NodeTransformer",
     "NodeVisitor",
+    "OrderingResult",
     "SourceRange",
+    "Subprogram",
     "annotate_tree",
+    "collect_subprograms",
     "extract_comments",
+    "iter_in_order",
+    "order_by_dependencies",
     "parse_fortran_file",
     "parse_fortran_source",
     "parse_json",

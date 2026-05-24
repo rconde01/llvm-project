@@ -22,6 +22,7 @@ Homepage = "https://flang.llvm.org"
 
 [project.scripts]
 flang-ast-annotate = "flang_ast.annotate:main"
+flang-ast-deporder = "flang_ast.depgraph:main"
 
 [tool.setuptools]
 packages = ["flang_ast"]

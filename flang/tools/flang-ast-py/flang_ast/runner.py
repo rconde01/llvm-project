@@ -62,10 +62,22 @@ def parse_fortran_file(
     """
     binary = _resolve_flang(flang)
     flag = "-fdebug-dump-parse-tree-json" if sema else "-fdebug-dump-parse-tree-json-no-sema"
-    cmd = [binary, "-fc1", flag, *extra_args, os.fspath(path)]
-    proc = subprocess.run(
-        cmd, capture_output=True, text=True, check=False
-    )
+    # flang writes generated .mod files to the current working directory
+    # by default; redirect them to a throw-away temp dir so we never
+    # pollute the caller's cwd.
+    with tempfile.TemporaryDirectory(prefix="flang-ast-mod-") as moddir:
+        cmd = [
+            binary,
+            "-fc1",
+            flag,
+            "-module-dir",
+            moddir,
+            *extra_args,
+            os.fspath(path),
+        ]
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, cwd=moddir
+        )
     if proc.returncode != 0 and not proc.stdout.strip():
         raise FlangError(
             f"flang failed (exit {proc.returncode}) running {' '.join(cmd)}",
