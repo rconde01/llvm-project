@@ -227,6 +227,14 @@ class IRLocal:
     is_save: bool = False
     """True for ``SAVE``d locals — moved into the per-subprogram save struct."""
 
+    intent: Literal["in", "out", "inout"] | None = None
+    """Set when the declaration carried an ``INTENT(...)`` attribute.
+    Used by the lowering pass to recognize formal parameters.
+    """
+
+    leading_comments: list[Comment] = field(default_factory=list)
+    """Comments that appeared immediately above this declaration."""
+
 
 @dataclass(slots=True)
 class IRParameter:

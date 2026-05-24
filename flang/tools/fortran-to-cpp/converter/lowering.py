@@ -25,7 +25,7 @@ Currently supported (v1):
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from typing import Iterable, Literal
 
 from flang_ast import Comment, Node
 
@@ -105,19 +105,16 @@ def _lower_function(node: Node) -> IRSubprogram:
         leading_comments=list(node.leading_comments),
         source=node.source,
     )
-    # The Fortran ``f = expr`` inside a function body assigns the
-    # return value.  We discover the type by looking at the
-    # declaration of ``f`` inside the body — that happens in the
-    # specification pass below.
+
+    # FunctionStmt structure: [PrefixSpec*, Name (function name), Name* (dummy args), Suffix?]
+    # The dummy args are bare Name nodes, NOT wrapped in DummyArg like
+    # in SubroutineStmt.
+    dummy_arg_names = _extract_function_dummy_args(node)
+    prefix_return_type = _extract_function_prefix_return_type(node)
+
     _lower_specification_and_execution(node, sub)
-    # Lift the local named after the function out into the return
-    # type; the body's assignments to that name become ``return``
-    # statements in the emitter.
-    for i, loc in enumerate(sub.locals):
-        if loc.name == sub.name:
-            sub.return_type = loc.type
-            sub.locals.pop(i)
-            break
+    _separate_parameters(sub, dummy_arg_names)
+    _lift_function_return(sub, prefix_return_type)
     return sub
 
 
@@ -130,8 +127,214 @@ def _lower_subroutine(node: Node) -> IRSubprogram:
         leading_comments=list(node.leading_comments),
         source=node.source,
     )
+    dummy_arg_names = _extract_subroutine_dummy_args(node)
     _lower_specification_and_execution(node, sub)
+    _separate_parameters(sub, dummy_arg_names)
     return sub
+
+
+# ---- Parameter / return-value plumbing ------------------------------------
+
+
+def _extract_subroutine_dummy_args(subprog: Node) -> list[str]:
+    """Pull the dummy arg names out of the leading ``SubroutineStmt``."""
+    out: list[str] = []
+    for stmt in subprog.children:
+        if stmt.kind != "Statement":
+            continue
+        sub_stmt = stmt.find_first("SubroutineStmt")
+        if sub_stmt is None:
+            continue
+        for arg in sub_stmt.children_of_kind("DummyArg"):
+            name = arg.find_first("Name")
+            if name is not None and name.fortran:
+                out.append(name.fortran)
+        return out
+    return out
+
+
+def _extract_function_dummy_args(subprog: Node) -> list[str]:
+    """Pull dummy arg names from a ``FunctionStmt``.
+
+    FunctionStmt's children look like ``[PrefixSpec*, Name (function),
+    Name* (args), Suffix?]`` — all bare Names rather than DummyArgs.
+    """
+    out: list[str] = []
+    for stmt in subprog.children:
+        if stmt.kind != "Statement":
+            continue
+        func_stmt = stmt.find_first("FunctionStmt")
+        if func_stmt is None:
+            continue
+        names = [c for c in func_stmt.children if c.kind == "Name"]
+        # First Name is the function name; the rest are the dummy args.
+        for name in names[1:]:
+            if name.fortran:
+                out.append(name.fortran)
+        return out
+    return out
+
+
+def _extract_function_prefix_return_type(subprog: Node) -> IRType | None:
+    """If the function has a leading type prefix (``real function f``),
+    lower it here so we can short-circuit the "function-named local"
+    search later."""
+    for stmt in subprog.children:
+        if stmt.kind != "Statement":
+            continue
+        func_stmt = stmt.find_first("FunctionStmt")
+        if func_stmt is None:
+            continue
+        for prefix in func_stmt.find_all("PrefixSpec"):
+            spec = prefix.find_first("DeclarationTypeSpec")
+            if spec is not None:
+                return lower_type_spec(spec)
+    return None
+
+
+def _separate_parameters(sub: IRSubprogram, arg_names: list[str]) -> None:
+    """Pull every local matching a dummy arg name out into ``parameters``."""
+    if not arg_names:
+        return
+    wanted = {a.lower(): i for i, a in enumerate(arg_names)}
+    by_idx: list[tuple[int, IRParameter, IRLocal]] = []
+    remaining: list[IRLocal] = []
+    for loc in sub.locals:
+        if loc.name in wanted:
+            param = IRParameter(
+                name=loc.name,
+                type=loc.type,
+                intent=loc.intent or "inout",
+            )
+            by_idx.append((wanted[loc.name], param, loc))
+        else:
+            remaining.append(loc)
+    by_idx.sort(key=lambda t: t[0])
+    sub.parameters = [p for _, p, _ in by_idx]
+    sub.locals = remaining
+
+
+def _lift_function_return(
+    sub: IRSubprogram, prefix_type: IRType | None
+) -> None:
+    """Turn the local variable named after the function into a return
+    value.  Renames every reference to ``<name>`` in the body to
+    ``<name>_result`` so the emitter can finish with ``return
+    <name>_result;``.
+    """
+    if sub.kind != "function":
+        return
+
+    # Find the local whose name matches the function name, if any.
+    func_local = None
+    for i, loc in enumerate(sub.locals):
+        if loc.name == sub.name:
+            func_local = loc
+            sub.locals.pop(i)
+            break
+
+    return_type = (
+        func_local.type if func_local is not None else prefix_type
+    )
+    if return_type is None:
+        # No way to determine the return type; leave it as auto and let
+        # the user fix it.
+        return_type = IRType(cpp="auto", fortran="<inferred>")
+    sub.return_type = return_type
+
+    result_name = sub.name + "_result"
+    sub.locals.insert(
+        0,
+        IRLocal(name=result_name, type=return_type),
+    )
+    sub.body = [_rename_name_in_stmt(s, sub.name, result_name) for s in sub.body]
+
+
+def _rename_name_in_stmt(stmt: IRStatement, old: str, new: str) -> IRStatement:
+    """Walk an IR statement and substitute every ``IRName(old)`` with ``IRName(new)``."""
+    if isinstance(stmt, IRAssignment):
+        return IRAssignment(
+            target=_rename_name_in_expr(stmt.target, old, new),
+            value=_rename_name_in_expr(stmt.value, old, new),
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    if isinstance(stmt, IRCall):
+        return IRCall(
+            callee=stmt.callee,
+            args=[_rename_name_in_expr(a, old, new) for a in stmt.args],
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    if isinstance(stmt, IRPrint):
+        return IRPrint(
+            items=[_rename_name_in_expr(a, old, new) for a in stmt.items],
+            stream=stmt.stream,
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    if isinstance(stmt, IRReturn):
+        if stmt.value is None:
+            return stmt
+        return IRReturn(
+            value=_rename_name_in_expr(stmt.value, old, new),
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    if isinstance(stmt, IRIf):
+        return IRIf(
+            branches=[
+                (
+                    _rename_name_in_expr(cond, old, new),
+                    [_rename_name_in_stmt(s, old, new) for s in body],
+                )
+                for cond, body in stmt.branches
+            ],
+            else_body=(
+                [_rename_name_in_stmt(s, old, new) for s in stmt.else_body]
+                if stmt.else_body is not None
+                else None
+            ),
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    if isinstance(stmt, IRDo):
+        return IRDo(
+            var=new if stmt.var == old else stmt.var,
+            lower=_rename_name_in_expr(stmt.lower, old, new),
+            upper=_rename_name_in_expr(stmt.upper, old, new),
+            step=(
+                _rename_name_in_expr(stmt.step, old, new)
+                if stmt.step is not None
+                else None
+            ),
+            body=[_rename_name_in_stmt(s, old, new) for s in stmt.body],
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    return stmt
+
+
+def _rename_name_in_expr(expr: IRExpr, old: str, new: str) -> IRExpr:
+    if isinstance(expr, IRName):
+        return IRName(name=new, fortran=expr.fortran) if expr.name == old else expr
+    if isinstance(expr, IRBinaryOp):
+        return IRBinaryOp(
+            op=expr.op,
+            lhs=_rename_name_in_expr(expr.lhs, old, new),
+            rhs=_rename_name_in_expr(expr.rhs, old, new),
+        )
+    if isinstance(expr, IRUnaryOp):
+        return IRUnaryOp(
+            op=expr.op,
+            operand=_rename_name_in_expr(expr.operand, old, new),
+        )
+    if isinstance(expr, IRFunctionCall):
+        return IRFunctionCall(
+            callee=expr.callee,
+            args=tuple(_rename_name_in_expr(a, old, new) for a in expr.args),
+        )
+    return expr
 
 
 def _extract_subprogram_name(node: Node, header_kind: str) -> str | None:
@@ -175,11 +378,19 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
     if type_node is None:
         return []
     ir_type = lower_type_spec(type_node)
-    # PARAMETER attribute → emit as constexpr.
-    is_parameter = any(
-        n.kind == "AttrSpec" and "PARAMETER" in (n.source.text.upper() if n.source else "")
-        for n in decl.walk()
-    )
+
+    is_parameter = False
+    is_save = False
+    intent: Literal["in", "out", "inout"] | None = None
+    for attr in decl.find_all("AttrSpec"):
+        if attr.source and "PARAMETER" in attr.source.text.upper():
+            is_parameter = True
+        if attr.source and "SAVE" in attr.source.text.upper():
+            is_save = True
+        intent_node = attr.find_first("IntentSpec")
+        if intent_node is not None:
+            intent = _extract_intent(intent_node)
+
     out: list[IRLocal] = []
     for entity in decl.children:
         if entity.kind != "EntityDecl":
@@ -199,9 +410,32 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
                 type=ir_type,
                 initializer=initializer,
                 is_parameter=is_parameter,
+                is_save=is_save,
+                intent=intent,
             )
         )
     return out
+
+
+def _extract_intent(
+    intent_spec: Node,
+) -> Literal["in", "out", "inout"] | None:
+    """Read an ``IntentSpec`` node's enum value.
+
+    The dump-parse-tree NODE_ENUM macro renders ``IntentSpec::Intent``
+    children with a kind like ``"Intent = In"`` / ``"Intent = Out"`` /
+    ``"Intent = InOut"`` — we parse the right-hand side.
+    """
+    for child in intent_spec.children:
+        if child.kind.startswith("Intent ="):
+            value = child.kind.split("=", 1)[1].strip().lower()
+            if value == "in":
+                return "in"
+            if value == "out":
+                return "out"
+            if value == "inout":
+                return "inout"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +749,24 @@ def _lower_logical_literal(node: Node) -> IRLiteral:
     return IRLiteral(cpp_text="true" if "t" in raw[:1] else "false")
 
 
+# Fortran intrinsics that map directly to a name in <cmath> / std::.
+# Anything not in this table is emitted as a plain call; the user's
+# own functions therefore "just work" as long as they have a C++
+# definition (typically a translated sibling subprogram).
+_INTRINSIC_MAP: dict[str, str] = {
+    "sqrt": "std::sqrt", "abs": "std::abs", "exp": "std::exp",
+    "log": "std::log", "log10": "std::log10",
+    "sin": "std::sin", "cos": "std::cos", "tan": "std::tan",
+    "asin": "std::asin", "acos": "std::acos", "atan": "std::atan",
+    "atan2": "std::atan2", "sinh": "std::sinh", "cosh": "std::cosh",
+    "tanh": "std::tanh", "floor": "std::floor", "ceiling": "std::ceil",
+    "min": "std::min", "max": "std::max",
+    "mod": "std::fmod",  # Fortran MOD follows truncation, like fmod
+    "modulo": "std::fmod",
+    "sign": "std::copysign",
+}
+
+
 def _lower_function_reference(node: Node) -> IRFunctionCall:
     callee = ""
     for n in node.walk():
@@ -530,7 +782,8 @@ def _lower_function_reference(node: Node) -> IRFunctionCall:
         )
         if expr is not None:
             args.append(_lower_expression(expr))
-    return IRFunctionCall(callee=callee, args=tuple(args))
+    cpp_callee = _INTRINSIC_MAP.get(callee, callee)
+    return IRFunctionCall(callee=cpp_callee, args=tuple(args))
 
 
 # Map Expr operator subclasses to the C++ operator we want to emit.

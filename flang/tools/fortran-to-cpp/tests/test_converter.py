@@ -187,6 +187,32 @@ end program
 """
 
 
+PARAMS_F90 = """\
+subroutine swap(a, b)
+  integer, intent(inout) :: a, b
+  integer :: tmp
+  tmp = a
+  a = b
+  b = tmp
+end subroutine
+
+real function hypot(x, y)
+  real, intent(in) :: x, y
+  hypot = sqrt(x*x + y*y)
+end function
+
+program demo
+  integer :: i, j
+  real :: r
+  i = 3
+  j = 7
+  call swap(i, j)
+  r = hypot(3.0, 4.0)
+  print *, i, j, r
+end program
+"""
+
+
 @unittest.skipUnless(_have_flang(), "flang binary not available")
 class EmitTests(unittest.TestCase):
     def _convert(self, src: str) -> str:
@@ -216,6 +242,28 @@ class EmitTests(unittest.TestCase):
         self.assertIn("} else {", cpp)
         # Trailing comment preservation.
         self.assertIn("// accumulate", cpp)
+
+    def test_subroutine_with_inout_args(self) -> None:
+        cpp = self._convert(PARAMS_F90)
+        self.assertIn(
+            "void swap(std::int32_t& a, std::int32_t& b)", cpp,
+        )
+
+    def test_function_with_intent_in_and_prefix_return_type(self) -> None:
+        cpp = self._convert(PARAMS_F90)
+        self.assertIn(
+            "float hypot(const float& x, const float& y)", cpp,
+        )
+        # The function name local should be renamed to <name>_result
+        # and a trailing return statement added.
+        self.assertIn("float hypot_result{};", cpp)
+        self.assertIn("hypot_result = std::sqrt(", cpp)
+        self.assertIn("return hypot_result;", cpp)
+
+    def test_intrinsic_calls_map_to_std(self) -> None:
+        cpp = self._convert(PARAMS_F90)
+        # ``sqrt`` is a Fortran intrinsic; we route it to <cmath>.
+        self.assertIn("std::sqrt(", cpp)
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +318,13 @@ class CompileAndRunTests(unittest.TestCase):
         # 1+...+10 = 55, which is > 50, so the "big" branch fires.
         self.assertIn("big sum:", out)
         self.assertIn("55", out)
+
+    def test_params_program_runs(self) -> None:
+        out = self._compile_and_run(PARAMS_F90)
+        # swap(3, 7) -> i=7, j=3; hypot(3, 4) = 5.
+        self.assertIn("7", out)
+        self.assertIn("3", out)
+        self.assertIn("5", out)
 
 
 if __name__ == "__main__":

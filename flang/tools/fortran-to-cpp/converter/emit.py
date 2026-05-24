@@ -72,7 +72,11 @@ def _emit_file_header(out: StringIO, tu: IRTranslationUnit) -> None:
 
 
 def _emit_includes(out: StringIO, tu: IRTranslationUnit) -> None:
-    includes = {"<cstdint>", "<format>", "<iostream>", "<string_view>",
+    # For now we include the kitchen sink (cmath for intrinsics, format
+    # for inline std::format calls).  Once the IR carries enough info
+    # we can prune this on a per-translation-unit basis.
+    includes = {"<algorithm>", "<cmath>", "<cstdint>", "<format>",
+                "<iostream>", "<string_view>",
                 '"fortran/runtime.hpp"'}
     for inc in sorted(includes):
         out.write(f"#include {inc}\n")
@@ -124,11 +128,11 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
 
     # For a function with no explicit return: emit one based on the
     # local variable that shared the function name (which lowering
-    # already deleted and stored on ``return_type``).  Generated
-    # function bodies assign to a synthesized variable also named
-    # after the function; we emit a ``return`` of that at the end.
+    # has already renamed to ``<name>_result``).
     if sub.kind == "function" and sub.return_type is not None:
         if not _ends_with_return(sub.body):
+            if sub.body:
+                out.write("\n")
             out.write(f"  return {sub.name}_result;\n")
 
     out.write("}\n")
