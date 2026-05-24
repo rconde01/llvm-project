@@ -70,6 +70,38 @@ template <typename T> T ibclr(T i, int pos) noexcept {
   return static_cast<T>(i & ~(T{1} << pos));
 }
 
+// ---- Numeric inquiry intrinsics -------------------------------------------
+//
+// Each takes an argument used only for its *type* (the value is
+// ignored), mirroring Fortran's HUGE(x), TINY(x), etc.
+
+template <typename T> T huge(const T &) noexcept {
+  return std::numeric_limits<T>::max();
+}
+template <typename T> T tiny(const T &) noexcept {
+  return std::numeric_limits<T>::min();
+}
+template <typename T> T epsilon(const T &) noexcept {
+  return std::numeric_limits<T>::epsilon();
+}
+/// KIND(x): the Fortran kind number, which for the integer and real
+/// types the translator emits equals the byte size.
+template <typename T> int kind(const T &) noexcept {
+  return static_cast<int>(sizeof(T));
+}
+template <typename T> int bit_size(const T &) noexcept {
+  return static_cast<int>(sizeof(T) * 8);
+}
+template <typename T> int precision(const T &) noexcept {
+  return std::numeric_limits<T>::digits10;
+}
+template <typename T> int radix(const T &) noexcept {
+  return std::numeric_limits<T>::radix;
+}
+template <typename T> int digits(const T &) noexcept {
+  return std::numeric_limits<T>::digits;
+}
+
 // ---- Array constructor ----------------------------------------------------
 
 /// Build a 1-based rank-1 Array from a braced element list — the

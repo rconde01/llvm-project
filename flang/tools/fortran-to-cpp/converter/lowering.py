@@ -2356,6 +2356,11 @@ _INTRINSIC_MAP: dict[str, str] = {
     "iand": "fortran::iand", "ior": "fortran::ior", "ieor": "fortran::ieor",
     "ishft": "fortran::ishft", "btest": "fortran::btest",
     "ibset": "fortran::ibset", "ibclr": "fortran::ibclr",
+    # Numeric inquiry intrinsics.
+    "huge": "fortran::huge", "tiny": "fortran::tiny",
+    "epsilon": "fortran::epsilon", "kind": "fortran::kind",
+    "bit_size": "fortran::bit_size", "precision": "fortran::precision",
+    "radix": "fortran::radix", "digits": "fortran::digits",
     # Character <-> integer intrinsics.
     "achar": "fortran::achar", "char": "fortran::achar",
     "iachar": "fortran::ichar", "ichar": "fortran::ichar",

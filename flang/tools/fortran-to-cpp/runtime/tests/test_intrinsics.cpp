@@ -194,4 +194,20 @@ TEST(btest_ibset_ibclr) {
   CHECK_EQ(fortran::ibclr(15, 1), 13);
 }
 
+TEST(numeric_inquiry) {
+  float f = 0.0f;
+  double d = 0.0;
+  std::int32_t i32 = 0;
+  std::int64_t i64 = 0;
+  CHECK(fortran::huge(f) > 1.0e30f);
+  CHECK(fortran::tiny(f) > 0.0f);
+  CHECK(fortran::epsilon(f) > 0.0f);
+  CHECK_EQ(fortran::huge(i32), 2147483647);
+  CHECK_EQ(fortran::kind(f), 4);
+  CHECK_EQ(fortran::kind(d), 8);
+  CHECK_EQ(fortran::kind(i64), 8);
+  CHECK_EQ(fortran::bit_size(i32), 32);
+  CHECK_EQ(fortran::bit_size(i64), 64);
+}
+
 FORTRAN_RT_TEST_MAIN()
