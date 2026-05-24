@@ -78,6 +78,37 @@ from .transform import map_expr, map_statement, rename_var
 from .types import camelcase, lower_type_spec
 
 
+# C++ keywords that a lower-cased Fortran identifier could collide with;
+# we append ``_`` to keep the generated code compilable (e.g. the
+# conventional type-bound-procedure passed object ``this``).
+_CPP_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "alignas", "alignof", "and", "and_eq", "asm", "auto", "bitand",
+        "bitor", "bool", "break", "case", "catch", "char", "char8_t",
+        "char16_t", "char32_t", "class", "compl", "concept", "const",
+        "consteval", "constexpr", "constinit", "const_cast", "continue",
+        "co_await", "co_return", "co_yield", "decltype", "default",
+        "delete", "do", "double", "dynamic_cast", "else", "enum",
+        "explicit", "export", "extern", "false", "float", "for", "friend",
+        "goto", "if", "inline", "int", "long", "mutable", "namespace",
+        "new", "noexcept", "not", "not_eq", "nullptr", "operator", "or",
+        "or_eq", "private", "protected", "public", "register",
+        "reinterpret_cast", "requires", "return", "short", "signed",
+        "sizeof", "static", "static_assert", "static_cast", "struct",
+        "switch", "template", "this", "thread_local", "throw", "true",
+        "try", "typedef", "typeid", "typename", "union", "unsigned",
+        "using", "virtual", "void", "volatile", "wchar_t", "while",
+        "xor", "xor_eq",
+    }
+)
+
+
+def _safe_name(fortran: str | None) -> str:
+    """Lower-case a Fortran identifier, avoiding C++ keyword clashes."""
+    name = (fortran or "").lower()
+    return name + "_" if name in _CPP_KEYWORDS else name
+
+
 # ---------------------------------------------------------------------------
 # Top-level entry point
 # ---------------------------------------------------------------------------
@@ -141,7 +172,7 @@ def _collect_module(mod_node: Node, tu: IRTranslationUnit) -> None:
         return
     module = IRModule(
         cpp_type=camelcase(name) + "Module",
-        fortran_name=name.lower(),
+        fortran_name=_safe_name(name),
     )
     # Module-level variable declarations live in the module's direct
     # SpecificationPart.
@@ -184,7 +215,19 @@ def _lower_derived_type_def(node: Node) -> "IRDerivedType | None":
                     _make_array_type(comp_type, arr) if arr is not None
                     else comp_type
                 )
-                fields.append(IRLocal(name=name.fortran.lower(), type=field_type))
+                init = decl.find_first("Initialization")
+                init_expr = None
+                if init is not None:
+                    e = init.find_first("Expr") or init.find_first("ConstantExpr")
+                    if e is not None:
+                        init_expr = _lower_expression(e)
+                fields.append(
+                    IRLocal(
+                        name=_safe_name(name.fortran),
+                        type=field_type,
+                        initializer=init_expr,
+                    )
+                )
     return IRDerivedType(
         cpp_type=camelcase(type_name),
         fortran_name=type_name.lower(),
@@ -199,8 +242,14 @@ def _lower_derived_type_def(node: Node) -> "IRDerivedType | None":
 
 def _lower_main_program(node: Node) -> IRSubprogram:
     name = _extract_subprogram_name(node, "ProgramStmt") or "main_program"
+    body_name = _safe_name(name)
+    # The generated C++ entry point is ``int main()``; a Fortran program
+    # literally named ``main`` would collide with it, so give the body a
+    # distinct, non-colliding name.
+    if body_name == "main":
+        body_name = "main_program"
     sub = IRSubprogram(
-        name=name.lower(),
+        name=body_name,
         display_name=name,
         kind="main",
         leading_comments=list(node.leading_comments),
@@ -213,7 +262,7 @@ def _lower_main_program(node: Node) -> IRSubprogram:
 def _lower_function(node: Node) -> IRSubprogram:
     name = _extract_subprogram_name(node, "FunctionStmt") or "anon_function"
     sub = IRSubprogram(
-        name=name.lower(),
+        name=_safe_name(name),
         display_name=name,
         kind="function",
         leading_comments=list(node.leading_comments),
@@ -235,7 +284,7 @@ def _lower_function(node: Node) -> IRSubprogram:
 def _lower_subroutine(node: Node) -> IRSubprogram:
     name = _extract_subprogram_name(node, "SubroutineStmt") or "anon_subroutine"
     sub = IRSubprogram(
-        name=name.lower(),
+        name=_safe_name(name),
         display_name=name,
         kind="subroutine",
         leading_comments=list(node.leading_comments),
@@ -262,7 +311,7 @@ def _extract_subroutine_dummy_args(subprog: Node) -> list[str]:
         for arg in sub_stmt.children_of_kind("DummyArg"):
             name = arg.find_first("Name")
             if name is not None and name.fortran:
-                out.append(name.fortran)
+                out.append(_safe_name(name.fortran))
         return out
     return out
 
@@ -284,7 +333,7 @@ def _extract_function_dummy_args(subprog: Node) -> list[str]:
         # First Name is the function name; the rest are the dummy args.
         for name in names[1:]:
             if name.fortran:
-                out.append(name.fortran)
+                out.append(_safe_name(name.fortran))
         return out
     return out
 
@@ -477,7 +526,7 @@ def _lower_use_statements(spec_part: Node) -> list[str]:
     for use in spec_part.find_all("UseStmt"):
         name = use.find_first("Name")
         if name is not None and name.fortran:
-            out.append(name.fortran.lower())
+            out.append(_safe_name(name.fortran))
     return out
 
 
@@ -500,11 +549,11 @@ def _lower_common_statements(spec_part: Node) -> list[IRCommonUse]:
                 (c for c in block.children if c.kind == "Name"), None
             )
             if leading_name is not None and leading_name.fortran:
-                block_name = leading_name.fortran.lower()
+                block_name = _safe_name(leading_name.fortran)
             for obj in block.children_of_kind("CommonBlockObject"):
                 name = obj.find_first("Name")
                 if name is not None and name.fortran:
-                    members.append(name.fortran.lower())
+                    members.append(_safe_name(name.fortran))
             out.append(
                 IRCommonUse(block_name=block_name, member_names=members)
             )
@@ -605,7 +654,7 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
             loc_type = ir_type
         out.append(
             IRLocal(
-                name=name_node.fortran.lower(),
+                name=_safe_name(name_node.fortran),
                 type=loc_type,
                 initializer=initializer,
                 is_parameter=is_parameter,
@@ -856,7 +905,7 @@ def _lower_associate_construct(node: Node) -> IRStatement:
                     expr = sel.first_child("Expr") or sel.first_child("Variable")
                     if expr is not None:
                         bindings.append(
-                            (name.fortran.lower(), _lower_expression(expr))
+                            (_safe_name(name.fortran), _lower_expression(expr))
                         )
         elif child.kind == "Block":
             body = _lower_block(child)
@@ -1505,7 +1554,7 @@ def _lower_allocate(node: Node) -> IRStatement:
         return _unsupported(node, kind="AllocateStmt")
     obj_node = alloc.find_first("AllocateObject")
     name = obj_node.find_first("Name") if obj_node is not None else None
-    obj = name.fortran.lower() if name is not None and name.fortran else "?"
+    obj = _safe_name(name.fortran) if name is not None and name.fortran else "?"
 
     extents: list[IRExpr] = []
     lowers: list[IRExpr] = []
@@ -1539,7 +1588,7 @@ def _lower_pointer_assignment(node: Node) -> IRStatement:
     """``p => target`` -> IRPointerAssign (is_array fixed up later)."""
     dataref = node.first_child("DataRef")
     name = dataref.find_first("Name") if dataref is not None else None
-    ptr = name.fortran.lower() if name is not None and name.fortran else "?"
+    ptr = _safe_name(name.fortran) if name is not None and name.fortran else "?"
     target_node = node.first_child("Expr")
     target: IRExpr | None = None
     if target_node is not None:
@@ -1555,7 +1604,7 @@ def _lower_pointer_assignment(node: Node) -> IRStatement:
 def _lower_nullify(node: Node) -> IRStatement:
     """``nullify(p)`` -> a null pointer assignment (first object only)."""
     name = node.find_first("Name")
-    ptr = name.fortran.lower() if name is not None and name.fortran else "?"
+    ptr = _safe_name(name.fortran) if name is not None and name.fortran else "?"
     return IRPointerAssign(pointer=ptr, target=None)
 
 
@@ -1594,7 +1643,7 @@ def _resolve_pointers(sub: IRSubprogram) -> None:
 def _lower_deallocate(node: Node) -> IRStatement:
     obj_node = node.find_first("AllocateObject")
     name = obj_node.find_first("Name") if obj_node is not None else None
-    obj = name.fortran.lower() if name is not None and name.fortran else "?"
+    obj = _safe_name(name.fortran) if name is not None and name.fortran else "?"
     return IRDeallocate(obj=obj)
 
 
@@ -1666,8 +1715,10 @@ def _extract_format(node: Node) -> str | None:
 
 def _lower_call(node: Node) -> IRCall:
     call = node.first_child("Call") or node
-    callee = _callee_name(call)
-    return IRCall(callee=callee, args=_lower_actual_args(call))
+    callee, leading = _resolve_callee(call)
+    return IRCall(
+        callee=_safe_name(callee), args=leading + _lower_actual_args(call)
+    )
 
 
 def _lower_if_construct(node: Node) -> IRIf:
@@ -1757,7 +1808,7 @@ def _lower_do_construct(node: Node) -> IRStatement:
         return _unsupported(node, kind="DoConstruct (unsupported loop control)")
 
     name = bounds.find_first("Name")
-    var = name.fortran.lower() if name and name.fortran else "i"
+    var = _safe_name(name.fortran) if name and name.fortran else "i"
     exprs = list(bounds.find_all("ScalarIntExpr")) or list(bounds.find_all("Expr"))
     # Expect [lower, upper] or [lower, upper, step].
     lo = _lower_expression(exprs[0]) if exprs else IRRaw("0")
@@ -1779,7 +1830,7 @@ def _lower_do_concurrent(concurrent: Node, body_block: Node | None) -> IRStateme
     body: list[IRStatement] = _lower_block(body_block) if body_block else []
     for ctrl in reversed(controls):
         name = ctrl.find_first("Name")
-        var = name.fortran.lower() if name is not None and name.fortran else "i"
+        var = _safe_name(name.fortran) if name is not None and name.fortran else "i"
         bounds = [
             _lower_expression(s)
             for s in ctrl.children
@@ -1958,7 +2009,7 @@ def _lower_loop_bounds(
     if scalars:
         nm = scalars[0].find_first("Name")
         if nm is not None and nm.fortran:
-            var = nm.fortran.lower()
+            var = _safe_name(nm.fortran)
     bounds = []
     for s in scalars[1:]:
         e = s.find_first("Expr")
@@ -1989,7 +2040,7 @@ def _lower_structure_component(node: Node) -> IRExpr:
     else:
         base_expr = IRRaw("/* ? */")
     field = (
-        field_name_node.fortran.lower()
+        _safe_name(field_name_node.fortran)
         if field_name_node is not None and field_name_node.fortran
         else "?"
     )
@@ -2010,7 +2061,7 @@ def _lower_array_element(node: Node) -> IRExpr:
     if data_ref is not None:
         name = data_ref.find_first("Name")
         if name is not None and name.fortran:
-            array_name = name.fortran.lower()
+            array_name = _safe_name(name.fortran)
     raw_subs: list[IRExpr | IRTriplet] = []
     has_triplet = False
     for sub in node.children_of_kind("SectionSubscript"):
@@ -2055,7 +2106,7 @@ def _lower_subscript_triplet(triplet: Node) -> IRTriplet:
 
 def _lower_name(node: Node) -> IRName:
     fortran = node.fortran or (node.source.text if node.source else "?")
-    return IRName(name=fortran.lower(), fortran=fortran)
+    return IRName(name=_safe_name(fortran), fortran=fortran)
 
 
 def _lower_literal(node: Node) -> IRExpr:
@@ -2177,8 +2228,8 @@ _REAL_KIND_CPP = {None: "float", 4: "float", 8: "double"}
 
 def _lower_function_reference(node: Node) -> IRExpr:
     call = node.first_child("Call") or node
-    callee = _callee_name(call)
-    args = _lower_actual_args(call)
+    callee, leading = _resolve_callee(call)
+    args = leading + _lower_actual_args(call)
 
     # present(x) -> x.has_value() (x is a std::optional param).  Use the
     # raw optional name; the deref pass won't touch this IRRaw.
@@ -2204,7 +2255,9 @@ def _lower_function_reference(node: Node) -> IRExpr:
         flat = (args[0], *args[1].elements)
         return IRFunctionCall(callee="fortran::reshape", args=flat)
 
-    cpp_callee = _INTRINSIC_MAP.get(callee, callee)
+    # Not an intrinsic -> a user function; safe-name it to match the
+    # (safe-named) subprogram definition.
+    cpp_callee = _INTRINSIC_MAP.get(callee, _safe_name(callee))
     return IRFunctionCall(callee=cpp_callee, args=tuple(args))
 
 
@@ -2238,13 +2291,45 @@ def _literal_int_value(expr: IRExpr) -> int | None:
 
 
 def _callee_name(call: Node) -> str:
-    """Pull the procedure name out of a Call's ProcedureDesignator."""
+    """Pull the procedure name out of a Call's ProcedureDesignator
+    (plain calls only; type-bound calls go through _resolve_callee)."""
+    name, _ = _resolve_callee(call)
+    return name
+
+
+def _resolve_callee(call: Node) -> tuple[str, list[IRExpr]]:
+    """Return (callee_name, leading_args).
+
+    For a type-bound call ``obj%method(...)`` the passed object becomes
+    the first argument (the PASS convention): returns
+    ``("method", [obj])``.  For a plain call returns ``(name, [])``.
+    """
     desig = call.first_child("ProcedureDesignator")
-    if desig is not None:
-        name = desig.find_first("Name")
-        if name is not None and name.fortran:
-            return name.fortran.lower()
-    return ""
+    if desig is None:
+        return "", []
+    pcr = desig.find_first("ProcComponentRef")
+    if pcr is not None:
+        sc = pcr.find_first("StructureComponent")
+        if sc is not None:
+            obj_ref = sc.first_child("DataRef")
+            method = sc.first_child("Name")  # direct child: the binding
+            obj_expr = (
+                _lower_expression(obj_ref)
+                if obj_ref is not None
+                else IRRaw("/* ? */")
+            )
+            mname = (
+                method.fortran.lower()
+                if method is not None and method.fortran
+                else "?"
+            )
+            return mname, [obj_expr]
+    name = desig.first_child("Name")
+    if name is not None and name.fortran:
+        # Raw lower-case: intrinsic matching happens on this name; the
+        # caller safe-names it only if it resolves to a user function.
+        return name.fortran.lower(), []
+    return "", []
 
 
 def _lower_actual_args(call: Node) -> list[IRExpr]:
