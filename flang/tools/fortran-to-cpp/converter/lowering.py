@@ -1245,6 +1245,13 @@ _INTRINSIC_MAP: dict[str, str] = {
     "mod": "std::fmod",  # Fortran MOD follows truncation, like fmod
     "modulo": "std::fmod",
     "sign": "std::copysign",
+    # Array intrinsics -> fortran:: runtime helpers (intrinsics.hpp).
+    "size": "fortran::size", "lbound": "fortran::lbound",
+    "ubound": "fortran::ubound", "sum": "fortran::sum",
+    "product": "fortran::product", "maxval": "fortran::maxval",
+    "minval": "fortran::minval", "count": "fortran::count",
+    "any": "fortran::any", "all": "fortran::all",
+    "dot_product": "fortran::dot_product",
 }
 
 

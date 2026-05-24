@@ -259,6 +259,16 @@ public:
     }
   }
 
+  /// Visit every element once (column-major order).  Used by the
+  /// array-reduction intrinsics (SUM, MAXVAL, ...).  Storage is
+  /// contiguous, so this is a simple linear scan.
+  template <typename F> void for_each(F &&f) const {
+    const index_t n = size();
+    for (index_t i = 0; i < n; ++i) {
+      f(storage_[i]);
+    }
+  }
+
   // ---- Conversion to non-owning view ----------------------------------
 
   operator ArrayRef<T, Rank>() noexcept;

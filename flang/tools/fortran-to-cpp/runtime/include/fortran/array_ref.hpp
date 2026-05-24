@@ -111,6 +111,30 @@ public:
 
   T *data() const noexcept { return data_; }
 
+  /// Visit every element once.  Handles arbitrary (possibly
+  /// non-contiguous) strides by walking the Fortran index tuple in
+  /// column-major order.
+  template <typename F> void for_each(F &&f) const {
+    const index_t n = size();
+    if (n == 0 || data_ == nullptr) {
+      return;
+    }
+    std::array<index_t, Rank> idx = lower_;
+    for (index_t count = 0; count < n; ++count) {
+      index_t off = 0;
+      for (std::size_t k = 0; k < Rank; ++k) {
+        off += (idx[k] - lower_[k]) * strides_[k];
+      }
+      f(data_[off]);
+      for (std::size_t k = 0; k < Rank; ++k) {
+        if (++idx[k] <= lower_[k] + extents_[k] - 1) {
+          break;
+        }
+        idx[k] = lower_[k];
+      }
+    }
+  }
+
   /// True if this view's strides describe a contiguous column-major
   /// layout — i.e. data + N elements actually visits all elements in
   /// linear order.  Useful for the emitter when deciding whether a
