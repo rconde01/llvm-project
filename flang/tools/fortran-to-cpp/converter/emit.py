@@ -518,17 +518,18 @@ def _emit_do(out: StringIO, node: IRDo, *, indent: int) -> None:
     pad = "  " * indent
     _emit_comment_block(out, node.leading_comments, indent=indent)
     var = node.var
+    decl = "fortran::index_t " if node.declare else ""
     lo = _render_expr(node.lower)
     hi = _render_expr(node.upper)
     step = _render_expr(node.step) if node.step is not None else "1"
     # For the common step==1 case, write a clean ``i <= hi`` form.
     if step == "1":
         out.write(
-            f"{pad}for ({var} = {lo}; {var} <= {hi}; ++{var}) {{\n"
+            f"{pad}for ({decl}{var} = {lo}; {var} <= {hi}; ++{var}) {{\n"
         )
     else:
         out.write(
-            f"{pad}for ({var} = {lo}; "
+            f"{pad}for ({decl}{var} = {lo}; "
             f"({step} >= 0 ? {var} <= {hi} : {var} >= {hi}); "
             f"{var} += {step}) {{\n"
         )

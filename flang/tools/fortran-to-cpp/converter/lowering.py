@@ -383,6 +383,7 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
         elif child.kind == "ExecutionPart":
             sub.body.extend(_lower_execution(child))
     _resolve_allocations(sub)
+    _expand_array_assignments(sub)
 
 
 def _lower_use_statements(spec_part: Node) -> list[str]:
@@ -790,6 +791,124 @@ def _lower_if_stmt(node: Node) -> IRStatement:
                     else _unsupported(inner, kind=inner.kind)
                 ]
     return IRIf(branches=[(condition, body)], else_body=None)
+
+
+# Array intrinsics that take a whole array and return a scalar (or
+# array) — their array arguments must NOT be element-indexed when a
+# whole-array assignment is expanded into a loop.
+_NON_ELEMENTAL: frozenset[str] = frozenset(
+    {
+        "fortran::sum", "fortran::product", "fortran::maxval",
+        "fortran::minval", "fortran::count", "fortran::any",
+        "fortran::all", "fortran::dot_product", "fortran::size",
+        "fortran::lbound", "fortran::ubound",
+    }
+)
+
+
+def _expand_array_assignments(sub: IRSubprogram) -> None:
+    """Expand whole-array assignments (``a = b + c``) into explicit
+    element loops, indexing the array operands and leaving scalars and
+    whole-array (reduction) calls alone.
+
+    Generated code reads like a hand-written loop nest and allocates no
+    temporaries.  Array sections (``a(1:5) = ...``) are not handled
+    here yet.
+    """
+    arrays = {loc.name: loc.type for loc in sub.locals if loc.type.is_array}
+    if not arrays:
+        return
+    array_names = set(arrays)
+    counter = [0]
+
+    def expand(stmt: IRStatement) -> IRStatement:
+        if (
+            isinstance(stmt, IRAssignment)
+            and isinstance(stmt.target, IRName)
+            and stmt.target.name in arrays
+        ):
+            return _array_assignment_loop(
+                stmt, arrays[stmt.target.name], array_names, counter
+            )
+        return stmt
+
+    sub.body = [map_statement(s, on_stmt=expand) for s in sub.body]
+
+
+def _array_assignment_loop(
+    stmt: IRAssignment,
+    atype: IRType,
+    array_names: set[str],
+    counter: list[int],
+) -> IRStatement:
+    rank = max(atype.array_rank, 1)
+    tname = stmt.target.name  # type: ignore[union-attr]
+    idx_vars: list[str] = []
+    for _ in range(rank):
+        counter[0] += 1
+        idx_vars.append(f"_i{counter[0]}")
+    idx_args = tuple(IRName(name=v, fortran=v) for v in idx_vars)
+
+    rhs = _index_array_expr(stmt.value, idx_args, array_names)
+    body: list[IRStatement] = [
+        IRAssignment(
+            target=IRFunctionCall(callee=tname, args=idx_args),
+            value=rhs,
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    ]
+    # Nest loops with dim 1 innermost (column-major), dim ``rank``
+    # outermost.  Bounds come from the target array's runtime extents.
+    loop: list[IRStatement] = body
+    for k in range(rank):
+        var = idx_vars[k]
+        loop = [
+            IRDo(
+                var=var,
+                lower=IRRaw(f"{tname}.lbound({k + 1})"),
+                upper=IRRaw(f"{tname}.ubound({k + 1})"),
+                step=None,
+                body=loop,
+                declare=True,
+            )
+        ]
+    return loop[0]
+
+
+def _index_array_expr(
+    expr: IRExpr, idx: tuple[IRExpr, ...], array_names: set[str]
+) -> IRExpr:
+    """Rewrite an elementwise RHS: bare array names become indexed
+    accesses; operators and elemental calls recurse; whole-array
+    (reduction) calls are left untouched."""
+    if isinstance(expr, IRName):
+        if expr.name in array_names:
+            return IRFunctionCall(callee=expr.name, args=idx)
+        return expr
+    if isinstance(expr, IRBinaryOp):
+        return IRBinaryOp(
+            op=expr.op,
+            lhs=_index_array_expr(expr.lhs, idx, array_names),
+            rhs=_index_array_expr(expr.rhs, idx, array_names),
+        )
+    if isinstance(expr, IRUnaryOp):
+        return IRUnaryOp(
+            op=expr.op,
+            operand=_index_array_expr(expr.operand, idx, array_names),
+        )
+    if isinstance(expr, IRFunctionCall):
+        if expr.callee in _NON_ELEMENTAL:
+            return expr  # whole-array argument; do not index
+        # Elemental intrinsic (std::sqrt, ...) or an array element
+        # access whose callee is an array name: recurse into args.
+        return IRFunctionCall(
+            callee=expr.callee,
+            args=tuple(
+                _index_array_expr(a, idx, array_names) for a in expr.args
+            ),
+        )
+    return expr
 
 
 def _lower_assignment(node: Node) -> IRAssignment:

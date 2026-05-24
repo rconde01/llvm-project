@@ -229,6 +229,12 @@ class IRDo:
     upper: IRExpr
     step: IRExpr | None
     body: list["IRStatement"] = field(default_factory=list)
+    declare: bool = False
+    """When True the emitter declares the index variable in the for-init
+    (``for (fortran::index_t i = ...)``).  Set for compiler-synthesized
+    loops (e.g. whole-array assignment expansion); user ``do`` loops use
+    a pre-declared variable."""
+
     leading_comments: list[Comment] = field(default_factory=list)
     trailing_comments: list[Comment] = field(default_factory=list)
 

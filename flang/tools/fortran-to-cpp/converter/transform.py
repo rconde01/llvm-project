@@ -215,6 +215,7 @@ def _map_statement_children(
             upper=_e(stmt.upper, on_expr),
             step=_e(stmt.step, on_expr) if stmt.step is not None else None,
             body=_b(stmt.body, on_expr, on_stmt),
+            declare=stmt.declare,
             leading_comments=stmt.leading_comments,
             trailing_comments=stmt.trailing_comments,
         )
