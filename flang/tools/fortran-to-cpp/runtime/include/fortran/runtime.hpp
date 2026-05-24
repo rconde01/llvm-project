@@ -17,5 +17,8 @@
 
 #include "fortran/array.hpp"
 #include "fortran/array_ref.hpp"
+#include "fortran/equiv.hpp"
+#include "fortran/io.hpp"
+#include "fortran/string.hpp"
 
 #endif // FORTRAN_RT_RUNTIME_HPP

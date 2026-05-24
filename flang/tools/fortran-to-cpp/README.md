@@ -107,16 +107,31 @@ A subprogram's `save`d locals are bundled into a per-subprogram struct
 "state-is-explicit" invariant of R3.  Subprograms with no `save`
 locals don't need such a struct.
 
-### R8 — I/O via standard C++ libraries
+### R8 — I/O via standard C++ libraries (`fortran::io` only when needed)
 
-  * `print *, …`            → `std::cout << … << "\n";`
-  * `write(unit, *) …`      → `std::ostream& out = ...; out << … << "\n";`
+**Default to plain standard-library I/O.**  `fortran::io::*` exists
+only for cases where a Fortran edit descriptor can't be expressed
+directly in `std::format`.  Generated code should read like
+hand-written modern C++ for someone who has never seen Fortran.
+
+  * `print *, …`            → `std::cout << … << '\n';`
+  * `write(unit, *) …`      → `out << … << '\n';`
   * `read *, x`             → `std::cin >> x;`
-  * `read(unit, *) x`       → `std::istream& in = ...; in >> x;`
-  * Formatted I/O (`FORMAT` statements)  → `std::format` (C++20) or
-    `fmt::format` — see D5.
-  * File I/O (`open`, `close`)  → `std::ofstream` / `std::ifstream`,
-    held in a unit-number map within the context object (see D2).
+  * `read(unit, *) x`       → `in >> x;`
+  * `print '(I5)', x`       → `std::cout << std::format("{:5d}", x);`
+  * `print '(F10.4)', x`    → `std::cout << std::format("{:10.4f}", x);`
+  * `print '(G12.5)', x`    → `std::cout << fortran::io::fmt_G(x, 12, 5);`
+                              (`G` has no `std::format` equivalent)
+  * File `open` / `close`   → `std::ofstream` / `std::ifstream`
+                              held in the state struct the routine
+                              actually uses (no central unit-number
+                              map unless multiple routines share it)
+
+**Policy:** the emitter first tries to lower a Fortran edit
+descriptor to an inline `std::format` spec.  Only when that fails —
+`G`, `P` scale factors, `BN`/`BZ`, `T*`, `S*`, parenthesized repetition
+groups, `$` carriage control — does it fall back to a
+`fortran::io::fmt_*` helper.  See D5 for details.
 
 ---
 
@@ -391,44 +406,45 @@ consistent:
   * Save struct name → `<Subprogram>Save`?  `<Subprogram>State`?
   * Module namespace name → match Fortran spelling, or lowercase?
 
-### D5 — Formatted I/O **(resolved: `std::format` with complete fidelity)**
+### D5 — Formatted I/O **(resolved: inline `std::format` first, `fortran::io::*` only for descriptors that need fidelity)**
 
-The target is `std::format` (C++20), with the **non-negotiable
-constraint that every Fortran edit descriptor produces byte-identical
-output to what flang would produce at runtime.**
+Goal: generated code reads like plain modern C++.  `fortran::io::*`
+helpers exist only where they have to.
 
-Descriptors that have a direct `std::format` analogue (`I`, `F`, `E`,
-`A`, `L`) translate to the corresponding spec.  Descriptors that don't
-(`G` general format, `P` scale factor, `BN`/`BZ` blank
-interpretation, `T`/`TL`/`TR` tab control, `S`/`SP`/`SS` sign
-control, repetition with parenthesized groups, the dollar-sign
-carriage-control extension, etc.) get implemented as helper functions
-in our runtime support library that internally call `std::format` on
-the pieces they can and hand-format the rest.
+Emitter algorithm for each edit descriptor in a format string:
 
-Concretely the runtime will expose:
+  1. **List-directed (`*` format)** → no formatting, just chain
+     `<<` / `>>` on the standard stream.
+  2. **`std::format`-equivalent descriptor**  (`I`, `F`, `E`,
+     `A`, `L`, `Z`, integer-only `B`, plain `X` spacing) → inline
+     `std::format("{:...}", x)`.  These are the descriptors that
+     `std::format` can match byte-for-byte.
+  3. **Otherwise** — `G` (general), `P` scale factor, `BN`/`BZ`
+     blank interpretation, `T*` tab controls, `S*` sign controls,
+     repetition with parenthesized groups, `$` carriage control →
+     call a `fortran::io::fmt_*` helper.
+
+The runtime exposes only the helpers that group (3) actually needs:
 
 ```cpp
 namespace fortran::io {
-  std::string write_format(std::string_view fortran_format, /* args */);
-  void write_format_to(std::ostream& os,
-                       std::string_view fortran_format, /* args */);
-  // Per-descriptor helpers used by the generated code, e.g.:
-  std::string fmt_F(double value, int w, int d);
-  std::string fmt_E(double value, int w, int d, std::optional<int> e = {});
-  std::string fmt_G(double value, int w, int d, std::optional<int> e = {});
-  // ...
+  std::string fmt_G(double value, int w, int d,
+                    std::optional<int> e = {});           // G edit descriptor
+  std::string fmt_P(double value, int scale, char base,
+                    int w, int d);                        // P scale factor
+  std::string fmt_T(std::string_view buf, int col);       // tab to column
+  // ...as the emitter encounters them.
 }
 ```
 
-A `WRITE(unit, '(F10.4, 1X, A)') x, name` lowers to something like
+So a `WRITE(unit, '(I5, 1X, F10.4)') i, x` lowers to
 
 ```cpp
-out << fortran::io::fmt_F(x, 10, 4) << " " << name;
+out << std::format("{:5d}", i) << ' ' << std::format("{:10.4f}", x) << '\n';
 ```
 
-The runtime library is where fidelity edge-cases live; the generated
-code stays clean.
+with **no** runtime helper call.  Only descriptors that genuinely
+have no `std::format` equivalent reach into `fortran::io::*`.
 
 ### D6 — Modules and `USE`
 

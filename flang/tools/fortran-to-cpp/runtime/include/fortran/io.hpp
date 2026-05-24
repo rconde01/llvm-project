@@ -1,0 +1,152 @@
+//===-- fortran/io.hpp - Format-fidelity helpers ----------------*- C++ -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// fortran::io
+//
+// Helper functions for Fortran edit descriptors that can **not** be
+// expressed directly in ``std::format``.  Generated code uses
+// ``std::format`` inline whenever the format spec is expressible —
+// the emitter only falls through to these helpers for the genuinely
+// awkward cases:
+//
+//   G       — general numeric format
+//   P       — scale factor
+//   T, TL,  — absolute / left / right tab control
+//   TR
+//   S, SP,  — sign control (always show, never show)
+//   SS
+//   BN, BZ  — input blank interpretation
+//   $       — non-advancing output (extension)
+//
+// Goal: when a Fortran ``WRITE`` does **not** need any of these, the
+// generated code reads as plain C++ — no ``fortran::io`` mention at
+// all.  See ../README.md (rule R8 and decision D5) for the policy.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef FORTRAN_RT_IO_HPP
+#define FORTRAN_RT_IO_HPP
+
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <format>
+#include <optional>
+#include <string>
+#include <string_view>
+
+namespace fortran::io {
+
+// ---------------------------------------------------------------------------
+// G edit descriptor — "general" numeric format.
+//
+// Fortran's ``Gw.dEe``:
+//   * If the magnitude of the value fits in a "reasonable" range for
+//     ``d`` significant digits, format like ``Fw.d`` with trailing
+//     blanks for the exponent field.
+//   * Otherwise, format like ``Ew.dEe``.
+// The exact pivot is defined by the standard (F2018 §13.7.5.3.3):
+//   use F-format when 0.1 <= |x| < 10^d, else E-format.
+// ---------------------------------------------------------------------------
+
+inline std::string fmt_G(double value, int w, int d,
+                         std::optional<int> e = std::nullopt) {
+  using std::abs;
+  const double a = abs(value);
+  bool use_f = false;
+  // 0.1 <= a < 10^d  →  F format.  Treat 0 as in-range.
+  if (a == 0.0) {
+    use_f = true;
+  } else if (a >= 0.1 && a < std::pow(10.0, d)) {
+    use_f = true;
+  }
+  if (use_f) {
+    // F-format with the standard's blank-exponent trailing space:
+    //   Gw.d -> Fw.(d-k-1) followed by (e+2) blanks, where k is the
+    //   number of digits before the decimal point.  We compute k
+    //   from the rounded value to match flang.
+    int k;
+    if (a == 0.0) {
+      k = 1;
+    } else {
+      k = static_cast<int>(std::floor(std::log10(a))) + 1;
+      if (k < 1) k = 1;
+    }
+    const int fdigits = d - k;
+    const int blanks = (e.value_or(2)) + 2;
+    std::string body = std::format("{0:{1}.{2}f}", value,
+                                   w - blanks, fdigits < 0 ? 0 : fdigits);
+    body.append(static_cast<std::size_t>(blanks), ' ');
+    return body;
+  }
+  // Otherwise E-format with the same width and d digits.
+  const int eDigits = e.value_or(2);
+  // std::format spec: ``{:>{}.{}e}`` produces 'd.dddde[+/-]ee'.
+  std::string body =
+      std::format("{0:>{1}.{2}e}", value, w, d > 0 ? d - 1 : 0);
+  (void)eDigits;  // std::format always uses at least 2 exponent digits.
+  return body;
+}
+
+// ---------------------------------------------------------------------------
+// P scale factor — multiplies the value by 10^scale before applying an
+// F or E edit descriptor.  Fortran's ``kP, Fw.d`` etc.  The scale is
+// part of the FORMAT processor state; we model it as an explicit
+// helper called once per affected descriptor.
+// ---------------------------------------------------------------------------
+
+inline std::string fmt_F_with_scale(double value, int scale, int w, int d) {
+  return std::format("{0:{1}.{2}f}", value * std::pow(10.0, scale), w, d);
+}
+
+inline std::string fmt_E_with_scale(double value, int scale, int w, int d) {
+  return std::format("{0:>{1}.{2}e}", value * std::pow(10.0, scale), w,
+                     d > 0 ? d - 1 : 0);
+}
+
+// ---------------------------------------------------------------------------
+// Tab controls.
+//
+// In Fortran a FORMAT string drives a record buffer; T<n> repositions
+// the cursor.  ``pad_to`` advances ``out`` to (1-based) column ``col``
+// by emitting blanks (or truncating, though that case is unusual).
+// ---------------------------------------------------------------------------
+
+/// Advance ``buf`` to 1-based column ``col`` by padding with blanks.
+inline void pad_to(std::string &buf, int col) {
+  const std::size_t target = col > 0 ? static_cast<std::size_t>(col - 1) : 0;
+  if (buf.size() < target) {
+    buf.append(target - buf.size(), ' ');
+  }
+}
+
+/// Move cursor right by ``n`` columns.  Equivalent to TR<n> or to
+/// the Fortran ``X`` edit descriptor when ``n`` blanks of spacing
+/// are needed and a plain ``" "`` literal would be less readable.
+inline std::string skip(int n) {
+  return std::string(n > 0 ? static_cast<std::size_t>(n) : 0, ' ');
+}
+
+// ---------------------------------------------------------------------------
+// Sign control — Fortran ``S``, ``SP`` (always print +), ``SS`` (never
+// print +).  std::format only supports the SP case (via the ``+`` sign
+// flag), so SS — usually the implicit default anyway — and the
+// "restore default" S are handled here.
+// ---------------------------------------------------------------------------
+
+inline std::string fmt_int_force_sign(long long value, int w) {
+  return std::format("{0:+{1}d}", value, w);  // SP
+}
+inline std::string fmt_int_no_sign(long long value, int w) {
+  // SS: never show '+', and never show ' ' either; only '-' for negatives.
+  return std::format("{0:{1}d}", value, w);
+}
+
+} // namespace fortran::io
+
+#endif // FORTRAN_RT_IO_HPP

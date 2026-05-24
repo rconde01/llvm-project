@@ -41,4 +41,7 @@ function(add_rt_test name source)
   add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
-add_rt_test(test_array tests/test_array.cpp)
+add_rt_test(test_array  tests/test_array.cpp)
+add_rt_test(test_string tests/test_string.cpp)
+add_rt_test(test_equiv  tests/test_equiv.cpp)
+add_rt_test(test_io     tests/test_io.cpp)
