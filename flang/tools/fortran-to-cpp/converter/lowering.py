@@ -67,6 +67,7 @@ from .ir import (
     IRSelectCase,
     IRStop,
     IRTriplet,
+    IRWhere,
     IRWhile,
 )
 from .transform import map_statement, rename_var
@@ -719,7 +720,52 @@ def _lower_construct(construct: Node) -> IRStatement | None:
         return _lower_do_construct(target)
     if target.kind == "CaseConstruct":
         return _lower_case_construct(target)
+    if target.kind == "WhereConstruct":
+        return _lower_where_construct(target)
     return _unsupported(target, kind=target.kind)
+
+
+def _lower_where_construct(node: Node) -> IRStatement:
+    mask: IRExpr = IRRaw("true")
+    where_body: list[IRStatement] = []
+    elsewhere_body: list[IRStatement] | None = None
+    for child in node.children:
+        if child.kind == "Statement":
+            wcs = child.find_first("WhereConstructStmt")
+            if wcs is not None:
+                e = wcs.find_first("Expr")
+                if e is not None:
+                    mask = _lower_expression(e)
+        elif child.kind == "WhereBodyConstruct":
+            asgn = _lower_where_body(child)
+            if asgn is not None:
+                where_body.append(asgn)
+        elif child.kind in ("Elsewhere", "MaskedElsewhere"):
+            elsewhere_body = []
+            for sub in child.children:
+                if sub.kind == "WhereBodyConstruct":
+                    asgn = _lower_where_body(sub)
+                    if asgn is not None:
+                        elsewhere_body.append(asgn)
+    return IRWhere(
+        mask=mask, where_body=where_body, elsewhere_body=elsewhere_body
+    )
+
+
+def _lower_where_body(wbc: Node) -> IRStatement | None:
+    asgn = wbc.find_first("AssignmentStmt")
+    return _lower_assignment(asgn) if asgn is not None else None
+
+
+def _lower_where_stmt(node: Node) -> IRStatement:
+    mask: IRExpr = IRRaw("true")
+    log = node.first_child("Logical")
+    e = log.find_first("Expr") if log is not None else node.find_first("Expr")
+    if e is not None:
+        mask = _lower_expression(e)
+    asgn = node.find_first("AssignmentStmt")
+    body: list[IRStatement] = [_lower_assignment(asgn)] if asgn is not None else []
+    return IRWhere(mask=mask, where_body=body, elsewhere_body=None)
 
 
 def _lower_action_statement(stmt: Node) -> IRStatement | None:
@@ -759,6 +805,8 @@ def _lower_action_inner(inner: Node) -> IRStatement | None:
             return _lower_allocate(inner)
         case "DeallocateStmt":
             return _lower_deallocate(inner)
+        case "WhereStmt":
+            return _lower_where_stmt(inner)
         case "CallStmt":
             return _lower_call(inner)
         case "ReturnStmt":
@@ -825,6 +873,8 @@ def _expand_array_assignments(sub: IRSubprogram) -> None:
     counter = [0]
 
     def expand(stmt: IRStatement) -> IRStatement:
+        if isinstance(stmt, IRWhere):
+            return _where_loop(stmt, arrays, array_names, counter)
         if not isinstance(stmt, IRAssignment):
             return stmt
         tgt = stmt.target
@@ -839,6 +889,86 @@ def _expand_array_assignments(sub: IRSubprogram) -> None:
         return stmt
 
     sub.body = [map_statement(s, on_stmt=expand) for s in sub.body]
+
+
+def _where_loop(
+    where: IRWhere,
+    arrays: dict[str, IRType],
+    array_names: set[str],
+    counter: list[int],
+) -> IRStatement:
+    """Expand a WHERE into a masked element loop nest.
+
+    Shape (rank, bounds) comes from the first where-body assignment's
+    target array.  Each body assignment and the mask are indexed at the
+    loop variables; the body runs under ``if (mask) ... else ...``.
+    """
+    target_array = None
+    for asgn in where.where_body:
+        if isinstance(asgn, IRAssignment) and isinstance(asgn.target, IRName):
+            if asgn.target.name in arrays:
+                target_array = asgn.target.name
+                break
+    if target_array is None:
+        return _unsupported_stmt("WHERE with no whole-array target")
+
+    atype = arrays[target_array]
+    rank = max(atype.array_rank, 1)
+    idx_vars: list[str] = []
+    for _ in range(rank):
+        counter[0] += 1
+        idx_vars.append(f"_i{counter[0]}")
+    idx_args = tuple(IRName(name=v, fortran=v) for v in idx_vars)
+
+    def index_body(body: list[IRStatement]) -> list[IRStatement]:
+        out: list[IRStatement] = []
+        for asgn in body:
+            if not (
+                isinstance(asgn, IRAssignment)
+                and isinstance(asgn.target, IRName)
+                and asgn.target.name in array_names
+            ):
+                continue
+            out.append(
+                IRAssignment(
+                    target=IRFunctionCall(
+                        callee=asgn.target.name, args=idx_args
+                    ),
+                    value=_index_array_expr(asgn.value, idx_args, array_names),
+                    leading_comments=asgn.leading_comments,
+                    trailing_comments=asgn.trailing_comments,
+                )
+            )
+        return out
+
+    mask_i = _index_array_expr(where.mask, idx_args, array_names)
+    then_body = index_body(where.where_body)
+    else_body = (
+        index_body(where.elsewhere_body)
+        if where.elsewhere_body is not None
+        else None
+    )
+    inner: list[IRStatement] = [
+        IRIf(branches=[(mask_i, then_body)], else_body=else_body)
+    ]
+    loop: list[IRStatement] = inner
+    for k in range(rank):
+        var = idx_vars[k]
+        loop = [
+            IRDo(
+                var=var,
+                lower=IRRaw(f"{target_array}.lbound({k + 1})"),
+                upper=IRRaw(f"{target_array}.ubound({k + 1})"),
+                step=None,
+                body=loop,
+                declare=True,
+            )
+        ]
+    return loop[0]
+
+
+def _unsupported_stmt(note: str) -> IRStatement:
+    return IRUnsupported(kind="WHERE", source_text="", note=note)
 
 
 def _contains_section(expr: IRExpr) -> bool:

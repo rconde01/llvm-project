@@ -357,6 +357,24 @@ class IRDeallocate:
 
 
 @dataclass(slots=True)
+class IRWhere:
+    """``where (mask) ... elsewhere ... end where`` — masked array
+    assignment.
+
+    Transient: the array-expansion pass turns it into a masked element
+    loop (an IRDo nest wrapping an IRIf), so it never reaches the
+    emitter.  ``mask`` is an array-valued logical expression; the
+    bodies are whole-array assignments.
+    """
+
+    mask: IRExpr
+    where_body: list["IRStatement"] = field(default_factory=list)
+    elsewhere_body: list["IRStatement"] | None = None
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class IRReturn:
     value: IRExpr | None = None
     leading_comments: list[Comment] = field(default_factory=list)
