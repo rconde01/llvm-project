@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fortran-to-cpp"
+version = "0.1.0"
+description = "Fortran-to-C++ source-to-source translator built on flang's JSON AST"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0 WITH LLVM-exception" }
+authors = [{ name = "Flang contributors" }]
+dependencies = [
+    "flang-ast",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Compilers",
+    "Typing :: Typed",
+]
+
+[project.scripts]
+fortran-to-cpp = "converter.__main__:main"
+
+[tool.setuptools]
+packages = ["converter"]

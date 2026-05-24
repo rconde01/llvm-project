@@ -231,8 +231,11 @@ class Node:
         """Iterate over direct children."""
         return iter(self.children)
 
-    def __len__(self) -> int:
-        return len(self.children)
+    # NB: we deliberately do **not** define ``__len__`` or ``__bool__``.
+    # A Node is conceptually a single AST node, not a container; in
+    # particular a leaf node (children == []) must remain *truthy* so
+    # idioms like ``a or b`` and ``if maybe_node:`` work as expected.
+    # Use ``len(node.children)`` for the child count.
 
     def __getitem__(self, index: int) -> Node:
         return self.children[index]
