@@ -973,6 +973,8 @@ def _lower_construct(construct: Node) -> IRStatement | None:
         return _lower_associate_construct(target)
     if target.kind == "BlockConstruct":
         return _lower_block_construct(target)
+    if target.kind == "ForallConstruct":
+        return _lower_forall(target)
     return _unsupported(target, kind=target.kind)
 
 
@@ -1113,6 +1115,8 @@ def _lower_action_inner(inner: Node) -> IRStatement | None:
             return IRExit()
         case "IfStmt":
             return _lower_if_stmt(inner)
+        case "ForallStmt":
+            return _lower_forall(inner)
     return None
 
 
@@ -1955,6 +1959,15 @@ def _lower_do_concurrent(concurrent: Node, body_block: Node | None) -> IRStateme
     """
     controls = list(concurrent.find_all("ConcurrentControl"))
     body: list[IRStatement] = _lower_block(body_block) if body_block else []
+    return _wrap_concurrent_loops(controls, body, "empty do concurrent")
+
+
+def _wrap_concurrent_loops(
+    controls: list[Node], body: list[IRStatement], what: str
+) -> IRStatement:
+    """Wrap ``body`` in nested counted loops, one per ConcurrentControl
+    (``name = lo:hi[:stride]``).  Leftmost control is the outermost loop;
+    each index is construct-local (declared in the for-init)."""
     for ctrl in reversed(controls):
         name = ctrl.find_first("Name")
         var = _safe_name(name.fortran) if name is not None and name.fortran else "i"
@@ -1976,7 +1989,27 @@ def _lower_do_concurrent(concurrent: Node, body_block: Node | None) -> IRStateme
                 declare=True,
             )
         ]
-    return body[0] if body else _unsupported_stmt("empty do concurrent")
+    return body[0] if body else _unsupported_stmt(what)
+
+
+def _lower_forall(node: Node) -> IRStatement:
+    """Lower a FORALL statement or construct to nested counted loops.
+
+    FORALL evaluates each masked assignment for all index tuples; for the
+    common dependence-free case this is exactly a loop nest.  The index
+    set is a ConcurrentHeader (same shape as ``do concurrent``)."""
+    header = node.find_first("ConcurrentHeader")
+    controls = list(header.find_all("ConcurrentControl")) if header else []
+    body: list[IRStatement] = []
+    for asgn in node.find_all("ForallAssignmentStmt"):
+        inner = asgn.first_child("AssignmentStmt")
+        if inner is not None:
+            body.append(_lower_assignment(inner))
+            continue
+        ptr = asgn.first_child("PointerAssignmentStmt")
+        if ptr is not None:
+            body.append(_lower_pointer_assignment(ptr))
+    return _wrap_concurrent_loops(controls, body, "empty forall")
 
 
 def _lower_case_construct(node: Node) -> IRStatement:
