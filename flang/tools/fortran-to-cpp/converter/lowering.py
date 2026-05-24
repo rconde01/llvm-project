@@ -366,9 +366,28 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
 
 
 def _lower_specification(spec_part: Node) -> list[IRLocal]:
+    """Lower a SpecificationPart's declarations into IRLocal entries.
+
+    Walk Statement-wrappers (rather than directly drilling into
+    TypeDeclarationStmt) so the wrapping Statement's leading and
+    trailing comments survive — they would otherwise be lost.
+    """
     out: list[IRLocal] = []
-    for stmt in spec_part.find_all("TypeDeclarationStmt"):
-        out.extend(_lower_type_declaration(stmt))
+    for stmt in spec_part.find_all("Statement"):
+        decl = stmt.find_first("TypeDeclarationStmt")
+        if decl is None:
+            continue
+        leading = list(stmt.leading_comments)
+        trailing = list(stmt.trailing_comments)
+        locals_ = _lower_type_declaration(decl)
+        # Apply the wrapping Statement's comments to the first / last
+        # local in the group respectively, so multi-name declarations
+        # ``integer :: a, b, c   ! triple of counters`` keep the
+        # comment paired with the right line.
+        if locals_:
+            locals_[0].leading_comments = leading
+            locals_[-1].trailing_comments = trailing
+        out.extend(locals_)
     return out
 
 

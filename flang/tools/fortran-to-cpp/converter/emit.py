@@ -140,6 +140,7 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
 
 def _emit_local(out: StringIO, loc: IRLocal, *, indent: int) -> None:
     pad = "  " * indent
+    _emit_comment_block(out, loc.leading_comments, indent=indent)
     prefix = "constexpr " if loc.is_parameter else ""
     if loc.type.is_array and loc.initializer is None:
         # ``fortran::Array<T, R> name({ext1, ext2, ...});`` — using the
@@ -153,7 +154,8 @@ def _emit_local(out: StringIO, loc: IRLocal, *, indent: int) -> None:
         else:
             extents = ", ".join(loc.type.array_extent_exprs)
             out.write(f"{{{extents}}}")
-        out.write(");\n")
+        out.write(");")
+        _emit_trailing(out, loc.trailing_comments)
         return
     out.write(f"{pad}{prefix}{loc.type.cpp} {loc.name}")
     if loc.initializer is not None:
@@ -162,7 +164,8 @@ def _emit_local(out: StringIO, loc: IRLocal, *, indent: int) -> None:
         # Match Fortran's IMPLICIT-typed locals (zero-initialized
         # under most compilers when -finit-{integer,real} is set).
         out.write("{}")
-    out.write(";\n")
+    out.write(";")
+    _emit_trailing(out, loc.trailing_comments)
 
 
 def _ends_with_return(body: list[IRStatement]) -> bool:

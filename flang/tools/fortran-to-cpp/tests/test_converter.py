@@ -286,6 +286,28 @@ class EmitTests(unittest.TestCase):
         self.assertIn("} else {", cpp)
         # Trailing comment preservation.
         self.assertIn("// accumulate", cpp)
+        # Leading comment above declarations should survive too (was
+        # dropped in v1; the lowering pass now plumbs the wrapping
+        # Statement's comments through onto IRLocal).
+        self.assertIn("// Compute 1+2+...+n.", cpp)
+
+    def test_declaration_comments_preserved(self) -> None:
+        cpp = self._convert(
+            "program demo\n"
+            "  ! head note\n"
+            "  integer :: i  ! count\n"
+            "  i = 0\n"
+            "end program\n"
+        )
+        self.assertIn("// head note", cpp)
+        # Trailing comment lands on the declaration line.
+        decl_idx = cpp.find("std::int32_t i{};")
+        trailing_idx = cpp.find("// count")
+        self.assertGreater(decl_idx, -1)
+        self.assertGreater(trailing_idx, decl_idx)
+        # They should be on the same line, so no newline between them.
+        between = cpp[decl_idx:trailing_idx]
+        self.assertNotIn("\n", between)
 
     def test_subroutine_with_inout_args(self) -> None:
         cpp = self._convert(PARAMS_F90)

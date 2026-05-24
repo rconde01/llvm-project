@@ -248,6 +248,9 @@ class IRLocal:
     leading_comments: list[Comment] = field(default_factory=list)
     """Comments that appeared immediately above this declaration."""
 
+    trailing_comments: list[Comment] = field(default_factory=list)
+    """Inline comments on the same line as the declaration."""
+
 
 @dataclass(slots=True)
 class IRParameter:
