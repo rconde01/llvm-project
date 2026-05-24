@@ -38,7 +38,7 @@ from .ir import (
     IRType,
     IRWhile,
 )
-from .transform import map_statement, rename_var
+from .transform import map_expr, map_statement, rename_var
 
 
 # ---------------------------------------------------------------------------
@@ -51,10 +51,105 @@ def plumb_state(tu: IRTranslationUnit) -> None:
 
     Mutates the translation unit in place.
     """
+    _build_module_structs(tu)
     _build_common_structs(tu)
     _build_save_structs(tu)
     _propagate_state_parameters(tu)
     _rewrite_call_sites(tu)
+
+
+# ---------------------------------------------------------------------------
+# Module variables
+# ---------------------------------------------------------------------------
+
+
+def _collect_names(body: list[IRStatement]) -> set[str]:
+    """Return the set of every IRName referenced anywhere in ``body``."""
+    names: set[str] = set()
+
+    def note(expr: IRExpr) -> IRExpr:
+        if isinstance(expr, IRName):
+            names.add(expr.name)
+        return expr
+
+    for stmt in body:
+        map_statement(stmt, on_expr=lambda e: map_expr(e, note))
+    return names
+
+
+def _build_module_structs(tu: IRTranslationUnit) -> None:
+    """Turn each module's variables into a shared state struct and
+    thread it through every subprogram that references those vars.
+
+    A subprogram "references" a module variable when:
+      * it is a procedure of that module (implicit host association), or
+      * it ``use``s the module,
+    AND the variable name appears in its body and is not shadowed by a
+    local / parameter of the same name.
+    """
+    modules = [m for m in tu.modules if m.variables]
+    if not modules:
+        return
+    var_names_by_module = {
+        m.fortran_name: {v.name for v in m.variables} for m in modules
+    }
+    module_by_name = {m.fortran_name: m for m in modules}
+
+    for sub in tu.subprograms:
+        # Which modules' variables are in scope for this subprogram?
+        in_scope: list[str] = []
+        if sub.parent_module in module_by_name:
+            in_scope.append(sub.parent_module)  # type: ignore[arg-type]
+        for m in sub.used_modules:
+            if m in module_by_name and m not in in_scope:
+                in_scope.append(m)
+        if not in_scope:
+            continue
+
+        local_names = (
+            {loc.name for loc in sub.locals}
+            | {p.name for p in sub.parameters}
+        )
+        referenced = _collect_names(sub.body)
+
+        for mod_name in in_scope:
+            module = module_by_name[mod_name]
+            # Module vars this subprogram actually touches (not shadowed).
+            touched = [
+                v
+                for v in module.variables
+                if v.name in referenced and v.name not in local_names
+            ]
+            if not touched:
+                continue
+            param_name = mod_name + "_module"
+            if sub.kind == "main":
+                if not any(loc.name == param_name for loc in sub.locals):
+                    sub.locals.insert(
+                        0,
+                        IRLocal(
+                            name=param_name,
+                            type=IRType(cpp=module.cpp_type,
+                                        fortran=module.cpp_type),
+                            initializer=IRRaw("{}"),
+                        ),
+                    )
+            else:
+                if not any(
+                    sp.struct_type == module.cpp_type for sp in sub.state_params
+                ):
+                    sub.state_params.append(
+                        IRStateParam(
+                            name=param_name,
+                            struct_type=module.cpp_type,
+                            owned_by="__module_" + mod_name,
+                        )
+                    )
+            for v in touched:
+                sub.body = [
+                    _rewrite_to_field_access(s, v.name, param_name)
+                    for s in sub.body
+                ]
 
 
 # ---------------------------------------------------------------------------
@@ -264,9 +359,11 @@ def _propagate_state_parameters(tu: IRTranslationUnit) -> None:
 
 def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
     by_name = {s.name: s for s in tu.subprograms}
-    all_struct_types = {
-        sp.struct_type for s in tu.subprograms for sp in s.state_params
-    } | {st.cpp_type for st in tu.common_structs}
+    all_struct_types = (
+        {sp.struct_type for s in tu.subprograms for sp in s.state_params}
+        | {st.cpp_type for st in tu.common_structs}
+        | {m.cpp_type for m in tu.modules}
+    )
     for caller in tu.subprograms:
         # For each callee state param, decide what to pass:
         #   * If caller has a matching state_param of its own, forward

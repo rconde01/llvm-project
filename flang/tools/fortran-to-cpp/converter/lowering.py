@@ -58,6 +58,7 @@ from .ir import (
     IRDerivedType,
     IRExit,
     IRMember,
+    IRModule,
     IRSelectCase,
     IRWhile,
 )
@@ -85,14 +86,62 @@ def lower_program(
             if dt is not None and dt.fortran_name not in seen_types:
                 seen_types.add(dt.fortran_name)
                 tu.derived_types.append(dt)
-    for node in root.walk():
-        if node.kind == "MainProgram":
-            tu.subprograms.append(_lower_main_program(node))
-        elif node.kind == "FunctionSubprogram":
-            tu.subprograms.append(_lower_function(node))
-        elif node.kind == "SubroutineSubprogram":
-            tu.subprograms.append(_lower_subroutine(node))
+    _collect_units(root, tu, parent_module=None)
     return tu
+
+
+def _collect_units(
+    node: Node, tu: IRTranslationUnit, *, parent_module: str | None
+) -> None:
+    """Recursively collect modules and subprograms, tracking the
+    enclosing module so module procedures know their host."""
+    for child in node.children:
+        kind = child.kind
+        if kind == "Module":
+            _collect_module(child, tu)
+        elif kind == "MainProgram":
+            tu.subprograms.append(_lower_main_program(child))
+        elif kind == "FunctionSubprogram":
+            sub = _lower_function(child)
+            sub.parent_module = parent_module
+            tu.subprograms.append(sub)
+        elif kind == "SubroutineSubprogram":
+            sub = _lower_subroutine(child)
+            sub.parent_module = parent_module
+            tu.subprograms.append(sub)
+        else:
+            # Descend through containers (Program, ProgramUnit,
+            # ModuleSubprogramPart, ModuleSubprogram, ...).
+            _collect_units(child, tu, parent_module=parent_module)
+
+
+def _collect_module(mod_node: Node, tu: IRTranslationUnit) -> None:
+    name = ""
+    for stmt in mod_node.children:
+        if stmt.kind == "Statement":
+            ms = stmt.find_first("ModuleStmt")
+            if ms is not None:
+                nm = ms.find_first("Name")
+                if nm is not None and nm.fortran:
+                    name = nm.fortran
+                break
+    if not name:
+        return
+    module = IRModule(
+        cpp_type=camelcase(name) + "Module",
+        fortran_name=name.lower(),
+    )
+    # Module-level variable declarations live in the module's direct
+    # SpecificationPart.
+    for child in mod_node.children:
+        if child.kind == "SpecificationPart":
+            module.variables = _lower_specification(child)
+    tu.modules.append(module)
+    # Module procedures (in the CONTAINS section) are collected with
+    # this module as their host.
+    for child in mod_node.children:
+        if child.kind == "ModuleSubprogramPart":
+            _collect_units(child, tu, parent_module=module.fortran_name)
 
 
 def _lower_derived_type_def(node: Node) -> "IRDerivedType | None":
@@ -326,8 +375,19 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
         if child.kind == "SpecificationPart":
             sub.locals.extend(_lower_specification(child))
             sub.common_uses.extend(_lower_common_statements(child))
+            sub.used_modules.extend(_lower_use_statements(child))
         elif child.kind == "ExecutionPart":
             sub.body.extend(_lower_execution(child))
+
+
+def _lower_use_statements(spec_part: Node) -> list[str]:
+    """Collect the module names imported by ``use`` statements."""
+    out: list[str] = []
+    for use in spec_part.find_all("UseStmt"):
+        name = use.find_first("Name")
+        if name is not None and name.fortran:
+            out.append(name.fortran.lower())
+    return out
 
 
 def _lower_common_statements(spec_part: Node) -> list[IRCommonUse]:

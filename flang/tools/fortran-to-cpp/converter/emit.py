@@ -57,9 +57,10 @@ def emit_translation_unit(tu: IRTranslationUnit) -> str:
     out = StringIO()
     _emit_file_header(out, tu)
     _emit_includes(out, tu)
-    # User-defined types first, then state structs, so everything below
-    # can reference them by name.
+    # User-defined types first, then module / state structs, so
+    # everything below can reference them by name.
     _emit_derived_types(out, tu)
+    _emit_module_structs(out, tu)
     _emit_state_structs(out, tu)
     for sub in tu.subprograms:
         out.write("\n")
@@ -76,6 +77,18 @@ def _emit_derived_types(out: StringIO, tu: IRTranslationUnit) -> None:
         out.write(f"\nstruct {dt.cpp_type} {{\n")
         for field_local in dt.fields:
             _emit_local(out, field_local, indent=1)
+        out.write("};\n")
+
+
+def _emit_module_structs(out: StringIO, tu: IRTranslationUnit) -> None:
+    modules = [m for m in tu.modules if m.variables]
+    if not modules:
+        return
+    out.write("\n// ---- Module state structs (module variables) ----\n")
+    for m in modules:
+        out.write(f"\nstruct {m.cpp_type} {{\n")
+        for var in m.variables:
+            _emit_local(out, var, indent=1)
         out.write("};\n")
 
 

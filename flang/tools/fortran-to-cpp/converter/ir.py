@@ -404,6 +404,15 @@ class IRSubprogram:
     order.  Populated by lowering; consumed by the state plumbing
     pass which synthesizes one shared struct per block name."""
 
+    parent_module: str | None = None
+    """Canonical name of the module that hosts this subprogram (for
+    module procedures), else None.  A module procedure implicitly
+    accesses its host module's variables."""
+
+    used_modules: list[str] = field(default_factory=list)
+    """Module names this subprogram pulls in via ``use`` (canonical
+    lower-case), in source order."""
+
     state_params: list[IRStateParam] = field(default_factory=list)
     """State parameters this subprogram receives from its callers
     (own save struct + transitively-required ones from callees).
@@ -436,6 +445,24 @@ class IRDerivedType:
 
 
 @dataclass(slots=True)
+class IRModule:
+    """A Fortran ``module`` — its variables become a shared state struct.
+
+    Module *procedures* are lowered into ``IRTranslationUnit.subprograms``
+    like any other subprogram, with ``parent_module`` set.
+    """
+
+    cpp_type: str
+    """Generated state-struct name (e.g. ``"ConfigModule"``)."""
+
+    fortran_name: str
+    """Original module name (lower-cased)."""
+
+    variables: list[IRLocal] = field(default_factory=list)
+    """Module-level variable declarations (with any initializers)."""
+
+
+@dataclass(slots=True)
 class IRTranslationUnit:
     """The top-level container — everything emitted into one .cpp file."""
 
@@ -444,6 +471,9 @@ class IRTranslationUnit:
 
     derived_types: list[IRDerivedType] = field(default_factory=list)
     """User-defined types, emitted as structs ahead of everything."""
+
+    modules: list[IRModule] = field(default_factory=list)
+    """Modules with variables; each becomes a shared state struct."""
 
     common_structs: list[IRStateStruct] = field(default_factory=list)
     """One shared struct per common-block name, synthesized by the
