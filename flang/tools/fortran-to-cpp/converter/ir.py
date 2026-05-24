@@ -240,6 +240,10 @@ class IRPrint:
     items: list[IRExpr] = field(default_factory=list)
     stream: str = "std::cout"  # C++ stream expression
     format: str | None = None
+    # When set, this is an *internal file* write: the formatted record is
+    # built and assigned to this (character-variable) lvalue rather than
+    # written to ``stream``.
+    internal_unit: "IRExpr | None" = None
     leading_comments: list[Comment] = field(default_factory=list)
     trailing_comments: list[Comment] = field(default_factory=list)
 
@@ -254,6 +258,9 @@ class IRRead:
 
     items: list[IRExpr] = field(default_factory=list)
     stream: str = "std::cin"
+    # When set, this is an *internal file* read: items are parsed from
+    # this (character-variable) lvalue rather than from ``stream``.
+    internal_unit: "IRExpr | None" = None
     leading_comments: list[Comment] = field(default_factory=list)
     trailing_comments: list[Comment] = field(default_factory=list)
 

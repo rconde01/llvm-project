@@ -153,8 +153,8 @@ def _emit_includes(out: StringIO, tu: IRTranslationUnit) -> None:
     # for inline std::format calls).  Once the IR carries enough info
     # we can prune this on a per-translation-unit basis.
     includes = {"<algorithm>", "<cmath>", "<cstdint>", "<cstdlib>",
-                "<format>", "<iostream>", "<optional>", "<string_view>",
-                '"fortran/runtime.hpp"'}
+                "<format>", "<iostream>", "<optional>", "<sstream>",
+                "<string_view>", '"fortran/runtime.hpp"'}
     for inc in sorted(includes):
         out.write(f"#include {inc}\n")
     out.write("\nusing namespace std::string_view_literals;\n")
@@ -298,6 +298,9 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         _emit_trailing(out, stmt.trailing_comments)
         return
     if isinstance(stmt, IRPrint):
+        if stmt.internal_unit is not None:
+            _emit_internal_write(out, stmt, indent=indent)
+            return
         if any(isinstance(it, IRImpliedDo) for it in stmt.items):
             _emit_io_with_implied_do(out, stmt, write=True, indent=indent)
             return
@@ -315,6 +318,9 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         _emit_trailing(out, stmt.trailing_comments)
         return
     if isinstance(stmt, IRRead):
+        if stmt.internal_unit is not None:
+            _emit_internal_read(out, stmt, indent=indent)
+            return
         if any(isinstance(it, IRImpliedDo) for it in stmt.items):
             _emit_io_with_implied_do(out, stmt, write=False, indent=indent)
             return
@@ -439,6 +445,47 @@ def _emit_formatted_chunks(out: StringIO, stmt: "IRPrint") -> None:
         return
     for chunk in chunks:
         out.write(f" << {chunk}")
+
+
+def _emit_internal_write(out: StringIO, stmt: "IRPrint", *, indent: int) -> None:
+    """Internal-file write: build the formatted record in a string stream
+    and assign it to the character-variable unit (no trailing newline —
+    a scalar character unit holds exactly one record)."""
+    pad = "  " * indent
+    _emit_comment_block(out, stmt.leading_comments, indent=indent)
+    unit = _render_expr(stmt.internal_unit)
+    out.write(f"{pad}{{\n")
+    out.write(f"{pad}  std::ostringstream _ftn_os;\n")
+    out.write(f"{pad}  _ftn_os")
+    if stmt.format is not None:
+        _emit_formatted_chunks(out, stmt)
+    else:
+        for i, item in enumerate(stmt.items):
+            if i > 0:
+                out.write(" << ' '")
+            out.write(f" << {_render_expr(item)}")
+    out.write(";\n")
+    out.write(f"{pad}  {unit} = _ftn_os.str();\n")
+    out.write(f"{pad}}}")
+    _emit_trailing(out, stmt.trailing_comments)
+
+
+def _emit_internal_read(out: StringIO, stmt: "IRRead", *, indent: int) -> None:
+    """Internal-file read: parse items from the character-variable unit
+    via a string stream."""
+    pad = "  " * indent
+    _emit_comment_block(out, stmt.leading_comments, indent=indent)
+    unit = _render_expr(stmt.internal_unit)
+    out.write(f"{pad}{{\n")
+    out.write(
+        f"{pad}  std::istringstream _ftn_is{{std::string{{std::string_view{{{unit}}}}}}};\n"
+    )
+    out.write(f"{pad}  _ftn_is")
+    for item in stmt.items:
+        out.write(f" >> {_render_expr(item)}")
+    out.write(";\n")
+    out.write(f"{pad}}}")
+    _emit_trailing(out, stmt.trailing_comments)
 
 
 def _emit_io_with_implied_do(out, stmt, *, write: bool, indent: int) -> None:

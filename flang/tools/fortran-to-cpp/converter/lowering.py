@@ -1607,8 +1607,15 @@ def _lower_write(node: Node) -> IRPrint:
             expr = sub.find_first("Expr")
             if expr is not None:
                 items.append(_lower_expression(expr))
-    stream = _stream_for_unit(node.first_child("IoUnit"))
-    return IRPrint(items=items, stream=stream, format=_extract_format(node))
+    io_unit = node.first_child("IoUnit")
+    internal = _internal_file_unit(io_unit)
+    stream = _stream_for_unit(io_unit)
+    return IRPrint(
+        items=items,
+        stream=stream,
+        format=_extract_format(node),
+        internal_unit=internal,
+    )
 
 
 def _lower_read(node: Node) -> IRRead:
@@ -1618,8 +1625,26 @@ def _lower_read(node: Node) -> IRRead:
     chain on the stream (``*`` / ``5`` -> std::cin).
     """
     items = _lower_io_items(node, "InputItem", "InputImpliedDo")
-    stream = _input_stream_for_unit(node.first_child("IoUnit"))
-    return IRRead(items=items, stream=stream)
+    io_unit = node.first_child("IoUnit")
+    internal = _internal_file_unit(io_unit)
+    stream = _input_stream_for_unit(io_unit)
+    return IRRead(items=items, stream=stream, internal_unit=internal)
+
+
+def _internal_file_unit(io_unit: Node | None) -> IRExpr | None:
+    """If the I/O unit is a character variable (an *internal file*),
+    return its lowered lvalue expression; otherwise ``None``.
+
+    An internal-file unit appears as a ``Variable`` child of ``IoUnit``
+    (``write(buf, fmt) ...``), versus a ``Star`` or ``IntLiteralConstant``
+    for ``*`` / numbered external units.
+    """
+    if io_unit is None:
+        return None
+    var = io_unit.first_child("Variable")
+    if var is None:
+        return None
+    return _lower_expression(var)
 
 
 def _input_stream_for_unit(io_unit: Node | None) -> str:

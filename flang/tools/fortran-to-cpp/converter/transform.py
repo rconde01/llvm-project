@@ -194,6 +194,11 @@ def _map_statement_children(
             items=[_e(a, on_expr) for a in stmt.items],
             stream=stmt.stream,
             format=stmt.format,
+            internal_unit=(
+                _e(stmt.internal_unit, on_expr)
+                if stmt.internal_unit is not None
+                else None
+            ),
             leading_comments=stmt.leading_comments,
             trailing_comments=stmt.trailing_comments,
         )
@@ -201,6 +206,11 @@ def _map_statement_children(
         return IRRead(
             items=[_e(a, on_expr) for a in stmt.items],
             stream=stmt.stream,
+            internal_unit=(
+                _e(stmt.internal_unit, on_expr)
+                if stmt.internal_unit is not None
+                else None
+            ),
             leading_comments=stmt.leading_comments,
             trailing_comments=stmt.trailing_comments,
         )
