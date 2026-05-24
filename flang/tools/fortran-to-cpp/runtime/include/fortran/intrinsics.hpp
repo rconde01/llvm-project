@@ -26,8 +26,72 @@
 
 #include <cstddef>
 #include <limits>
+#include <string>
+#include <string_view>
 
 namespace fortran {
+
+// ---- Character intrinsics -------------------------------------------------
+// These accept anything convertible to std::string_view, so they work on
+// FortranString<N> (implicit conversion), string_view literals, and
+// std::string alike.
+
+inline index_t len(std::string_view s) noexcept {
+  return static_cast<index_t>(s.size());
+}
+
+inline index_t len_trim(std::string_view s) noexcept {
+  std::size_t e = s.size();
+  while (e > 0 && s[e - 1] == ' ') {
+    --e;
+  }
+  return static_cast<index_t>(e);
+}
+
+/// TRIM — the string without trailing blanks (a non-owning view).
+inline std::string_view trim(std::string_view s) noexcept {
+  return s.substr(0, static_cast<std::size_t>(len_trim(s)));
+}
+
+/// INDEX(string, substring) — 1-based position of the first occurrence,
+/// or 0 if not present (matching Fortran).
+inline index_t index(std::string_view s, std::string_view sub) noexcept {
+  const auto pos = s.find(sub);
+  return pos == std::string_view::npos ? 0 : static_cast<index_t>(pos) + 1;
+}
+
+/// ADJUSTL — move leading blanks to the end (length preserved).
+inline std::string adjustl(std::string_view s) {
+  std::size_t i = 0;
+  while (i < s.size() && s[i] == ' ') {
+    ++i;
+  }
+  std::string r(s.substr(i));
+  r.append(i, ' ');
+  return r;
+}
+
+/// ADJUSTR — move trailing blanks to the front (length preserved).
+inline std::string adjustr(std::string_view s) {
+  std::size_t e = s.size();
+  while (e > 0 && s[e - 1] == ' ') {
+    --e;
+  }
+  std::string r(s.size() - e, ' ');
+  r.append(s.substr(0, e));
+  return r;
+}
+
+/// Character concatenation (Fortran ``//``).  Returns a fresh string so
+/// it composes with any mix of FortranString / string_view / literal
+/// operands.
+inline std::string concat(std::string_view a, std::string_view b) {
+  std::string r;
+  r.reserve(a.size() + b.size());
+  r.append(a);
+  r.append(b);
+  return r;
+}
 
 // ---- Inquiry intrinsics ---------------------------------------------------
 

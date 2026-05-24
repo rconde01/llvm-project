@@ -1089,19 +1089,9 @@ def _extract_format(node: Node) -> str | None:
 
 
 def _lower_call(node: Node) -> IRCall:
-    callee = ""
-    for n in node.walk():
-        if n.kind == "ProcedureDesignator":
-            name = n.find_first("Name")
-            if name and name.fortran:
-                callee = name.fortran.lower()
-                break
-    args: list[IRExpr] = []
-    for arg in node.find_all("ActualArgSpec"):
-        expr = arg.find_first("Expr")
-        if expr is not None:
-            args.append(_lower_expression(expr))
-    return IRCall(callee=callee, args=args)
+    call = node.first_child("Call") or node
+    callee = _callee_name(call)
+    return IRCall(callee=callee, args=_lower_actual_args(call))
 
 
 def _lower_if_construct(node: Node) -> IRIf:
@@ -1459,26 +1449,48 @@ _INTRINSIC_MAP: dict[str, str] = {
     "minval": "fortran::minval", "count": "fortran::count",
     "any": "fortran::any", "all": "fortran::all",
     "dot_product": "fortran::dot_product",
+    # Character intrinsics.
+    "trim": "fortran::trim", "len": "fortran::len",
+    "len_trim": "fortran::len_trim", "index": "fortran::index",
+    "adjustl": "fortran::adjustl", "adjustr": "fortran::adjustr",
 }
 
 
 def _lower_function_reference(node: Node) -> IRFunctionCall:
-    callee = ""
-    for n in node.walk():
-        if n.kind == "ProcedureDesignator":
-            name = n.find_first("Name")
-            if name and name.fortran:
-                callee = name.fortran.lower()
-                break
-    args: list[IRExpr] = []
-    for arg in node.find_all("ActualArgSpec"):
-        expr = arg.find_first("Expr") or next(
-            (c for c in arg.children if c.kind != "Keyword"), None
-        )
-        if expr is not None:
-            args.append(_lower_expression(expr))
+    call = node.first_child("Call") or node
+    callee = _callee_name(call)
+    args = _lower_actual_args(call)
     cpp_callee = _INTRINSIC_MAP.get(callee, callee)
     return IRFunctionCall(callee=cpp_callee, args=tuple(args))
+
+
+def _callee_name(call: Node) -> str:
+    """Pull the procedure name out of a Call's ProcedureDesignator."""
+    desig = call.first_child("ProcedureDesignator")
+    if desig is not None:
+        name = desig.find_first("Name")
+        if name is not None and name.fortran:
+            return name.fortran.lower()
+    return ""
+
+
+def _lower_actual_args(call: Node) -> list[IRExpr]:
+    """Lower the *direct* actual arguments of a Call.
+
+    Uses direct children (not a recursive search) so a nested call's
+    own arguments aren't mistaken for this call's.
+    """
+    args: list[IRExpr] = []
+    for arg in call.children_of_kind("ActualArgSpec"):
+        expr = arg.find_first("Expr")
+        if expr is None:
+            # The arg may be an ActualArg wrapper around the expression.
+            actual = arg.first_child("ActualArg")
+            if actual is not None:
+                expr = actual.find_first("Expr")
+        if expr is not None:
+            args.append(_lower_expression(expr))
+    return args
 
 
 # Map Expr operator subclasses to the C++ operator we want to emit.
@@ -1492,8 +1504,8 @@ _BINARY_OP_MAP: dict[str, str] = {
     "EQ": "==", "NE": "!=",
     "AND": "&&", "OR": "||",
     "EQV": "==", "NEQV": "!=",
-    "Power": "**",         # placeholder — emitter rewrites to std::pow
-    "Concat": "+",         # FortranString supports operator+
+    "Power": "**",         # placeholder — lowered to std::pow
+    "Concat": "//",        # placeholder — lowered to fortran::concat
     "DefinedBinary": "?",  # user-defined op — TODO, emit as call
 }
 
@@ -1515,6 +1527,8 @@ def _lower_expr_operator(node: Node) -> IRExpr:
             rhs = _lower_expression(operands[1])
             if kind == "Power":
                 return IRFunctionCall(callee="std::pow", args=(lhs, rhs))
+            if kind == "Concat":
+                return IRFunctionCall(callee="fortran::concat", args=(lhs, rhs))
             return IRBinaryOp(op=_BINARY_OP_MAP[kind], lhs=lhs, rhs=rhs)
     if kind in _UNARY_OP_MAP:
         operand = next((c for c in node.children if c.kind == "Expr"), None)
