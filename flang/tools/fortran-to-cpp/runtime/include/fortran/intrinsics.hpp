@@ -369,6 +369,49 @@ template <typename A> auto cshift(const A &a, index_t shift) {
   return r;
 }
 
+/// EOSHIFT — end-off shift of a rank-1 array by ``shift`` positions
+/// (positive shifts toward lower indices, per Fortran).  Vacated
+/// positions are filled with ``boundary`` (default-constructed value:
+/// zero / false / blank).
+template <typename A>
+auto eoshift(const A &a, index_t shift,
+             typename A::value_type boundary = typename A::value_type{}) {
+  using T = typename A::value_type;
+  const index_t n = a.size();
+  Array<T, 1> r({n});
+  for (index_t i = 0; i < n; ++i) {
+    const index_t src = i + shift;
+    r.data()[i] = (src >= 0 && src < n) ? a.data()[src] : boundary;
+  }
+  return r;
+}
+
+/// SPREAD — replicate a rank-1 ``source`` ``ncopies`` times along a new
+/// dimension inserted at position ``dim`` (1 or 2), giving a rank-2
+/// result.  ``dim == 1`` -> shape (ncopies, n); ``dim == 2`` -> shape
+/// (n, ncopies).
+template <typename A>
+auto spread(const A &source, int dim, index_t ncopies) {
+  using T = typename A::value_type;
+  const index_t n = source.size();
+  if (dim == 1) {
+    Array<T, 2> r({ncopies, n});
+    for (index_t j = 1; j <= n; ++j) {
+      for (index_t i = 1; i <= ncopies; ++i) {
+        r(i, j) = source.data()[j - 1];
+      }
+    }
+    return r;
+  }
+  Array<T, 2> r({n, ncopies});
+  for (index_t j = 1; j <= ncopies; ++j) {
+    for (index_t i = 1; i <= n; ++i) {
+      r(i, j) = source.data()[i - 1];
+    }
+  }
+  return r;
+}
+
 /// TRANSPOSE of a rank-2 array.
 template <typename A>
 Array<typename A::value_type, 2> transpose(const A &a) {

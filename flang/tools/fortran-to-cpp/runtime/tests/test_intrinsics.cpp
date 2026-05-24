@@ -129,4 +129,50 @@ TEST(reductions_over_2d) {
   CHECK_EQ(fortran::maxval(m), 6);
 }
 
+TEST(eoshift_rank1_default_boundary) {
+  Array<int, 1> a({3});
+  a(1) = 1;
+  a(2) = 2;
+  a(3) = 3;
+  auto r = fortran::eoshift(a, 1); // [2, 3, 0]
+  CHECK_EQ(r(1), 2);
+  CHECK_EQ(r(2), 3);
+  CHECK_EQ(r(3), 0);
+}
+
+TEST(eoshift_negative_shift_with_boundary) {
+  Array<int, 1> a({3});
+  a(1) = 1;
+  a(2) = 2;
+  a(3) = 3;
+  auto r = fortran::eoshift(a, -1, 9); // [9, 1, 2]
+  CHECK_EQ(r(1), 9);
+  CHECK_EQ(r(2), 1);
+  CHECK_EQ(r(3), 2);
+}
+
+TEST(spread_dim1_replicates_rows) {
+  Array<int, 1> v({3});
+  v(1) = 1;
+  v(2) = 2;
+  v(3) = 3;
+  auto m = fortran::spread(v, 1, 2); // shape (2, 3), m(i, j) = v(j)
+  CHECK_EQ(m.extent(1), 2);
+  CHECK_EQ(m.extent(2), 3);
+  CHECK_EQ(m(1, 2), 2);
+  CHECK_EQ(m(2, 3), 3);
+}
+
+TEST(spread_dim2_replicates_cols) {
+  Array<int, 1> v({3});
+  v(1) = 1;
+  v(2) = 2;
+  v(3) = 3;
+  auto m = fortran::spread(v, 2, 4); // shape (3, 4), m(i, j) = v(i)
+  CHECK_EQ(m.extent(1), 3);
+  CHECK_EQ(m.extent(2), 4);
+  CHECK_EQ(m(2, 1), 2);
+  CHECK_EQ(m(3, 4), 3);
+}
+
 FORTRAN_RT_TEST_MAIN()
