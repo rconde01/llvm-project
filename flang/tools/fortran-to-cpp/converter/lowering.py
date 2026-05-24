@@ -114,10 +114,19 @@ def _safe_name(fortran: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Maps a (raw lower-case) callee name to its ordered, safe-named dummy
+# argument names.  Built per translation unit and consulted when a call
+# uses keyword arguments, so ``f(b=2, a=1)`` can be reordered to the
+# positional ``f(1, 2)`` the C++ signature expects.
+_SIGNATURES: dict[str, list[str]] = {}
+
+
 def lower_program(
     root: Node, *, source_file: str | None = None
 ) -> IRTranslationUnit:
     """Lower an annotated, dependency-ordered parse tree to IR."""
+    global _SIGNATURES
+    _SIGNATURES = _build_signatures(root)
     tu = IRTranslationUnit(source_file=source_file)
     # Derived-type definitions first (deduplicated by name) so the
     # emitter can declare the structs ahead of everything that uses
@@ -133,6 +142,22 @@ def lower_program(
     return tu
 
 
+def _build_signatures(root: Node) -> dict[str, list[str]]:
+    """Map every subprogram's (raw lower-case) name to its ordered,
+    safe-named dummy-argument names, for keyword-argument reordering."""
+    sigs: dict[str, list[str]] = {}
+    for node in root.walk():
+        if node.kind == "SubroutineSubprogram":
+            name = _extract_subprogram_name(node, "SubroutineStmt")
+            if name:
+                sigs[name.lower()] = _extract_subroutine_dummy_args(node)
+        elif node.kind == "FunctionSubprogram":
+            name = _extract_subprogram_name(node, "FunctionStmt")
+            if name:
+                sigs[name.lower()] = _extract_function_dummy_args(node)
+    return sigs
+
+
 def _collect_units(
     node: Node, tu: IRTranslationUnit, *, parent_module: str | None
 ) -> None:
@@ -143,18 +168,33 @@ def _collect_units(
         if kind == "Module":
             _collect_module(child, tu)
         elif kind == "MainProgram":
+            # Internal procedures (the program's CONTAINS section) become
+            # free functions; collect them first so a callee is emitted
+            # before its host caller.
+            _collect_internal_subprograms(child, tu, parent_module)
             tu.subprograms.append(_lower_main_program(child))
         elif kind == "FunctionSubprogram":
+            _collect_internal_subprograms(child, tu, parent_module)
             sub = _lower_function(child)
             sub.parent_module = parent_module
             tu.subprograms.append(sub)
         elif kind == "SubroutineSubprogram":
+            _collect_internal_subprograms(child, tu, parent_module)
             sub = _lower_subroutine(child)
             sub.parent_module = parent_module
             tu.subprograms.append(sub)
         else:
             # Descend through containers (Program, ProgramUnit,
             # ModuleSubprogramPart, ModuleSubprogram, ...).
+            _collect_units(child, tu, parent_module=parent_module)
+
+
+def _collect_internal_subprograms(
+    host: Node, tu: IRTranslationUnit, parent_module: str | None
+) -> None:
+    """Collect a host unit's ``InternalSubprogramPart`` procedures."""
+    for child in host.children:
+        if child.kind == "InternalSubprogramPart":
             _collect_units(child, tu, parent_module=parent_module)
 
 
@@ -1717,7 +1757,8 @@ def _lower_call(node: Node) -> IRCall:
     call = node.first_child("Call") or node
     callee, leading = _resolve_callee(call)
     return IRCall(
-        callee=_safe_name(callee), args=leading + _lower_actual_args(call)
+        callee=_safe_name(callee),
+        args=_resolve_call_args(callee, leading, call),
     )
 
 
@@ -2229,7 +2270,7 @@ _REAL_KIND_CPP = {None: "float", 4: "float", 8: "double"}
 def _lower_function_reference(node: Node) -> IRExpr:
     call = node.first_child("Call") or node
     callee, leading = _resolve_callee(call)
-    args = leading + _lower_actual_args(call)
+    args = _resolve_call_args(callee, leading, call)
 
     # present(x) -> x.has_value() (x is a std::optional param).  Use the
     # raw optional name; the deref pass won't touch this IRRaw.
@@ -2333,13 +2374,25 @@ def _resolve_callee(call: Node) -> tuple[str, list[IRExpr]]:
 
 
 def _lower_actual_args(call: Node) -> list[IRExpr]:
-    """Lower the *direct* actual arguments of a Call.
+    """Lower the *direct* actual arguments of a Call (positional order).
 
     Uses direct children (not a recursive search) so a nested call's
     own arguments aren't mistaken for this call's.
     """
-    args: list[IRExpr] = []
+    return [expr for _, expr in _lower_actual_arg_pairs(call)]
+
+
+def _lower_actual_arg_pairs(call: Node) -> list[tuple[str | None, IRExpr]]:
+    """Like :func:`_lower_actual_args` but pairs each argument with its
+    keyword name (or ``None`` for a positional argument)."""
+    pairs: list[tuple[str | None, IRExpr]] = []
     for arg in call.children_of_kind("ActualArgSpec"):
+        kw: str | None = None
+        kw_node = arg.first_child("Keyword")
+        if kw_node is not None:
+            kw_name = kw_node.find_first("Name")
+            if kw_name is not None and kw_name.fortran:
+                kw = _safe_name(kw_name.fortran)
         expr = arg.find_first("Expr")
         if expr is None:
             # The arg may be an ActualArg wrapper around the expression.
@@ -2347,8 +2400,49 @@ def _lower_actual_args(call: Node) -> list[IRExpr]:
             if actual is not None:
                 expr = actual.find_first("Expr")
         if expr is not None:
-            args.append(_lower_expression(expr))
-    return args
+            pairs.append((kw, _lower_expression(expr)))
+    return pairs
+
+
+def _resolve_call_args(callee: str, leading: list[IRExpr], call: Node) -> list[IRExpr]:
+    """Build the final positional argument list for a call, applying
+    keyword-argument reordering against the callee's known signature.
+
+    ``leading`` holds any synthetic leading arguments (the passed object
+    of a type-bound call); the callee's first dummy corresponds to it and
+    is dropped before matching the explicit keyword arguments.
+    """
+    pairs = _lower_actual_arg_pairs(call)
+    dummies = _SIGNATURES.get(callee, [])
+    if leading and dummies:
+        dummies = dummies[1:]
+    return leading + _reorder_keyword_args(pairs, dummies)
+
+
+def _reorder_keyword_args(
+    pairs: list[tuple[str | None, IRExpr]], dummies: list[str]
+) -> list[IRExpr]:
+    """Reorder ``(keyword, expr)`` pairs into positional order using the
+    callee's ordered dummy names.  Positional args fill slots left to
+    right; keyword args drop into their named slot.  With no keywords (or
+    an unknown callee) the original positional order is preserved."""
+    if not any(kw is not None for kw, _ in pairs) or not dummies:
+        return [expr for _, expr in pairs]
+    slots: list[IRExpr | None] = [None] * len(dummies)
+    extra: list[IRExpr] = []
+    pos = 0
+    for kw, expr in pairs:
+        if kw is None:
+            if pos < len(slots):
+                slots[pos] = expr
+            else:
+                extra.append(expr)
+            pos += 1
+        elif kw in dummies:
+            slots[dummies.index(kw)] = expr
+        else:
+            extra.append(expr)
+    return [expr for expr in slots if expr is not None] + extra
 
 
 # Map Expr operator subclasses to the C++ operator we want to emit.
