@@ -293,6 +293,20 @@ inline std::ostream &operator<<(std::ostream &os, const FortranString<N> &s) {
   return os.write(s.data(), static_cast<std::streamsize>(N));
 }
 
+// ---- Character <-> integer intrinsics -------------------------------------
+
+/// ACHAR(i) / CHAR(i): the length-1 character whose code is ``i``.
+inline FortranString<1> achar(int i) noexcept {
+  const char ch = static_cast<char>(i);
+  return FortranString<1>(std::string_view{&ch, 1});
+}
+
+/// IACHAR(c) / ICHAR(c): the integer code of the first character of
+/// ``c`` (0 for an empty string).
+inline int ichar(std::string_view c) noexcept {
+  return c.empty() ? 0 : static_cast<int>(static_cast<unsigned char>(c[0]));
+}
+
 } // namespace fortran
 
 #endif // FORTRAN_RT_STRING_HPP

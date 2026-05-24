@@ -35,6 +35,41 @@
 
 namespace fortran {
 
+// ---- Bit-manipulation intrinsics ------------------------------------------
+
+template <typename T> T iand(T a, T b) noexcept { return a & b; }
+template <typename T> T ior(T a, T b) noexcept { return a | b; }
+template <typename T> T ieor(T a, T b) noexcept { return a ^ b; }
+
+/// ISHFT(i, shift): logical shift — left for ``shift > 0``, right for
+/// ``shift < 0`` — operating on the unsigned bit pattern so vacated bits
+/// fill with zero.
+template <typename T> T ishft(T i, int shift) noexcept {
+  using U = std::make_unsigned_t<T>;
+  constexpr int bits = static_cast<int>(sizeof(T) * 8);
+  U u = static_cast<U>(i);
+  if (shift >= 0) {
+    u = shift >= bits ? U{0} : static_cast<U>(u << shift);
+  } else {
+    const int s = -shift;
+    u = s >= bits ? U{0} : static_cast<U>(u >> s);
+  }
+  return static_cast<T>(u);
+}
+
+/// BTEST(i, pos): true if bit ``pos`` (0-based) of ``i`` is set.
+template <typename T> bool btest(T i, int pos) noexcept {
+  return ((static_cast<std::make_unsigned_t<T>>(i) >> pos) & 1u) != 0u;
+}
+
+/// IBSET / IBCLR: return ``i`` with bit ``pos`` set / cleared.
+template <typename T> T ibset(T i, int pos) noexcept {
+  return static_cast<T>(i | (T{1} << pos));
+}
+template <typename T> T ibclr(T i, int pos) noexcept {
+  return static_cast<T>(i & ~(T{1} << pos));
+}
+
 // ---- Array constructor ----------------------------------------------------
 
 /// Build a 1-based rank-1 Array from a braced element list — the

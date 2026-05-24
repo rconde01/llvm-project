@@ -175,4 +175,23 @@ TEST(spread_dim2_replicates_cols) {
   CHECK_EQ(m(3, 4), 3);
 }
 
+TEST(bit_logical_ops) {
+  CHECK_EQ(fortran::iand(12, 10), 8);
+  CHECK_EQ(fortran::ior(12, 10), 14);
+  CHECK_EQ(fortran::ieor(12, 10), 6);
+}
+
+TEST(ishft_left_and_right) {
+  CHECK_EQ(fortran::ishft(1, 3), 8);
+  CHECK_EQ(fortran::ishft(16, -2), 4);
+  CHECK_EQ(fortran::ishft(1, 100), 0); // shift beyond width -> 0
+}
+
+TEST(btest_ibset_ibclr) {
+  CHECK(fortran::btest(5, 0));   // 101b, bit 0 set
+  CHECK(!fortran::btest(5, 1));  // bit 1 clear
+  CHECK_EQ(fortran::ibset(0, 4), 16);
+  CHECK_EQ(fortran::ibclr(15, 1), 13);
+}
+
 FORTRAN_RT_TEST_MAIN()

@@ -163,4 +163,12 @@ TEST(can_pass_to_function_taking_string_view) {
   CHECK_EQ(check(s.trimmed()), 2u);
 }
 
+TEST(achar_and_ichar_round_trip) {
+  auto a = fortran::achar(65); // 'A'
+  CHECK(a == "A");
+  CHECK_EQ(fortran::ichar("A"), 65);
+  CHECK_EQ(fortran::ichar(fortran::achar(90)), 90); // 'Z'
+  CHECK_EQ(fortran::ichar(std::string_view{}), 0);  // empty -> 0
+}
+
 FORTRAN_RT_TEST_MAIN()

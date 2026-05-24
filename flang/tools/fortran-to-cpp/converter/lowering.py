@@ -2319,6 +2319,13 @@ _INTRINSIC_MAP: dict[str, str] = {
     "atan2": "std::atan2", "sinh": "std::sinh", "cosh": "std::cosh",
     "tanh": "std::tanh", "floor": "std::floor", "ceiling": "std::ceil",
     "min": "std::min", "max": "std::max",
+    # Bit-manipulation intrinsics.
+    "iand": "fortran::iand", "ior": "fortran::ior", "ieor": "fortran::ieor",
+    "ishft": "fortran::ishft", "btest": "fortran::btest",
+    "ibset": "fortran::ibset", "ibclr": "fortran::ibclr",
+    # Character <-> integer intrinsics.
+    "achar": "fortran::achar", "char": "fortran::achar",
+    "iachar": "fortran::ichar", "ichar": "fortran::ichar",
     "mod": "fortran::mod",       # generic: integer % or std::fmod
     "modulo": "fortran::modulo",  # remainder with sign of divisor
     "merge": "fortran::merge",

@@ -733,6 +733,11 @@ def _render_expr(expr: IRExpr) -> str:
         return f"{expr.op}{_render_expr(expr.operand)}"
     if isinstance(expr, IRFunctionCall):
         args = ", ".join(_render_expr(a) for a in expr.args)
+        # std::max / std::min take exactly two arguments (a third is read
+        # as a comparator); Fortran MAX/MIN are variadic, so for >2 args
+        # use the braced initializer-list overload std::max({a, b, c}).
+        if expr.callee in ("std::max", "std::min") and len(expr.args) > 2:
+            return f"{expr.callee}({{{args}}})"
         return f"{expr.callee}({args})"
     if isinstance(expr, IRMember):
         return f"{_render_expr(expr.base)}.{expr.field}"
