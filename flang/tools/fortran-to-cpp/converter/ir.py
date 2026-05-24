@@ -42,6 +42,19 @@ class IRType:
     is_integer: bool = False
     is_real: bool = False
 
+    array_rank: int = 0
+    """For ``is_array`` types, the number of dimensions."""
+
+    array_extent_exprs: tuple[str, ...] = ()
+    """Per-dimension extent expressions, as rendered C++ text."""
+
+    array_lower_bound_exprs: tuple[str, ...] = ()
+    """Per-dimension lower-bound expressions when explicit, else empty
+    (extent-only constructor is used and lower bounds default to 1)."""
+
+    element_type_cpp: str = ""
+    """For arrays, the element type spelling (e.g. ``"std::int32_t"``)."""
+
 
 # ---------------------------------------------------------------------------
 # Expressions
@@ -245,7 +258,20 @@ class IRParameter:
     intent: Literal["in", "out", "inout"] = "inout"
 
     def cpp_param_decl(self) -> str:
-        """C++ parameter declaration string."""
+        """C++ parameter declaration string.
+
+        Scalars use a reference (``T&`` or ``const T&`` per intent).
+        Arrays use ``fortran::ArrayRef`` by value — ArrayRef is a
+        small, non-owning view, so the caller's owning ``Array``
+        converts implicitly and the function body can take slices
+        without making the caller's storage assumption explicit.
+        """
+        if self.type.is_array:
+            const_q = "const " if self.intent == "in" else ""
+            return (
+                f"fortran::ArrayRef<{const_q}{self.type.element_type_cpp}, "
+                f"{self.type.array_rank}> {self.name}"
+            )
         if self.intent == "in":
             return f"const {self.type.cpp}& {self.name}"
         return f"{self.type.cpp}& {self.name}"

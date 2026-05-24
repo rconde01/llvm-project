@@ -141,6 +141,20 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
 def _emit_local(out: StringIO, loc: IRLocal, *, indent: int) -> None:
     pad = "  " * indent
     prefix = "constexpr " if loc.is_parameter else ""
+    if loc.type.is_array and loc.initializer is None:
+        # ``fortran::Array<T, R> name({ext1, ext2, ...});`` — using the
+        # extent-only constructor when no explicit lower bounds were
+        # given, and the (lower-bounds, extents) constructor otherwise.
+        out.write(f"{pad}{prefix}{loc.type.cpp} {loc.name}(")
+        if loc.type.array_lower_bound_exprs:
+            lowers = ", ".join(loc.type.array_lower_bound_exprs)
+            extents = ", ".join(loc.type.array_extent_exprs)
+            out.write(f"{{{lowers}}}, {{{extents}}}")
+        else:
+            extents = ", ".join(loc.type.array_extent_exprs)
+            out.write(f"{{{extents}}}")
+        out.write(");\n")
+        return
     out.write(f"{pad}{prefix}{loc.type.cpp} {loc.name}")
     if loc.initializer is not None:
         out.write(f" = {_render_expr(loc.initializer)}")

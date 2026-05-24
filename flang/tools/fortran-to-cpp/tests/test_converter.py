@@ -187,6 +187,50 @@ end program
 """
 
 
+ARRAY_F90 = """\
+program arr
+  integer :: a(10), b(0:9), c(3, 4)
+  integer :: i, j, total
+  do i = 1, 3
+    do j = 1, 4
+      c(i, j) = i * 10 + j
+    end do
+  end do
+  total = 0
+  do i = 1, 3
+    do j = 1, 4
+      total = total + c(i, j)
+    end do
+  end do
+  do i = 1, 10
+    a(i) = i*i
+  end do
+  print *, "a5:", a(5), "total:", total
+end program
+"""
+
+
+ARRAY_PARAM_F90 = """\
+subroutine fill(a, n)
+  integer, intent(in) :: n
+  integer, intent(out) :: a(n)
+  integer :: i
+  do i = 1, n
+    a(i) = i*i
+  end do
+end subroutine
+
+program demo
+  integer :: a(5)
+  integer :: i
+  call fill(a, 5)
+  do i = 1, 5
+    print *, a(i)
+  end do
+end program
+"""
+
+
 PARAMS_F90 = """\
 subroutine swap(a, b)
   integer, intent(inout) :: a, b
@@ -265,6 +309,28 @@ class EmitTests(unittest.TestCase):
         # ``sqrt`` is a Fortran intrinsic; we route it to <cmath>.
         self.assertIn("std::sqrt(", cpp)
 
+    def test_array_declaration_uses_fortran_array(self) -> None:
+        cpp = self._convert(ARRAY_F90)
+        # 1-D array with default bound -> extents-only constructor.
+        self.assertIn("fortran::Array<std::int32_t, 1> a({10});", cpp)
+        # Explicit lower bound -> (lower, extent) constructor.
+        self.assertIn("fortran::Array<std::int32_t, 1> b({0}", cpp)
+        # 2-D array.
+        self.assertIn("fortran::Array<std::int32_t, 2> c({3, 4});", cpp)
+
+    def test_array_index_translates_to_call_operator(self) -> None:
+        cpp = self._convert(ARRAY_F90)
+        self.assertIn("a(i) = i * i;", cpp)
+        self.assertIn("c(i, j) = i * 10 + j;", cpp)
+
+    def test_array_parameter_becomes_arrayref(self) -> None:
+        cpp = self._convert(ARRAY_PARAM_F90)
+        # intent(out) array -> mutable ArrayRef
+        self.assertIn(
+            "fortran::ArrayRef<std::int32_t, 1> a", cpp,
+        )
+        self.assertNotIn("fortran::Array<std::int32_t, 1>& a", cpp)
+
 
 # ---------------------------------------------------------------------------
 # Compile-and-run end-to-end
@@ -325,6 +391,20 @@ class CompileAndRunTests(unittest.TestCase):
         self.assertIn("7", out)
         self.assertIn("3", out)
         self.assertIn("5", out)
+
+    def test_array_program_runs(self) -> None:
+        out = self._compile_and_run(ARRAY_F90)
+        # a(5) = 25; total = sum_{i=1..3,j=1..4} (i*10+j) = 270
+        self.assertIn("a5: 25", out)
+        self.assertIn("total: 270", out)
+
+    def test_array_parameter_program_runs(self) -> None:
+        out = self._compile_and_run(ARRAY_PARAM_F90)
+        self.assertIn("1", out)
+        self.assertIn("4", out)
+        self.assertIn("9", out)
+        self.assertIn("16", out)
+        self.assertIn("25", out)
 
 
 if __name__ == "__main__":

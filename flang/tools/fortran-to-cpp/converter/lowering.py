@@ -382,6 +382,7 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
     is_parameter = False
     is_save = False
     intent: Literal["in", "out", "inout"] | None = None
+    shared_array_spec: Node | None = None
     for attr in decl.find_all("AttrSpec"):
         if attr.source and "PARAMETER" in attr.source.text.upper():
             is_parameter = True
@@ -390,6 +391,11 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
         intent_node = attr.find_first("IntentSpec")
         if intent_node is not None:
             intent = _extract_intent(intent_node)
+        # ``dimension(...)`` AttrSpec applies its ArraySpec to every
+        # EntityDecl in the statement that doesn't carry its own.
+        arr = attr.find_first("ArraySpec")
+        if arr is not None:
+            shared_array_spec = arr
 
     out: list[IRLocal] = []
     for entity in decl.children:
@@ -404,10 +410,15 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
             expr = init.find_first("Expr") or init.find_first("ConstantExpr")
             if expr is not None:
                 initializer = _lower_expression(expr)
+        per_entity_array = entity.first_child("ArraySpec")
+        array_spec = per_entity_array if per_entity_array is not None else shared_array_spec
+        loc_type = (
+            _make_array_type(ir_type, array_spec) if array_spec else ir_type
+        )
         out.append(
             IRLocal(
                 name=name_node.fortran.lower(),
-                type=ir_type,
+                type=loc_type,
                 initializer=initializer,
                 is_parameter=is_parameter,
                 is_save=is_save,
@@ -415,6 +426,100 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
             )
         )
     return out
+
+
+def _make_array_type(element_type: IRType, array_spec: Node) -> IRType:
+    """Wrap ``element_type`` in ``fortran::Array<T, Rank>`` with
+    extent / lower-bound expressions extracted from ``array_spec``."""
+    extents: list[str] = []
+    lowers: list[str] = []
+    has_explicit_lower = False
+    for shape in array_spec.children:
+        if shape.kind == "ExplicitShapeSpec":
+            lo, hi = _lower_explicit_shape(shape)
+            if lo is not None:
+                lowers.append(lo)
+                has_explicit_lower = True
+            else:
+                lowers.append("1")
+            extents.append(hi)
+        elif shape.kind in (
+            "AssumedShapeSpec",
+            "DeferredShapeSpec",
+            "AssumedSizeSpec",
+        ):
+            # Unsupported for now; the user will get a TODO when the
+            # emitted code fails to compile.
+            extents.append(f"/* TODO: {shape.kind} */ 0")
+            lowers.append("1")
+    rank = len(extents)
+    return IRType(
+        cpp=f"fortran::Array<{element_type.cpp}, {rank}>",
+        fortran=f"{element_type.fortran}, dimension({len(extents)})",
+        is_array=True,
+        array_rank=rank,
+        array_extent_exprs=tuple(extents),
+        array_lower_bound_exprs=tuple(lowers) if has_explicit_lower else (),
+        element_type_cpp=element_type.cpp,
+        is_integer=element_type.is_integer,
+        is_real=element_type.is_real,
+        is_logical=element_type.is_logical,
+        is_character=element_type.is_character,
+    )
+
+
+def _lower_explicit_shape(shape: Node) -> tuple[str | None, str]:
+    """Return ``(lower_cpp, upper_or_extent_cpp)`` for an ExplicitShapeSpec.
+
+    Fortran's ``a(10)`` has no lower bound (defaults to 1) and an
+    upper bound of 10, so the extent is 10.  ``a(0:9)`` has an
+    explicit lower of 0 and upper of 9, so the extent is 10.  We
+    pass the *extent* to ``fortran::Array``, but keep the lower bound
+    separate so the constructor can use the (lower, extent) form.
+    """
+    exprs = list(shape.find_all("SpecificationExpr"))
+    if not exprs:
+        return None, "0"
+    if len(exprs) == 1:
+        # ``a(N)`` — upper only, extent == N, lower == 1.
+        upper = _render_spec_expr(exprs[0])
+        return None, upper
+    # ``a(lo:hi)`` — both bounds given.  Extent = hi - lo + 1.
+    lower = _render_spec_expr(exprs[0])
+    upper = _render_spec_expr(exprs[1])
+    extent = f"({upper}) - ({lower}) + 1"
+    return lower, extent
+
+
+def _render_spec_expr(node: Node) -> str:
+    """Lower a ``SpecificationExpr`` to a C++ expression string."""
+    inner = node.find_first("Expr")
+    if inner is None:
+        return "0"
+    return _render_expr_inline(_lower_expression(inner))
+
+
+def _render_expr_inline(expr: IRExpr) -> str:
+    """Render an IRExpr to C++ text — duplicates the emitter's
+    rendering for use during lowering.  Kept here to avoid importing
+    the emitter (which would create a cycle).
+    """
+    if isinstance(expr, IRLiteral):
+        return expr.cpp_text
+    if isinstance(expr, IRName):
+        return expr.name
+    if isinstance(expr, IRBinaryOp):
+        return f"{_render_expr_inline(expr.lhs)} {expr.op} {_render_expr_inline(expr.rhs)}"
+    if isinstance(expr, IRUnaryOp):
+        if expr.op == "()":
+            return f"({_render_expr_inline(expr.operand)})"
+        return f"{expr.op}{_render_expr_inline(expr.operand)}"
+    if isinstance(expr, IRFunctionCall):
+        args = ", ".join(_render_expr_inline(a) for a in expr.args)
+        return f"{expr.callee}({args})"
+    if isinstance(expr, IRRaw):
+        return expr.text
+    return "/* ? */"
 
 
 def _extract_intent(
@@ -668,9 +773,40 @@ def _lower_expression(node: Node) -> IRExpr:
             return _lower_logical_literal(target)
         case "FunctionReference":
             return _lower_function_reference(target)
+        case "ArrayElement":
+            return _lower_array_element(target)
     if target.kind in _BINARY_OP_MAP or target.kind in _UNARY_OP_MAP:
         return _lower_expr_operator(target)
     return _expr_raw(node)
+
+
+def _lower_array_element(node: Node) -> IRExpr:
+    """Translate ``a(i, j, k)`` to a call on the C++ Array object.
+
+    fortran::Array overloads ``operator()`` with exactly the same
+    arity / 1-based indexing as Fortran, so the translation is one
+    IRFunctionCall whose callee is the array name and whose args are
+    the lowered subscripts.
+    """
+    # First child is an inner DataRef that resolves to the array name.
+    array_name = ""
+    data_ref = node.first_child("DataRef")
+    if data_ref is not None:
+        name = data_ref.find_first("Name")
+        if name is not None and name.fortran:
+            array_name = name.fortran.lower()
+    subscripts: list[IRExpr] = []
+    for sub in node.children_of_kind("SectionSubscript"):
+        # A SectionSubscript wraps either a single integer expression
+        # (element access) or a SubscriptTriplet (slice).  For now we
+        # only handle the element-access form.
+        triplet = sub.find_first("SubscriptTriplet")
+        if triplet is not None:
+            return _expr_raw(node)  # TODO: array slicing
+        expr = sub.find_first("Expr")
+        if expr is not None:
+            subscripts.append(_lower_expression(expr))
+    return IRFunctionCall(callee=array_name, args=tuple(subscripts))
 
 
 def _lower_name(node: Node) -> IRName:
