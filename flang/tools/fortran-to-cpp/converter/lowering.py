@@ -853,7 +853,15 @@ _NON_ELEMENTAL: frozenset[str] = frozenset(
         "fortran::minval", "fortran::count", "fortran::any",
         "fortran::all", "fortran::dot_product", "fortran::size",
         "fortran::lbound", "fortran::ubound",
+        "fortran::matmul", "fortran::transpose",
     }
+)
+
+# Intrinsics that return a whole array.  ``c = matmul(a, b)`` must NOT
+# be expanded into an element loop (you can't index the call result);
+# it stays a move-assignment of the returned Array.
+_ARRAY_RETURNING: frozenset[str] = frozenset(
+    {"fortran::matmul", "fortran::transpose"}
 )
 
 
@@ -883,6 +891,13 @@ def _expand_array_assignments(sub: IRSubprogram) -> None:
             loop = _section_assignment_loop(stmt, arrays, array_names, counter)
             return loop if loop is not None else stmt
         if isinstance(tgt, IRName) and tgt.name in arrays:
+            # An array-returning intrinsic (matmul/transpose) stays a
+            # whole-array move-assignment, not an element loop.
+            if (
+                isinstance(stmt.value, IRFunctionCall)
+                and stmt.value.callee in _ARRAY_RETURNING
+            ):
+                return stmt
             return _array_assignment_loop(
                 stmt, arrays[tgt.name], array_names, counter
             )
@@ -1759,6 +1774,7 @@ _INTRINSIC_MAP: dict[str, str] = {
     "minval": "fortran::minval", "count": "fortran::count",
     "any": "fortran::any", "all": "fortran::all",
     "dot_product": "fortran::dot_product",
+    "matmul": "fortran::matmul", "transpose": "fortran::transpose",
     # Character intrinsics.
     "trim": "fortran::trim", "len": "fortran::len",
     "len_trim": "fortran::len_trim", "index": "fortran::index",

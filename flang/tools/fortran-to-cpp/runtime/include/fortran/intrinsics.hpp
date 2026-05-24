@@ -195,6 +195,64 @@ template <typename A> bool all(const A &a) {
   return result;
 }
 
+// ---- MATMUL / TRANSPOSE (array-returning) ---------------------------------
+
+/// MATMUL — matrix*matrix, matrix*vector, or vector*matrix.  Returns a
+/// freshly-allocated, 1-based Array of the appropriate rank.
+template <typename A, typename B> auto matmul(const A &a, const B &b) {
+  using T = typename A::value_type;
+  if constexpr (A::rank == 2 && B::rank == 2) {
+    const index_t m = a.extent(1), kd = a.extent(2), n = b.extent(2);
+    Array<T, 2> r({m, n});
+    for (index_t j = 1; j <= n; ++j) {
+      for (index_t i = 1; i <= m; ++i) {
+        T s{};
+        for (index_t k = 1; k <= kd; ++k) {
+          s += a(i, k) * b(k, j);
+        }
+        r(i, j) = s;
+      }
+    }
+    return r;
+  } else if constexpr (A::rank == 2 && B::rank == 1) {
+    const index_t m = a.extent(1), kd = a.extent(2);
+    Array<T, 1> r({m});
+    for (index_t i = 1; i <= m; ++i) {
+      T s{};
+      for (index_t k = 1; k <= kd; ++k) {
+        s += a(i, k) * b(k);
+      }
+      r(i) = s;
+    }
+    return r;
+  } else { // rank-1 * rank-2
+    const index_t kd = a.extent(1), n = b.extent(2);
+    Array<T, 1> r({n});
+    for (index_t j = 1; j <= n; ++j) {
+      T s{};
+      for (index_t k = 1; k <= kd; ++k) {
+        s += a(k) * b(k, j);
+      }
+      r(j) = s;
+    }
+    return r;
+  }
+}
+
+/// TRANSPOSE of a rank-2 array.
+template <typename A>
+Array<typename A::value_type, 2> transpose(const A &a) {
+  using T = typename A::value_type;
+  const index_t m = a.extent(1), n = a.extent(2);
+  Array<T, 2> r({n, m});
+  for (index_t j = 1; j <= n; ++j) {
+    for (index_t i = 1; i <= m; ++i) {
+      r(j, i) = a(i, j);
+    }
+  }
+  return r;
+}
+
 /// DOT_PRODUCT of two rank-1 arrays.  Iterates both in lockstep by
 /// flat element order (valid for the column-major contiguous case the
 /// translator produces).

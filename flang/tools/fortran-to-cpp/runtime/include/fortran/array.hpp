@@ -141,6 +141,7 @@ public:
   using value_type = T;
   using extent_array = std::array<index_t, Rank>;
   using lower_array = std::array<index_t, Rank>;
+  static constexpr std::size_t rank = Rank;
 
   /// Default-constructed array is empty (size() == 0).  Indexing it is UB
   /// (or throws in checked mode) — provided so generated code can declare

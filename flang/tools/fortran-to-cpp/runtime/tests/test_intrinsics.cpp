@@ -74,6 +74,49 @@ TEST(reductions_work_on_strided_ref) {
   CHECK_EQ(fortran::maxval(r), 3);
 }
 
+TEST(matmul_matrix_matrix) {
+  // a (2x3) * b (3x2) = c (2x2)
+  Array<int, 2> a({2, 3});
+  Array<int, 2> b({3, 2});
+  int v = 1;
+  for (int j = 1; j <= 3; ++j)
+    for (int i = 1; i <= 2; ++i)
+      a(i, j) = (i - 1) * 3 + j; // [[1,2,3],[4,5,6]]
+  // b = transpose(a) = [[1,4],[2,5],[3,6]]
+  for (int i = 1; i <= 2; ++i)
+    for (int j = 1; j <= 3; ++j)
+      b(j, i) = a(i, j);
+  auto c = fortran::matmul(a, b);
+  CHECK_EQ(c.extent(1), 2);
+  CHECK_EQ(c.extent(2), 2);
+  CHECK_EQ(c(1, 1), 1 + 4 + 9);
+  CHECK_EQ(c(2, 2), 16 + 25 + 36);
+}
+
+TEST(matmul_matrix_vector) {
+  Array<int, 2> a({2, 2});
+  Array<int, 1> x({2});
+  a(1, 1) = 1; a(1, 2) = 2; a(2, 1) = 3; a(2, 2) = 4;
+  x(1) = 5; x(2) = 6;
+  auto y = fortran::matmul(a, x); // [1*5+2*6, 3*5+4*6] = [17, 39]
+  CHECK_EQ(y.size(), 2);
+  CHECK_EQ(y(1), 17);
+  CHECK_EQ(y(2), 39);
+}
+
+TEST(transpose_2d) {
+  Array<int, 2> a({2, 3});
+  int v = 1;
+  for (int j = 1; j <= 3; ++j)
+    for (int i = 1; i <= 2; ++i)
+      a(i, j) = v++;
+  auto t = fortran::transpose(a);
+  CHECK_EQ(t.extent(1), 3);
+  CHECK_EQ(t.extent(2), 2);
+  CHECK_EQ(t(1, 2), a(2, 1));
+  CHECK_EQ(t(3, 1), a(1, 3));
+}
+
 TEST(reductions_over_2d) {
   Array<int, 2> m({2, 3});
   int v = 1;

@@ -49,6 +49,7 @@ public:
   using value_type = std::remove_cv_t<T>;
   using extent_array = std::array<index_t, Rank>;
   using lower_array = std::array<index_t, Rank>;
+  static constexpr std::size_t rank = Rank;
 
   /// Empty / null view.  Indexing is undefined.
   ArrayRef() noexcept = default;
