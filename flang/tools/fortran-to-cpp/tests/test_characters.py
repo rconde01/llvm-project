@@ -36,7 +36,51 @@ end program
 """
 
 
+REPEAT_SCAN_F90 = """\
+program rsv
+  character(len=10) :: s
+  integer :: n, v
+  s = repeat('ab', 3)
+  n = scan('hello', 'l')
+  v = verify('hello', 'helo')
+  print *, trim(s), n, v
+end program
+"""
+
+
 def _convert(src: str) -> str:
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".f90", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(src)
+        tmp = Path(f.name)
+    try:
+        return convert_file(tmp)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _compile_and_run(src: str) -> str:
+    with tempfile.TemporaryDirectory() as d:
+        cpp = Path(d) / "out.cpp"
+        cpp.write_text(convert_file_to_tmp(src))
+        exe = Path(d) / "out"
+        cxx = (
+            shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+        )
+        assert cxx is not None
+        comp = subprocess.run(
+            [cxx, "-std=c++20", "-I", str(RUNTIME_INCLUDE), str(cpp), "-o", str(exe)],
+            capture_output=True, text=True, check=False,
+        )
+        if comp.returncode != 0:
+            raise AssertionError(f"compile failed:\n{comp.stderr}\n{cpp.read_text()}")
+        run = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
+        assert run.returncode == 0, run.stderr
+        return run.stdout
+
+
+def convert_file_to_tmp(src: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".f90", delete=False, encoding="utf-8"
     ) as f:
@@ -63,6 +107,12 @@ class CharacterEmitTests(unittest.TestCase):
         cpp = _convert(CHARS_F90)
         self.assertIn("fortran::len_trim(name)", cpp)
         self.assertIn("fortran::index(greeting,", cpp)
+
+    def test_repeat_scan_verify_mapped(self) -> None:
+        cpp = _convert(REPEAT_SCAN_F90)
+        self.assertIn('fortran::repeat("ab"sv, 3)', cpp)
+        self.assertIn('fortran::scan("hello"sv, "l"sv)', cpp)
+        self.assertIn('fortran::verify("hello"sv, "helo"sv)', cpp)
 
 
 @unittest.skipUnless(
@@ -97,6 +147,11 @@ class CharacterRunTests(unittest.TestCase):
             self.assertIn("Hello, World!", lines[0])
             # len_trim("  World" padded) = 7; index of "World" = 8.
             self.assertEqual(lines[1].split(), ["7", "8"])
+
+    def test_repeat_scan_verify_runs(self) -> None:
+        out = _compile_and_run(REPEAT_SCAN_F90)
+        # repeat('ab',3)="ababab"; scan('hello','l')=3; verify ok -> 0.
+        self.assertEqual(out.split(), ["ababab", "3", "0"])
 
 
 if __name__ == "__main__":

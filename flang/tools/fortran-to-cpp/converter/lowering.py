@@ -2378,6 +2378,8 @@ _INTRINSIC_MAP: dict[str, str] = {
     "trim": "fortran::trim", "len": "fortran::len",
     "len_trim": "fortran::len_trim", "index": "fortran::index",
     "adjustl": "fortran::adjustl", "adjustr": "fortran::adjustr",
+    "repeat": "fortran::repeat", "scan": "fortran::scan",
+    "verify": "fortran::verify",
     # Rounding / truncating conversions (plain int/real/dble are casts,
     # handled separately in _lower_conversion_intrinsic).
     "nint": "fortran::nint", "aint": "fortran::aint",

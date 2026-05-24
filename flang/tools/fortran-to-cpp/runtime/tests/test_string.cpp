@@ -171,4 +171,21 @@ TEST(achar_and_ichar_round_trip) {
   CHECK_EQ(fortran::ichar(std::string_view{}), 0);  // empty -> 0
 }
 
+TEST(repeat_concatenates) {
+  CHECK(fortran::repeat("ab", 3) == "ababab");
+  CHECK(fortran::repeat("x", 0).empty());
+}
+
+TEST(scan_finds_set_member) {
+  CHECK_EQ(fortran::scan("hello", "l"), 3);
+  CHECK_EQ(fortran::scan("hello", "l", /*back=*/true), 4);
+  CHECK_EQ(fortran::scan("hello", "xyz"), 0);
+}
+
+TEST(verify_finds_non_member) {
+  CHECK_EQ(fortran::verify("hello", "helo"), 0); // all chars in set
+  CHECK_EQ(fortran::verify("hexlo", "helo"), 3); // 'x' not in set
+  CHECK_EQ(fortran::verify("axbxc", "x", /*back=*/true), 5);
+}
+
 FORTRAN_RT_TEST_MAIN()

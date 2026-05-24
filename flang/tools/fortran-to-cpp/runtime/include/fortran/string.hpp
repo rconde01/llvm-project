@@ -307,6 +307,59 @@ inline int ichar(std::string_view c) noexcept {
   return c.empty() ? 0 : static_cast<int>(static_cast<unsigned char>(c[0]));
 }
 
+/// REPEAT(string, ncopies): ``string`` concatenated ``ncopies`` times.
+inline std::string repeat(std::string_view s, int ncopies) {
+  std::string r;
+  if (ncopies > 0) {
+    r.reserve(s.size() * static_cast<std::size_t>(ncopies));
+    for (int k = 0; k < ncopies; ++k) {
+      r.append(s);
+    }
+  }
+  return r;
+}
+
+/// SCAN(string, set[, back]): 1-based position of the first (or last, if
+/// ``back``) character of ``string`` that appears in ``set``; 0 if none.
+inline int scan(std::string_view s, std::string_view set,
+                bool back = false) noexcept {
+  if (back) {
+    for (std::size_t i = s.size(); i-- > 0;) {
+      if (set.find(s[i]) != std::string_view::npos) {
+        return static_cast<int>(i + 1);
+      }
+    }
+  } else {
+    for (std::size_t i = 0; i < s.size(); ++i) {
+      if (set.find(s[i]) != std::string_view::npos) {
+        return static_cast<int>(i + 1);
+      }
+    }
+  }
+  return 0;
+}
+
+/// VERIFY(string, set[, back]): 1-based position of the first (or last,
+/// if ``back``) character of ``string`` that is *not* in ``set``; 0 if
+/// every character is in ``set``.
+inline int verify(std::string_view s, std::string_view set,
+                  bool back = false) noexcept {
+  if (back) {
+    for (std::size_t i = s.size(); i-- > 0;) {
+      if (set.find(s[i]) == std::string_view::npos) {
+        return static_cast<int>(i + 1);
+      }
+    }
+  } else {
+    for (std::size_t i = 0; i < s.size(); ++i) {
+      if (set.find(s[i]) == std::string_view::npos) {
+        return static_cast<int>(i + 1);
+      }
+    }
+  }
+  return 0;
+}
+
 } // namespace fortran
 
 #endif // FORTRAN_RT_STRING_HPP
