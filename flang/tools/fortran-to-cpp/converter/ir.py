@@ -180,6 +180,35 @@ class IRPrint:
 
 
 @dataclass(slots=True)
+class IRRead:
+    """``read *, …`` / ``read(unit, …) …`` — list-directed input.
+
+    Lowers to a ``>>`` chain on the input stream.  Each item is an
+    lvalue expression (a variable, array element, or component).
+    """
+
+    items: list[IRExpr] = field(default_factory=list)
+    stream: str = "std::cin"
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class IRStop:
+    """``stop`` / ``stop <code>`` / ``stop "msg"`` / ``error stop``.
+
+    Terminates the program (``std::exit``).  ``message`` is printed to
+    stderr first when present; ``code`` is the integer exit status.
+    """
+
+    code: IRExpr | None = None
+    message: str | None = None
+    is_error: bool = False
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class IRIf:
     """``if … then / else if / else / end if`` cascade."""
 
@@ -283,6 +312,8 @@ IRStatement = Union[
     IRAssignment,
     IRCall,
     IRPrint,
+    IRRead,
+    IRStop,
     IRIf,
     IRDo,
     IRWhile,

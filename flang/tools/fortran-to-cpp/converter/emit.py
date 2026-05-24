@@ -34,10 +34,12 @@ from .ir import (
     IRName,
     IRPrint,
     IRRaw,
+    IRRead,
     IRReturn,
     IRSelectCase,
     IRStateStruct,
     IRStatement,
+    IRStop,
     IRSubprogram,
     IRTranslationUnit,
     IRType,
@@ -141,8 +143,8 @@ def _emit_includes(out: StringIO, tu: IRTranslationUnit) -> None:
     # For now we include the kitchen sink (cmath for intrinsics, format
     # for inline std::format calls).  Once the IR carries enough info
     # we can prune this on a per-translation-unit basis.
-    includes = {"<algorithm>", "<cmath>", "<cstdint>", "<format>",
-                "<iostream>", "<string_view>",
+    includes = {"<algorithm>", "<cmath>", "<cstdint>", "<cstdlib>",
+                "<format>", "<iostream>", "<string_view>",
                 '"fortran/runtime.hpp"'}
     for inc in sorted(includes):
         out.write(f"#include {inc}\n")
@@ -289,6 +291,17 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         out.write(" << '\\n';")
         _emit_trailing(out, stmt.trailing_comments)
         return
+    if isinstance(stmt, IRRead):
+        _emit_comment_block(out, stmt.leading_comments, indent=indent)
+        out.write(f"{pad}{stmt.stream}")
+        for item in stmt.items:
+            out.write(f" >> {_render_expr(item)}")
+        out.write(";")
+        _emit_trailing(out, stmt.trailing_comments)
+        return
+    if isinstance(stmt, IRStop):
+        _emit_stop(out, stmt, indent=indent)
+        return
     if isinstance(stmt, IRReturn):
         _emit_comment_block(out, stmt.leading_comments, indent=indent)
         if stmt.value is None:
@@ -348,6 +361,24 @@ def _emit_formatted_chunks(out: StringIO, stmt: "IRPrint") -> None:
         return
     for chunk in chunks:
         out.write(f" << {chunk}")
+
+
+def _emit_stop(out: StringIO, stmt: "IRStop", *, indent: int) -> None:
+    pad = "  " * indent
+    _emit_comment_block(out, stmt.leading_comments, indent=indent)
+    # Determine the exit code expression.
+    if stmt.code is not None:
+        code = _render_expr(stmt.code)
+    else:
+        code = "1" if stmt.is_error else "0"
+    if stmt.message is not None:
+        escaped = stmt.message.replace("\\", "\\\\").replace('"', '\\"')
+        # Fortran prints the stop message; mirror that on stderr.
+        out.write(f'{pad}{{ std::cerr << "{escaped}" << \'\\n\'; '
+                  f"std::exit({code}); }}")
+    else:
+        out.write(f"{pad}std::exit({code});")
+    _emit_trailing(out, stmt.trailing_comments)
 
 
 def _emit_while(out: StringIO, node: IRWhile, *, indent: int) -> None:

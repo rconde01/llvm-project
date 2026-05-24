@@ -40,9 +40,11 @@ from .ir import (
     IRName,
     IRPrint,
     IRRaw,
+    IRRead,
     IRReturn,
     IRSelectCase,
     IRStatement,
+    IRStop,
     IRUnaryOp,
     IRUnsupported,
     IRWhile,
@@ -155,6 +157,21 @@ def _map_statement_children(
             items=[_e(a, on_expr) for a in stmt.items],
             stream=stmt.stream,
             format=stmt.format,
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    if isinstance(stmt, IRRead):
+        return IRRead(
+            items=[_e(a, on_expr) for a in stmt.items],
+            stream=stmt.stream,
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    if isinstance(stmt, IRStop):
+        return IRStop(
+            code=_e(stmt.code, on_expr) if stmt.code is not None else None,
+            message=stmt.message,
+            is_error=stmt.is_error,
             leading_comments=stmt.leading_comments,
             trailing_comments=stmt.trailing_comments,
         )

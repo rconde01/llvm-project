@@ -59,7 +59,9 @@ from .ir import (
     IRExit,
     IRMember,
     IRModule,
+    IRRead,
     IRSelectCase,
+    IRStop,
     IRWhile,
 )
 from .transform import map_statement, rename_var
@@ -704,47 +706,50 @@ def _lower_action_statement(stmt: Node) -> IRStatement | None:
     inner = next(iter(action.children), None)
     if inner is None:
         return _unsupported(action, kind="ActionStmt")
-    if inner.kind == "AssignmentStmt":
-        a = _lower_assignment(inner)
-        a.leading_comments = leading
-        a.trailing_comments = trailing
-        return a
-    if inner.kind == "PrintStmt":
-        p = _lower_print(inner)
-        p.leading_comments = leading
-        p.trailing_comments = trailing
-        return p
-    if inner.kind == "WriteStmt":
-        p = _lower_write(inner)
-        p.leading_comments = leading
-        p.trailing_comments = trailing
-        return p
-    if inner.kind == "CallStmt":
-        c = _lower_call(inner)
-        c.leading_comments = leading
-        c.trailing_comments = trailing
-        return c
-    if inner.kind == "ReturnStmt":
-        return IRReturn(leading_comments=leading, trailing_comments=trailing)
-    if inner.kind == "CycleStmt":
-        return IRCycle(leading_comments=leading, trailing_comments=trailing)
-    if inner.kind == "ExitStmt":
-        return IRExit(leading_comments=leading, trailing_comments=trailing)
-    if inner.kind == "IfStmt":
-        return _lower_if_stmt(inner, leading, trailing)
-    return _unsupported(inner, kind=inner.kind, leading=leading)
+    result = _lower_action_inner(inner)
+    if result is None:
+        return _unsupported(inner, kind=inner.kind, leading=leading)
+    result.leading_comments = leading
+    result.trailing_comments = trailing
+    return result
 
 
-def _lower_if_stmt(
-    node: Node, leading: list[Comment], trailing: list[Comment]
-) -> IRStatement:
+# Inner-statement kind -> lowering function.  Both the normal action
+# statement and the single-line ``if (c) action`` form dispatch through
+# here, so a new action statement only needs to be registered once.
+def _lower_action_inner(inner: Node) -> IRStatement | None:
+    match inner.kind:
+        case "AssignmentStmt":
+            return _lower_assignment(inner)
+        case "PrintStmt":
+            return _lower_print(inner)
+        case "WriteStmt":
+            return _lower_write(inner)
+        case "ReadStmt":
+            return _lower_read(inner)
+        case "StopStmt":
+            return _lower_stop(inner)
+        case "CallStmt":
+            return _lower_call(inner)
+        case "ReturnStmt":
+            return IRReturn()
+        case "CycleStmt":
+            return IRCycle()
+        case "ExitStmt":
+            return IRExit()
+        case "IfStmt":
+            return _lower_if_stmt(inner)
+    return None
+
+
+def _lower_if_stmt(node: Node) -> IRStatement:
     """Lower a single-statement ``if (cond) action`` (no ``then``).
 
-    Modeled as an IRIf with one branch holding the single action.
+    Modeled as an IRIf with one branch holding the single action,
+    reusing the shared action dispatcher so every action kind works.
     """
     cond_expr = node.find_first("Expr")
     condition = _lower_expression(cond_expr) if cond_expr else IRRaw("true")
-    # The action lives under an UnlabeledStatement -> ActionStmt.
     body: list[IRStatement] = []
     unlabeled = node.find_first("UnlabeledStatement")
     if unlabeled is not None:
@@ -752,26 +757,13 @@ def _lower_if_stmt(
         if action is not None:
             inner = next(iter(action.children), None)
             if inner is not None:
-                if inner.kind == "CycleStmt":
-                    body = [IRCycle()]
-                elif inner.kind == "ExitStmt":
-                    body = [IRExit()]
-                elif inner.kind == "ReturnStmt":
-                    body = [IRReturn()]
-                elif inner.kind == "AssignmentStmt":
-                    body = [_lower_assignment(inner)]
-                elif inner.kind == "PrintStmt":
-                    body = [_lower_print(inner)]
-                elif inner.kind == "CallStmt":
-                    body = [_lower_call(inner)]
-                else:
-                    body = [_unsupported(inner, kind=inner.kind)]
-    return IRIf(
-        branches=[(condition, body)],
-        else_body=None,
-        leading_comments=leading,
-        trailing_comments=trailing,
-    )
+                lowered = _lower_action_inner(inner)
+                body = [
+                    lowered
+                    if lowered is not None
+                    else _unsupported(inner, kind=inner.kind)
+                ]
+    return IRIf(branches=[(condition, body)], else_body=None)
 
 
 def _lower_assignment(node: Node) -> IRAssignment:
@@ -807,6 +799,55 @@ def _lower_write(node: Node) -> IRPrint:
                 items.append(_lower_expression(expr))
     stream = _stream_for_unit(node.first_child("IoUnit"))
     return IRPrint(items=items, stream=stream, format=_extract_format(node))
+
+
+def _lower_read(node: Node) -> IRRead:
+    """Lower ``read *, items`` / ``read(unit, fmt) items``.
+
+    Only list-directed input is handled; the items become a ``>>``
+    chain on the stream (``*`` / ``5`` -> std::cin).
+    """
+    items: list[IRExpr] = []
+    for sub in node.children:
+        if sub.kind == "InputItem":
+            var = sub.find_first("Variable") or sub.find_first("Designator")
+            if var is not None:
+                items.append(_lower_expression(var))
+    stream = _input_stream_for_unit(node.first_child("IoUnit"))
+    return IRRead(items=items, stream=stream)
+
+
+def _input_stream_for_unit(io_unit: Node | None) -> str:
+    if io_unit is None:
+        return "std::cin"
+    if io_unit.first_child("Star") is not None:
+        return "std::cin"
+    for lit in io_unit.find_all("IntLiteralConstant"):
+        if lit.fortran and lit.fortran.split("_")[0] == "5":
+            return "std::cin"
+    return "std::cin"
+
+
+def _lower_stop(node: Node) -> IRStop:
+    """Lower ``stop`` / ``stop <code>`` / ``stop "msg"`` / ``error stop``."""
+    is_error = any(
+        c.kind.startswith("Kind =") and "ErrorStop" in c.kind
+        for c in node.children
+    )
+    code: IRExpr | None = None
+    message: str | None = None
+    stop_code = node.find_first("StopCode")
+    if stop_code is not None:
+        # A character stop code is a message; a numeric one is the exit
+        # status.
+        string_node = stop_code.find_first("string")
+        if string_node is not None and string_node.fortran is not None:
+            message = string_node.fortran
+        else:
+            expr = stop_code.find_first("Expr")
+            if expr is not None:
+                code = _lower_expression(expr)
+    return IRStop(code=code, message=message, is_error=is_error)
 
 
 def _stream_for_unit(io_unit: Node | None) -> str:
