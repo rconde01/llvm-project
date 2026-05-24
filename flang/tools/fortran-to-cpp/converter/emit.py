@@ -152,7 +152,7 @@ def _emit_includes(out: StringIO, tu: IRTranslationUnit) -> None:
     # for inline std::format calls).  Once the IR carries enough info
     # we can prune this on a per-translation-unit basis.
     includes = {"<algorithm>", "<cmath>", "<cstdint>", "<cstdlib>",
-                "<format>", "<iostream>", "<string_view>",
+                "<format>", "<iostream>", "<optional>", "<string_view>",
                 '"fortran/runtime.hpp"'}
     for inc in sorted(includes):
         out.write(f"#include {inc}\n")

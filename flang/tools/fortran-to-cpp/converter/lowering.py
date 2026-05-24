@@ -73,7 +73,7 @@ from .ir import (
     IRWhere,
     IRWhile,
 )
-from .transform import map_statement, rename_var
+from .transform import map_expr, map_statement, rename_var
 from .types import camelcase, lower_type_spec
 
 
@@ -318,6 +318,7 @@ def _separate_parameters(sub: IRSubprogram, arg_names: list[str]) -> None:
                 name=loc.name,
                 type=loc.type,
                 intent=loc.intent or "inout",
+                optional=loc.is_optional,
             )
             by_idx.append((wanted[loc.name], param, loc))
         else:
@@ -325,6 +326,28 @@ def _separate_parameters(sub: IRSubprogram, arg_names: list[str]) -> None:
     by_idx.sort(key=lambda t: t[0])
     sub.parameters = [p for _, p, _ in by_idx]
     sub.locals = remaining
+    _deref_optional_params(sub)
+
+
+def _deref_optional_params(sub: IRSubprogram) -> None:
+    """Rewrite value uses of an OPTIONAL scalar parameter ``p`` to
+    ``p.value()`` (it's a std::optional in C++).  ``present(p)`` was
+    already lowered to ``p.has_value()`` as raw text, so it is not a
+    bare IRName and is left untouched."""
+    opt_names = {
+        p.name for p in sub.parameters if p.optional and not p.type.is_array
+    }
+    if not opt_names:
+        return
+
+    def deref(e: IRExpr) -> IRExpr:
+        if isinstance(e, IRName) and e.name in opt_names:
+            return IRRaw(f"{e.name}.value()")
+        return e
+
+    sub.body = [
+        map_statement(s, on_expr=lambda e: map_expr(e, deref)) for s in sub.body
+    ]
 
 
 def _lift_function_return(
@@ -526,6 +549,7 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
 
     is_parameter = False
     is_save = False
+    is_optional = False
     intent: Literal["in", "out", "inout"] | None = None
     shared_array_spec: Node | None = None
     for attr in decl.find_all("AttrSpec"):
@@ -536,6 +560,8 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
                 is_parameter = True
             elif child.kind == "Save":
                 is_save = True
+            elif child.kind == "Optional":
+                is_optional = True
             elif child.kind == "IntentSpec":
                 intent = _extract_intent(child)
             elif child.kind == "ArraySpec":
@@ -569,6 +595,7 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
                 is_parameter=is_parameter,
                 is_save=is_save,
                 intent=intent,
+                is_optional=is_optional,
             )
         )
     return out
@@ -2068,6 +2095,11 @@ def _lower_function_reference(node: Node) -> IRExpr:
     call = node.first_child("Call") or node
     callee = _callee_name(call)
     args = _lower_actual_args(call)
+
+    # present(x) -> x.has_value() (x is a std::optional param).  Use the
+    # raw optional name; the deref pass won't touch this IRRaw.
+    if callee == "present" and len(args) == 1 and isinstance(args[0], IRName):
+        return IRRaw(f"({args[0].name}.has_value())")
 
     # Conversion intrinsics become static_casts whose target type
     # depends on the kind argument.

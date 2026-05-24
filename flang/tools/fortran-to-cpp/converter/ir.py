@@ -480,6 +480,9 @@ class IRLocal:
     Used by the lowering pass to recognize formal parameters.
     """
 
+    is_optional: bool = False
+    """True for ``OPTIONAL`` dummy arguments."""
+
     leading_comments: list[Comment] = field(default_factory=list)
     """Comments that appeared immediately above this declaration."""
 
@@ -495,6 +498,10 @@ class IRParameter:
     type: IRType
     intent: Literal["in", "out", "inout"] = "inout"
 
+    optional: bool = False
+    """True for OPTIONAL dummy args; emitted as ``std::optional<T>`` with
+    a ``= std::nullopt`` default (intent(in) scalars)."""
+
     def cpp_param_decl(self) -> str:
         """C++ parameter declaration string.
 
@@ -504,6 +511,10 @@ class IRParameter:
         converts implicitly and the function body can take slices
         without making the caller's storage assumption explicit.
         """
+        if self.optional and not self.type.is_array:
+            # intent(in) optional scalar -> std::optional with a default,
+            # so trailing optional args can be omitted at the call site.
+            return f"std::optional<{self.type.cpp}> {self.name} = std::nullopt"
         if self.type.is_array:
             const_q = "const " if self.intent == "in" else ""
             return (
