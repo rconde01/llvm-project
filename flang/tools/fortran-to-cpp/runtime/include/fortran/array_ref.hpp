@@ -37,7 +37,10 @@
 #include <array>
 #include <cassert>
 #include <cstddef>
+#include <ostream>
+#include <tuple>
 #include <type_traits>
+#include <utility>
 
 namespace fortran {
 
@@ -123,6 +126,46 @@ public:
                           {strides_[0] * stride});
   }
 
+  /// General multi-dimensional section ``a(s1, s2, ...)`` where each
+  /// subscript is either a ``Slice`` (a kept, ranged dimension) or an
+  /// integer index (a dropped dimension).  The result rank is the number
+  /// of ``Slice`` subscripts; result dimensions are 1-based.
+  template <typename... Subs>
+    requires(... || detail::is_slice_v<Subs>)
+  auto section(Subs... subs) const noexcept {
+    static_assert(sizeof...(Subs) == Rank,
+                  "section needs one subscript per dimension");
+    constexpr std::size_t NR =
+        (std::size_t{0} + ... + (detail::is_slice_v<Subs> ? 1 : 0));
+    static_assert(NR >= 1, "a section must keep at least one dimension");
+    const std::tuple<Subs...> t{subs...};
+    index_t offset = 0;
+    std::array<index_t, NR> new_lower{};
+    std::array<index_t, NR> new_extent{};
+    std::array<index_t, NR> new_stride{};
+    std::size_t ri = 0;
+    const auto handle = [&](auto ic) {
+      constexpr std::size_t k = decltype(ic)::value;
+      const auto &sub = std::get<k>(t);
+      if constexpr (detail::is_slice_v<std::tuple_element_t<
+                        k, std::tuple<Subs...>>>) {
+        offset += (sub.lo - lower_[k]) * strides_[k];
+        const index_t n =
+            sub.stride != 0 ? (sub.hi - sub.lo) / sub.stride + 1 : 0;
+        new_lower[ri] = 1;
+        new_extent[ri] = n < 0 ? index_t{0} : n;
+        new_stride[ri] = strides_[k] * sub.stride;
+        ++ri;
+      } else {
+        offset += (static_cast<index_t>(sub) - lower_[k]) * strides_[k];
+      }
+    };
+    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+      (handle(std::integral_constant<std::size_t, Is>{}), ...);
+    }(std::make_index_sequence<Rank>{});
+    return ArrayRef<T, NR>(data_ + offset, new_lower, new_extent, new_stride);
+  }
+
   /// Visit every element once.  Handles arbitrary (possibly
   /// non-contiguous) strides by walking the Fortran index tuple in
   /// column-major order.
@@ -194,6 +237,54 @@ ArrayRef<T, 1> Array<T, Rank>::section(index_t lo, index_t hi,
                                        index_t stride) noexcept {
   static_assert(Rank == 1, "section(lo,hi,stride) is rank-1 only");
   return ArrayRef<T, Rank>(*this).section(lo, hi, stride);
+}
+
+template <typename T, std::size_t Rank>
+template <typename... Subs>
+  requires(... || detail::is_slice_v<Subs>)
+auto Array<T, Rank>::section(Subs... subs) noexcept {
+  return ArrayRef<T, Rank>(*this).section(subs...);
+}
+
+// ---- List-directed array output -------------------------------------------
+
+namespace detail {
+template <typename OS, typename T> void stream_element(OS &os, const T &v) {
+  if constexpr (std::is_same_v<std::remove_cv_t<T>, bool>) {
+    os << (v ? 'T' : 'F');  // Fortran logical output
+  } else {
+    os << v;
+  }
+}
+} // namespace detail
+
+/// Print an owning array's elements in Fortran (column-major) order,
+/// space-separated, for list-directed ``print *`` of a whole array.
+template <typename T, std::size_t Rank>
+std::ostream &operator<<(std::ostream &os, const Array<T, Rank> &a) {
+  bool first = true;
+  a.for_each([&](const T &v) {
+    if (!first) {
+      os << ' ';
+    }
+    detail::stream_element(os, v);
+    first = false;
+  });
+  return os;
+}
+
+/// Same for a non-owning view (whole-array or section).
+template <typename T, std::size_t Rank>
+std::ostream &operator<<(std::ostream &os, const ArrayRef<T, Rank> &a) {
+  bool first = true;
+  a.for_each([&](const T &v) {
+    if (!first) {
+      os << ' ';
+    }
+    detail::stream_element(os, v);
+    first = false;
+  });
+  return os;
 }
 
 // ---- ASSOCIATED ----------------------------------------------------------

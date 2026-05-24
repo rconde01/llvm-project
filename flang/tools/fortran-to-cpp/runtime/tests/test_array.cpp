@@ -17,6 +17,7 @@ using fortran::Array;
 using fortran::ArrayRef;
 using fortran::Bounds;
 using fortran::index_t;
+using fortran::Slice;
 
 // ---- Construction & bounds ------------------------------------------------
 
@@ -314,6 +315,56 @@ TEST(bounds_extent_is_inclusive) {
   CHECK_EQ(b.extent(), 6);
   Bounds c{-3, 3};
   CHECK_EQ(c.extent(), 7);
+}
+
+// ---- Multi-dimensional sections -------------------------------------------
+
+namespace {
+Array<int, 2> make_3x3() {
+  Array<int, 2> a({3, 3});
+  for (index_t i = 1; i <= 3; ++i) {
+    for (index_t j = 1; j <= 3; ++j) {
+      a(i, j) = static_cast<int>(i * 10 + j);
+    }
+  }
+  return a;
+}
+} // namespace
+
+TEST(rank2_row_section_drops_first_dim) {
+  auto a = make_3x3();
+  auto row = a.section(2, Slice{1, 3}); // a(2, :)
+  CHECK_EQ(decltype(row)::rank, 1u);
+  CHECK_EQ(row.size(), 3);
+  CHECK_EQ(row(1), 21);
+  CHECK_EQ(row(2), 22);
+  CHECK_EQ(row(3), 23);
+}
+
+TEST(rank2_col_section_drops_second_dim) {
+  auto a = make_3x3();
+  auto col = a.section(Slice{1, 3}, 1); // a(:, 1)
+  CHECK_EQ(decltype(col)::rank, 1u);
+  CHECK_EQ(col(1), 11);
+  CHECK_EQ(col(2), 21);
+  CHECK_EQ(col(3), 31);
+}
+
+TEST(rank2_block_section_keeps_both_dims) {
+  auto a = make_3x3();
+  auto blk = a.section(Slice{1, 2}, Slice{2, 3}); // a(1:2, 2:3)
+  CHECK_EQ(decltype(blk)::rank, 2u);
+  CHECK_EQ(blk(1, 1), 12);
+  CHECK_EQ(blk(1, 2), 13);
+  CHECK_EQ(blk(2, 1), 22);
+  CHECK_EQ(blk(2, 2), 23);
+}
+
+TEST(rank2_section_writes_through_to_parent) {
+  auto a = make_3x3();
+  auto row = a.section(2, Slice{1, 3}); // a(2, :)
+  row(2) = 999;
+  CHECK_EQ(a(2, 2), 999);
 }
 
 FORTRAN_RT_TEST_MAIN()

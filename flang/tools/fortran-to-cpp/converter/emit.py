@@ -693,20 +693,31 @@ def _emit_unsupported(
 
 
 def _render_section(expr: "IRSection") -> str:
-    """Render a section that survived expansion (e.g. passed as an
-    argument) as a runtime ``a.section(lo, hi, stride)`` view.  Only
-    rank-1 single-triplet sections are supported; anything else gets a
-    TODO marker."""
-    triplets = [s for s in expr.subscripts if isinstance(s, IRTriplet)]
-    if len(triplets) != 1 or len(expr.subscripts) != 1:
-        return f"/* TODO: rank>=2 or mixed section of {expr.array} */ {expr.array}"
-    trip = triplets[0]
+    """Render a section as a runtime ``a.section(...)`` view.
+
+    A rank-1 single-triplet section emits the scalar ``section(lo, hi,
+    stride)`` overload.  Multi-dimensional or mixed sections emit the
+    general overload, passing a ``fortran::Slice`` for each kept
+    dimension and a plain index for each dropped one."""
     a = expr.array
-    lo = _render_expr(trip.lower) if trip.lower is not None else f"{a}.lbound(1)"
-    hi = _render_expr(trip.upper) if trip.upper is not None else f"{a}.ubound(1)"
-    if trip.stride is not None:
-        return f"{a}.section({lo}, {hi}, {_render_expr(trip.stride)})"
-    return f"{a}.section({lo}, {hi})"
+    triplets = [s for s in expr.subscripts if isinstance(s, IRTriplet)]
+    if len(expr.subscripts) == 1 and len(triplets) == 1:
+        trip = triplets[0]
+        lo = _render_expr(trip.lower) if trip.lower is not None else f"{a}.lbound(1)"
+        hi = _render_expr(trip.upper) if trip.upper is not None else f"{a}.ubound(1)"
+        if trip.stride is not None:
+            return f"{a}.section({lo}, {hi}, {_render_expr(trip.stride)})"
+        return f"{a}.section({lo}, {hi})"
+    parts: list[str] = []
+    for dim, s in enumerate(expr.subscripts, start=1):
+        if isinstance(s, IRTriplet):
+            lo = _render_expr(s.lower) if s.lower is not None else f"{a}.lbound({dim})"
+            hi = _render_expr(s.upper) if s.upper is not None else f"{a}.ubound({dim})"
+            stride = _render_expr(s.stride) if s.stride is not None else "1"
+            parts.append(f"fortran::Slice{{{lo}, {hi}, {stride}}}")
+        else:
+            parts.append(_render_expr(s))
+    return f"{a}.section({', '.join(parts)})"
 
 
 def _render_expr(expr: IRExpr) -> str:

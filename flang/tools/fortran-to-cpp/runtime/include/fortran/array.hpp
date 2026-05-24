@@ -45,6 +45,22 @@ namespace fortran {
 /// representable directly.
 using index_t = std::ptrdiff_t;
 
+/// One ranged subscript ``lo:hi:stride`` of a multi-dimensional array
+/// section.  A section subscript is either a ``Slice`` (keeps the
+/// dimension) or a plain integer index (drops it).
+struct Slice {
+  index_t lo;
+  index_t hi;
+  index_t stride;
+  constexpr Slice(index_t lo_, index_t hi_, index_t stride_ = 1) noexcept
+      : lo(lo_), hi(hi_), stride(stride_) {}
+};
+
+namespace detail {
+template <typename X>
+inline constexpr bool is_slice_v = std::is_same_v<std::decay_t<X>, Slice>;
+} // namespace detail
+
 /// Per-dimension bounds.  Both inclusive: ``a(lower)`` and ``a(upper)`` are
 /// valid; the extent is ``upper - lower + 1``.
 struct Bounds {
@@ -288,6 +304,15 @@ public:
   /// Rank-1 section view ``a(lo:hi:stride)``.  Convenience that
   /// forwards to ArrayRef::section (defined in array_ref.hpp).
   ArrayRef<T, 1> section(index_t lo, index_t hi, index_t stride = 1) noexcept;
+
+  /// General multi-dimensional section ``a(s1, s2, ...)``; each subscript
+  /// is a ``Slice`` (kept dimension) or an integer index (dropped).
+  /// Constrained to at least one ``Slice`` so the rank-1 ``section(lo,
+  /// hi, stride)`` overload still wins for plain integer arguments.
+  /// Forwards to ArrayRef::section (defined in array_ref.hpp).
+  template <typename... Subs>
+    requires(... || detail::is_slice_v<Subs>)
+  auto section(Subs... subs) noexcept;
 
 private:
   void init_storage() {
