@@ -1324,7 +1324,9 @@ def _lower_io_items(
                     _lower_io_implied_do(impl, item_kind, implied_kind)
                 )
                 continue
-            expr = sub.find_first("Expr") or sub.find_first("Variable")
+            # Direct child only: a recursive Expr search would pick up
+            # an array subscript (the ``i`` in ``a(i)``).
+            expr = sub.first_child("Expr") or sub.first_child("Variable")
             if expr is not None:
                 items.append(_lower_expression(expr))
         elif sub.kind == implied_kind:
