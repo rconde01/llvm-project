@@ -36,6 +36,7 @@ from .ir import (
     IRFunctionCall,
     IRIf,
     IRLiteral,
+    IRMember,
     IRName,
     IRPrint,
     IRRaw,
@@ -72,6 +73,8 @@ def map_expr(expr: IRExpr, fn: ExprFn) -> IRExpr:
             callee=expr.callee,
             args=tuple(map_expr(a, fn) for a in expr.args),
         )
+    elif isinstance(expr, IRMember):
+        expr = IRMember(base=map_expr(expr.base, fn), field=expr.field)
     # IRLiteral, IRName, IRRaw are leaves.
     return fn(expr)
 

@@ -51,30 +51,40 @@ _DEFAULT_LOGICAL_KIND = 4
 # ---------------------------------------------------------------------------
 
 
+def camelcase(name: str) -> str:
+    """Turn a Fortran identifier into a CamelCase C++ type name."""
+    parts = name.replace("-", "_").split("_")
+    return "".join(p.capitalize() if p else "" for p in parts)
+
+
 def lower_type_spec(decl_type_spec: Node) -> IRType:
     """Lower a ``DeclarationTypeSpec`` node into an IRType.
 
-    A ``DeclarationTypeSpec`` always has exactly one child describing
-    the actual type — usually an ``IntrinsicTypeSpec`` for the cases
-    we currently support.  Derived types are still TODO.
+    A ``DeclarationTypeSpec`` has one child describing the actual type:
+    an ``IntrinsicTypeSpec`` for built-in types or a ``Type`` /
+    ``Class`` wrapper around a ``DerivedTypeSpec`` for user types.
     """
-    spec = decl_type_spec.first_child(
-        "IntrinsicTypeSpec",
-        "DeclarationTypeSpec::Type",
-        "DeclarationTypeSpec::Class",
-    )
-    if spec is None:
-        # Walk into the children to find an intrinsic spec wrapped in
-        # variant nodes we don't model.
-        for child in decl_type_spec.walk():
-            if child.kind == "IntrinsicTypeSpec":
-                spec = child
-                break
-    if spec is None:
-        return _unknown_type(decl_type_spec)
-    if spec.kind == "IntrinsicTypeSpec":
-        return _lower_intrinsic(spec)
-    return _unknown_type(spec)
+    for child in decl_type_spec.children:
+        if child.kind == "IntrinsicTypeSpec":
+            return _lower_intrinsic(child)
+        if child.kind in ("Type", "Class"):
+            return _lower_derived(child)
+    # Fall back: search for a nested intrinsic spec.
+    for child in decl_type_spec.walk():
+        if child.kind == "IntrinsicTypeSpec":
+            return _lower_intrinsic(child)
+    return _unknown_type(decl_type_spec)
+
+
+def _lower_derived(type_node: Node) -> IRType:
+    """Lower ``type(name)`` / ``class(name)`` to its C++ struct type."""
+    spec = type_node.find_first("DerivedTypeSpec")
+    name_node = spec.find_first("Name") if spec is not None else None
+    if name_node is None or not name_node.fortran:
+        return _unknown_type(type_node)
+    fortran_name = name_node.fortran
+    return IRType(cpp=camelcase(fortran_name),
+                  fortran=f"type({fortran_name})")
 
 
 # ---------------------------------------------------------------------------

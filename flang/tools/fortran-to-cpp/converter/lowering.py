@@ -55,12 +55,14 @@ from .ir import (
 from .ir import (
     IRCaseClause,
     IRCycle,
+    IRDerivedType,
     IRExit,
+    IRMember,
     IRSelectCase,
     IRWhile,
 )
 from .transform import map_statement, rename_var
-from .types import lower_type_spec
+from .types import camelcase, lower_type_spec
 
 
 # ---------------------------------------------------------------------------
@@ -73,10 +75,16 @@ def lower_program(
 ) -> IRTranslationUnit:
     """Lower an annotated, dependency-ordered parse tree to IR."""
     tu = IRTranslationUnit(source_file=source_file)
-    # Find every subprogram in source order — depgraph already did the
-    # call-graph sort but for v1 we keep things simple and emit in
-    # source-textual order.  We'll plug depgraph back in once we have
-    # mutually recursive examples.
+    # Derived-type definitions first (deduplicated by name) so the
+    # emitter can declare the structs ahead of everything that uses
+    # them.
+    seen_types: set[str] = set()
+    for node in root.walk():
+        if node.kind == "DerivedTypeDef":
+            dt = _lower_derived_type_def(node)
+            if dt is not None and dt.fortran_name not in seen_types:
+                seen_types.add(dt.fortran_name)
+                tu.derived_types.append(dt)
     for node in root.walk():
         if node.kind == "MainProgram":
             tu.subprograms.append(_lower_main_program(node))
@@ -85,6 +93,42 @@ def lower_program(
         elif node.kind == "SubroutineSubprogram":
             tu.subprograms.append(_lower_subroutine(node))
     return tu
+
+
+def _lower_derived_type_def(node: Node) -> "IRDerivedType | None":
+    """Lower a ``DerivedTypeDef`` to an IRDerivedType."""
+    type_name = ""
+    for stmt in node.children:
+        if stmt.kind == "Statement":
+            dts = stmt.find_first("DerivedTypeStmt")
+            if dts is not None:
+                name = dts.find_first("Name")
+                if name is not None and name.fortran:
+                    type_name = name.fortran
+                break
+    if not type_name:
+        return None
+    fields: list[IRLocal] = []
+    for comp in node.find_all("DataComponentDefStmt"):
+        type_node = comp.first_child("DeclarationTypeSpec")
+        if type_node is None:
+            continue
+        comp_type = lower_type_spec(type_node)
+        for decl in comp.find_all("ComponentDecl"):
+            name = decl.first_child("Name")
+            if name is not None and name.fortran:
+                # A component may carry its own ArraySpec (component array).
+                arr = decl.first_child("ArraySpec")
+                field_type = (
+                    _make_array_type(comp_type, arr) if arr is not None
+                    else comp_type
+                )
+                fields.append(IRLocal(name=name.fortran.lower(), type=field_type))
+    return IRDerivedType(
+        cpp_type=camelcase(type_name),
+        fortran_name=type_name.lower(),
+        fields=fields,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -868,9 +912,38 @@ def _lower_expression(node: Node) -> IRExpr:
             return _lower_function_reference(target)
         case "ArrayElement":
             return _lower_array_element(target)
+        case "StructureComponent":
+            return _lower_structure_component(target)
     if target.kind in _BINARY_OP_MAP or target.kind in _UNARY_OP_MAP:
         return _lower_expr_operator(target)
     return _expr_raw(node)
+
+
+def _lower_structure_component(node: Node) -> IRExpr:
+    """Lower ``base%field`` to ``base.field``.
+
+    AST shape: ``StructureComponent -> DataRef (the base) + Name (the
+    component)``.  The base DataRef may itself be a StructureComponent
+    or ArrayElement, so recurse through ``_lower_expression``.
+    """
+    base_ref = node.first_child("DataRef")
+    field_name_node = None
+    # The component name is the Name child that is *not* inside the
+    # base DataRef.
+    for child in node.children:
+        if child.kind == "Name":
+            field_name_node = child
+    base_expr: IRExpr
+    if base_ref is not None:
+        base_expr = _lower_expression(base_ref)
+    else:
+        base_expr = IRRaw("/* ? */")
+    field = (
+        field_name_node.fortran.lower()
+        if field_name_node is not None and field_name_node.fortran
+        else "?"
+    )
+    return IRMember(base=base_expr, field=field)
 
 
 def _lower_array_element(node: Node) -> IRExpr:

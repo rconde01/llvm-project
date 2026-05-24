@@ -102,6 +102,14 @@ class IRFunctionCall:
 
 
 @dataclass(frozen=True, slots=True)
+class IRMember:
+    """Derived-type component access: ``base%field`` -> ``base.field``."""
+
+    base: "IRExpr"
+    field: str
+
+
+@dataclass(frozen=True, slots=True)
 class IRRaw:
     """Escape hatch: emit ``text`` verbatim into the output.
 
@@ -114,7 +122,7 @@ class IRRaw:
 
 
 IRExpr = Union[
-    IRLiteral, IRName, IRBinaryOp, IRUnaryOp, IRFunctionCall, IRRaw
+    IRLiteral, IRName, IRBinaryOp, IRUnaryOp, IRFunctionCall, IRMember, IRRaw
 ]
 
 
@@ -414,11 +422,28 @@ class IRCommonUse:
 
 
 @dataclass(slots=True)
+class IRDerivedType:
+    """A user-defined ``type ... end type`` mapped to a C++ struct."""
+
+    cpp_type: str
+    """Generated struct name (CamelCase of the Fortran type name)."""
+
+    fortran_name: str
+    """Original Fortran type name (lower-cased)."""
+
+    fields: list[IRLocal] = field(default_factory=list)
+    """Component declarations, in source order."""
+
+
+@dataclass(slots=True)
 class IRTranslationUnit:
     """The top-level container — everything emitted into one .cpp file."""
 
     subprograms: list[IRSubprogram] = field(default_factory=list)
     """Subprograms in callee-first dependency order."""
+
+    derived_types: list[IRDerivedType] = field(default_factory=list)
+    """User-defined types, emitted as structs ahead of everything."""
 
     common_structs: list[IRStateStruct] = field(default_factory=list)
     """One shared struct per common-block name, synthesized by the

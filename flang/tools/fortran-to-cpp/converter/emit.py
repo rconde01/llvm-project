@@ -30,6 +30,7 @@ from .ir import (
     IRIf,
     IRLiteral,
     IRLocal,
+    IRMember,
     IRName,
     IRPrint,
     IRRaw,
@@ -56,14 +57,26 @@ def emit_translation_unit(tu: IRTranslationUnit) -> str:
     out = StringIO()
     _emit_file_header(out, tu)
     _emit_includes(out, tu)
-    # State structs come first so subprograms below can reference them
-    # by name in their parameter lists.
+    # User-defined types first, then state structs, so everything below
+    # can reference them by name.
+    _emit_derived_types(out, tu)
     _emit_state_structs(out, tu)
     for sub in tu.subprograms:
         out.write("\n")
         _emit_subprogram(out, sub)
     _emit_cpp_main(out, tu)
     return out.getvalue()
+
+
+def _emit_derived_types(out: StringIO, tu: IRTranslationUnit) -> None:
+    if not tu.derived_types:
+        return
+    out.write("\n// ---- User-defined types ----\n")
+    for dt in tu.derived_types:
+        out.write(f"\nstruct {dt.cpp_type} {{\n")
+        for field_local in dt.fields:
+            _emit_local(out, field_local, indent=1)
+        out.write("};\n")
 
 
 def _emit_state_structs(out: StringIO, tu: IRTranslationUnit) -> None:
@@ -196,9 +209,10 @@ def _emit_local(out: StringIO, loc: IRLocal, *, indent: int) -> None:
     out.write(f"{pad}{prefix}{loc.type.cpp} {loc.name}")
     if loc.initializer is not None:
         out.write(f" = {_render_expr(loc.initializer)}")
-    elif loc.type.is_integer or loc.type.is_real:
-        # Match Fortran's IMPLICIT-typed locals (zero-initialized
-        # under most compilers when -finit-{integer,real} is set).
+    else:
+        # Value-initialize so scalars zero out, derived-type structs
+        # default-construct, and FortranString fills with blanks —
+        # matching Fortran's typical default-initialization behavior.
         out.write("{}")
     out.write(";")
     _emit_trailing(out, loc.trailing_comments)
@@ -439,6 +453,8 @@ def _render_expr(expr: IRExpr) -> str:
     if isinstance(expr, IRFunctionCall):
         args = ", ".join(_render_expr(a) for a in expr.args)
         return f"{expr.callee}({args})"
+    if isinstance(expr, IRMember):
+        return f"{_render_expr(expr.base)}.{expr.field}"
     if isinstance(expr, IRRaw):
         return expr.text
     return f"/* unhandled expr {type(expr).__name__} */"
