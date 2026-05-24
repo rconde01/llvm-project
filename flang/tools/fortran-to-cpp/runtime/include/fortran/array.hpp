@@ -186,6 +186,16 @@ public:
     swap(storage_, other.storage_);
   }
 
+  /// Release storage and become empty.  Models Fortran ``DEALLOCATE``;
+  /// re-``allocate`` by move-assigning a freshly-sized Array.
+  void deallocate() noexcept {
+    Array empty;
+    swap(empty);
+  }
+
+  /// Whether the array currently owns storage (Fortran ``ALLOCATED``).
+  bool allocated() const noexcept { return static_cast<bool>(storage_); }
+
   /// Explicit deep copy.  Heap-allocates a fresh buffer of ``size()``
   /// elements and copies element-wise.
   Array clone() const {

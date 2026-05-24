@@ -246,6 +246,31 @@ TEST(arrayref_with_non_default_strides_is_not_contiguous) {
   CHECK(!r.is_contiguous());
 }
 
+// ---- Allocatable lifecycle ------------------------------------------------
+
+TEST(default_array_is_not_allocated) {
+  Array<int, 1> a;
+  CHECK(!a.allocated());
+  CHECK(a.empty());
+}
+
+TEST(reallocate_via_move_assign) {
+  Array<int, 1> a;             // unallocated (real, allocatable :: a(:))
+  a = Array<int, 1>({4});      // allocate(a(4))
+  CHECK(a.allocated());
+  CHECK_EQ(a.size(), 4);
+  a(1) = 7;
+  CHECK_EQ(a(1), 7);
+}
+
+TEST(deallocate_releases_storage) {
+  Array<int, 1> a({4});
+  CHECK(a.allocated());
+  a.deallocate();
+  CHECK(!a.allocated());
+  CHECK_EQ(a.size(), 0);
+}
+
 // ---- Bounds type helper ---------------------------------------------------
 
 TEST(bounds_extent_is_inclusive) {

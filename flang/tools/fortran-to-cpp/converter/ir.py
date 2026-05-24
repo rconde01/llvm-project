@@ -287,6 +287,32 @@ class IRExit:
 
 
 @dataclass(slots=True)
+class IRAllocate:
+    """``allocate(a(n))`` — re-sizes a heap-backed array.
+
+    Lowers to a move-assignment of a freshly-sized ``fortran::Array``.
+    ``cpp_type`` (the full ``fortran::Array<T, R>`` spelling) is filled
+    in by a resolution pass once the declared type of ``obj`` is known.
+    """
+
+    obj: str
+    extents: list[IRExpr] = field(default_factory=list)
+    lowers: list[IRExpr] = field(default_factory=list)
+    cpp_type: str = ""
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class IRDeallocate:
+    """``deallocate(a)`` — releases an allocatable array's storage."""
+
+    obj: str
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class IRReturn:
     value: IRExpr | None = None
     leading_comments: list[Comment] = field(default_factory=list)
@@ -314,6 +340,8 @@ IRStatement = Union[
     IRPrint,
     IRRead,
     IRStop,
+    IRAllocate,
+    IRDeallocate,
     IRIf,
     IRDo,
     IRWhile,

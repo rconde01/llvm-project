@@ -53,8 +53,10 @@ from .ir import (
     IRUnsupported,
 )
 from .ir import (
+    IRAllocate,
     IRCaseClause,
     IRCycle,
+    IRDeallocate,
     IRDerivedType,
     IRExit,
     IRMember,
@@ -380,6 +382,7 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
             sub.used_modules.extend(_lower_use_statements(child))
         elif child.kind == "ExecutionPart":
             sub.body.extend(_lower_execution(child))
+    _resolve_allocations(sub)
 
 
 def _lower_use_statements(spec_part: Node) -> list[str]:
@@ -528,11 +531,30 @@ def _make_array_type(element_type: IRType, array_spec: Node) -> IRType:
             extents.append(hi)
             if not _explicit_shape_is_const(shape):
                 all_static = False
-        elif shape.kind in (
-            "AssumedShapeSpec",
-            "DeferredShapeSpec",
-            "AssumedSizeSpec",
-        ):
+        elif shape.kind == "DeferredShapeSpecList":
+            # ``a(:)`` / ``a(:,:)`` — allocatable / pointer array.  The
+            # rank is the ``int`` child; extents are unknown until
+            # ALLOCATE, so we emit no extents (default-constructed,
+            # empty array) and let the allocate statement size it.
+            rank_node = shape.first_child("int")
+            try:
+                rank_n = int(rank_node.fortran) if rank_node and rank_node.fortran else 1
+            except ValueError:
+                rank_n = 1
+            return IRType(
+                cpp=f"fortran::Array<{element_type.cpp}, {rank_n}>",
+                fortran=f"{element_type.fortran}, allocatable",
+                is_array=True,
+                array_rank=rank_n,
+                array_extent_exprs=(),  # empty -> default-constructed
+                array_static=False,
+                element_type_cpp=element_type.cpp,
+                is_integer=element_type.is_integer,
+                is_real=element_type.is_real,
+                is_logical=element_type.is_logical,
+                is_character=element_type.is_character,
+            )
+        elif shape.kind in ("AssumedShapeSpec", "AssumedSizeSpec"):
             # Unsupported for now; the user will get a TODO when the
             # emitted code fails to compile.
             extents.append(f"/* TODO: {shape.kind} */ 0")
@@ -729,6 +751,10 @@ def _lower_action_inner(inner: Node) -> IRStatement | None:
             return _lower_read(inner)
         case "StopStmt":
             return _lower_stop(inner)
+        case "AllocateStmt":
+            return _lower_allocate(inner)
+        case "DeallocateStmt":
+            return _lower_deallocate(inner)
         case "CallStmt":
             return _lower_call(inner)
         case "ReturnStmt":
@@ -826,6 +852,68 @@ def _input_stream_for_unit(io_unit: Node | None) -> str:
         if lit.fortran and lit.fortran.split("_")[0] == "5":
             return "std::cin"
     return "std::cin"
+
+
+def _lower_allocate(node: Node) -> IRStatement:
+    """Lower ``allocate(a(n))`` / ``allocate(a(lo:hi))``.
+
+    Only the first allocation object is handled (the common case);
+    multi-object ``allocate(a(n), b(m))`` would need the dispatcher to
+    return several statements, which it can't yet.
+    """
+    alloc = node.find_first("Allocation")
+    if alloc is None:
+        return _unsupported(node, kind="AllocateStmt")
+    obj_node = alloc.find_first("AllocateObject")
+    name = obj_node.find_first("Name") if obj_node is not None else None
+    obj = name.fortran.lower() if name is not None and name.fortran else "?"
+
+    extents: list[IRExpr] = []
+    lowers: list[IRExpr] = []
+    has_lower = False
+    for shape in alloc.find_all("AllocateShapeSpec"):
+        bound_nodes = [
+            c for c in shape.children if c.find_first("Expr") is not None
+        ]
+        bounds = [_lower_expression(b) for b in bound_nodes]
+        if len(bounds) >= 2:
+            lo, hi = bounds[0], bounds[1]
+            has_lower = True
+            lowers.append(lo)
+            # extent = hi - lo + 1
+            extents.append(
+                IRBinaryOp(
+                    op="+",
+                    lhs=IRBinaryOp(op="-", lhs=hi, rhs=lo),
+                    rhs=IRLiteral(cpp_text="1"),
+                )
+            )
+        elif bounds:
+            extents.append(bounds[0])
+            lowers.append(IRLiteral(cpp_text="1"))
+    return IRAllocate(
+        obj=obj, extents=extents, lowers=lowers if has_lower else []
+    )
+
+
+def _lower_deallocate(node: Node) -> IRStatement:
+    obj_node = node.find_first("AllocateObject")
+    name = obj_node.find_first("Name") if obj_node is not None else None
+    obj = name.fortran.lower() if name is not None and name.fortran else "?"
+    return IRDeallocate(obj=obj)
+
+
+def _resolve_allocations(sub: IRSubprogram) -> None:
+    """Fill in each IRAllocate's cpp_type from the declared type of its
+    target (known once the subprogram's locals are lowered)."""
+    types = {loc.name: loc.type.cpp for loc in sub.locals}
+
+    def fix(stmt: IRStatement) -> IRStatement:
+        if isinstance(stmt, IRAllocate) and stmt.obj in types:
+            stmt.cpp_type = types[stmt.obj]
+        return stmt
+
+    sub.body = [map_statement(s, on_stmt=fix) for s in sub.body]
 
 
 def _lower_stop(node: Node) -> IRStop:

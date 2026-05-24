@@ -24,12 +24,14 @@ from __future__ import annotations
 from typing import Callable
 
 from .ir import (
+    IRAllocate,
     IRAssignment,
     IRBinaryOp,
     IRCall,
     IRCaseClause,
     IRComment,
     IRCycle,
+    IRDeallocate,
     IRDo,
     IRExit,
     IRExpr,
@@ -175,6 +177,17 @@ def _map_statement_children(
             leading_comments=stmt.leading_comments,
             trailing_comments=stmt.trailing_comments,
         )
+    if isinstance(stmt, IRAllocate):
+        return IRAllocate(
+            obj=stmt.obj,
+            extents=[_e(e, on_expr) for e in stmt.extents],
+            lowers=[_e(e, on_expr) for e in stmt.lowers],
+            cpp_type=stmt.cpp_type,
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    if isinstance(stmt, IRDeallocate):
+        return stmt
     if isinstance(stmt, IRReturn):
         return IRReturn(
             value=_e(stmt.value, on_expr) if stmt.value is not None else None,

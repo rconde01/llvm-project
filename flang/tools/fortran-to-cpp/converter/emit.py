@@ -17,12 +17,14 @@ from typing import Iterable
 from flang_ast import Comment
 
 from .ir import (
+    IRAllocate,
     IRAssignment,
     IRBinaryOp,
     IRCall,
     IRCaseClause,
     IRComment,
     IRCycle,
+    IRDeallocate,
     IRDo,
     IRExit,
     IRExpr,
@@ -223,6 +225,12 @@ def _emit_local(out: StringIO, loc: IRLocal, *, indent: int) -> None:
     _emit_comment_block(out, loc.leading_comments, indent=indent)
     prefix = "constexpr " if loc.is_parameter else ""
     if loc.type.is_array and loc.initializer is None:
+        if not loc.type.array_extent_exprs:
+            # Deferred-shape (allocatable) array: default-construct
+            # empty; an ALLOCATE statement sizes it later.
+            out.write(f"{pad}{prefix}{loc.type.cpp} {loc.name};")
+            _emit_trailing(out, loc.trailing_comments)
+            return
         # Brace-init form ``Array<T,R> name{ {extents} };`` (or
         # ``{ {lowers}, {extents} }`` for explicit lower bounds).  Braces
         # rather than parens so the same emit works whether ``name`` is a
@@ -301,6 +309,27 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         return
     if isinstance(stmt, IRStop):
         _emit_stop(out, stmt, indent=indent)
+        return
+    if isinstance(stmt, IRAllocate):
+        _emit_comment_block(out, stmt.leading_comments, indent=indent)
+        if not stmt.cpp_type:
+            out.write(f"{pad}// TODO: could not resolve type of {stmt.obj!r} "
+                      f"for allocate\n")
+            return
+        extents = ", ".join(_render_expr(e) for e in stmt.extents)
+        if stmt.lowers:
+            lowers = ", ".join(_render_expr(e) for e in stmt.lowers)
+            out.write(
+                f"{pad}{stmt.obj} = {stmt.cpp_type}({{{lowers}}}, {{{extents}}});"
+            )
+        else:
+            out.write(f"{pad}{stmt.obj} = {stmt.cpp_type}({{{extents}}});")
+        _emit_trailing(out, stmt.trailing_comments)
+        return
+    if isinstance(stmt, IRDeallocate):
+        _emit_comment_block(out, stmt.leading_comments, indent=indent)
+        out.write(f"{pad}{stmt.obj}.deallocate();")
+        _emit_trailing(out, stmt.trailing_comments)
         return
     if isinstance(stmt, IRReturn):
         _emit_comment_block(out, stmt.leading_comments, indent=indent)
