@@ -125,65 +125,232 @@ locals don't need such a struct.
 These are the choices that have real trade-offs.  Pick one each before
 the first emitter is written.
 
-### D1 — Array class implementation
+### D1 — Array class implementation **(resolved: roll our own, C++20)**
 
-How do we implement `fortran::Array<T, Rank>`?
+We will hand-write `fortran::Array<T, Rank>` targeting C++20 (no
+`std::mdspan` dependency).  Key responsibilities:
 
-  * **D1.a — Roll our own.** Hand-written template with runtime
-    bounds and column-major indexing.  Maximum control; minimum
-    external dependencies.  More code to maintain.
-  * **D1.b — Build on `std::mdspan` (C++23).** Use `mdspan` as the
-    storage view and wrap it with a Fortran-style `operator()` that
-    applies the lower-bound offsets.  Less code to write, but requires
-    a C++23 toolchain.
-  * **D1.c — Compile-time bounds when possible, runtime otherwise.**
-    Two specializations (`StaticArray<T, N1, N2, ...>` vs
-    `DynamicArray<T, Rank>`) selected by the emitter based on whether
-    the bounds are constant expressions.  Best codegen, most surface
-    area.
+  * Runtime per-dimension lower bounds (default 1) and extents.
+  * Column-major storage; `data()` returns a raw `T*` so BLAS/LAPACK
+    interop is trivial.
+  * `operator()(i)`, `operator()(i, j)`, … with the same arity and
+    1-based indexing as Fortran.  Bounds-checked in debug, raw offset
+    arithmetic in release.
+  * Owning (`Array`) and non-owning (`ArrayRef`) flavors so we can
+    pass slices without copying.
+  * Move-only ownership semantics; copying is an explicit `clone()`
+    to keep the cost visible.
 
 ### D2 — Where does the program's state live?
 
-The translation needs to pass common blocks, save structs, module
-state, and I/O units somewhere.  Two reasonable shapes:
+Three reasonable shapes.  Examples below use this tiny Fortran program
+throughout so the differences are easy to compare:
 
-  * **D2.a — One context object.** A single `Context` (or
-    `ProgramState`) struct passed by reference to every subprogram.
-    It holds all common blocks, save structs, module-variable structs,
-    and the unit→stream map.  Subprogram signatures grow by exactly
-    one parameter; cross-cutting access is uniform.  Easy to extend;
-    every routine pays the parameter cost even when it touches no
-    global state.
-  * **D2.b — Granular structs, explicit dependencies.** Each
-    subprogram takes only the structs it actually touches.  Routines
-    that need no state take none.  Signatures are honest;
-    dependencies are visible at the call site.  Translator has to
-    compute the per-subprogram dependency set (we already have the
-    pieces for this — the call graph plus a per-subprogram "what does
-    this routine read/write" pass).
-  * **D2.c — Class wrapper per module/program.** Each Fortran module
-    becomes a C++ class; its module variables become non-static
-    members; module procedures become member functions.  The main
-    program becomes a class whose constructor takes any inputs.
-    Natural OO mapping; needs an extra rule for what owns the
-    cross-module common blocks.
+```fortran
+module physics
+  real :: gravity = 9.8
+contains
+  subroutine apply_gravity(v, dt)
+    real, intent(inout) :: v
+    real, intent(in)    :: dt
+    v = v - gravity * dt
+  end subroutine
+end module
+
+program sim
+  use physics
+  common /state/ position, velocity
+  real :: position, velocity, dt
+  integer :: step
+  save  :: step
+
+  position = 0.0;  velocity = 10.0;  dt = 0.1
+  call apply_gravity(velocity, dt)
+  position = position + velocity * dt
+  print *, position, velocity
+end program
+```
+
+#### D2.a — One context object
+
+Every subprogram takes a single `Context&`.  All state lives on it.
+
+```cpp
+struct ProgramState {
+  struct PhysicsModule { float gravity = 9.8f; }   physics;
+  struct StateCommon   { float position, velocity; } state;
+  struct SimSave       { int step; }                sim_save;
+};
+
+void apply_gravity(ProgramState& ctx, float& v, float dt) {
+  v = v - ctx.physics.gravity * dt;
+}
+
+void sim(ProgramState& ctx) {
+  ctx.state.position = 0.0f;
+  ctx.state.velocity = 10.0f;
+  auto dt = 0.1f;
+  apply_gravity(ctx, ctx.state.velocity, dt);
+  ctx.state.position = ctx.state.position + ctx.state.velocity * dt;
+  std::cout << std::format("{} {}\n", ctx.state.position, ctx.state.velocity);
+}
+
+int main() {
+  ProgramState ctx;
+  sim(ctx);
+}
+```
+
+*Pros:* one parameter to thread everywhere; trivial to add new state;
+uniform call sites.  *Cons:* every signature pays the parameter cost
+even when the body touches nothing; access reads `ctx.physics.gravity`
+rather than just `gravity`; "what state does this routine actually
+need?" is invisible.
+
+#### D2.b — Granular per-routine state
+
+Each subprogram declares only the state it touches.
+
+```cpp
+struct PhysicsModule { float gravity = 9.8f; };
+struct StateCommon   { float position, velocity; };
+struct SimSave       { int step; };
+
+void apply_gravity(const PhysicsModule& physics, float& v, float dt) {
+  v = v - physics.gravity * dt;
+}
+
+void sim(PhysicsModule& physics, StateCommon& state, SimSave& /*save*/) {
+  state.position = 0.0f;
+  state.velocity = 10.0f;
+  auto dt = 0.1f;
+  apply_gravity(physics, state.velocity, dt);
+  state.position = state.position + state.velocity * dt;
+  std::cout << std::format("{} {}\n", state.position, state.velocity);
+}
+
+int main() {
+  PhysicsModule physics;
+  StateCommon   state{};
+  SimSave       save{};
+  sim(physics, state, save);
+}
+```
+
+*Pros:* signatures honestly advertise their dependencies; pure
+routines stay pure; better unit-testability; `const` correctness is
+trivial.  *Cons:* the translator has to compute the per-subprogram
+read/write set (we already have most of the pieces from the call
+graph); signatures change whenever a routine's state usage changes;
+deep call chains can grow a lot of parameters.
+
+#### D2.c — Class per module / program
+
+Each Fortran module becomes a C++ class; the main program is also a
+class.  Module variables become non-static members; module procedures
+become member functions.  Cross-cutting things (common blocks, shared
+state) are still standalone structs that get composed in.
+
+```cpp
+struct StateCommon { float position, velocity; };
+
+class Physics {
+public:
+  float gravity = 9.8f;
+  void apply_gravity(float& v, float dt) {
+    v = v - gravity * dt;
+  }
+};
+
+class Sim {
+public:
+  Sim(Physics& physics, StateCommon& state)
+      : physics_(physics), state_(state) {}
+
+  void run() {
+    state_.position = 0.0f;
+    state_.velocity = 10.0f;
+    auto dt = 0.1f;
+    physics_.apply_gravity(state_.velocity, dt);
+    state_.position = state_.position + state_.velocity * dt;
+    std::cout << std::format("{} {}\n", state_.position, state_.velocity);
+  }
+
+private:
+  Physics&     physics_;
+  StateCommon& state_;
+  int          step_;        // save var, owned by Sim
+};
+
+int main() {
+  Physics       physics;
+  StateCommon   state{};
+  Sim           sim(physics, state);
+  sim.run();
+}
+```
+
+*Pros:* idiomatic C++; modules feel like classes; "module variable"
+becomes a plain member; testing a module in isolation is natural.
+*Cons:* common blocks straddle modules and don't map to a single
+owner; subprograms that don't belong to a module still need a home;
+when a module USEs another module, the dependency becomes a member
+reference and lifetime management is on the caller.
+
+#### Trade-off summary
+
+|                          | D2.a single ctx | D2.b granular | D2.c class-per-module |
+|--------------------------|:---:|:---:|:---:|
+| Translator complexity    | low | medium | medium |
+| Signature noise          | medium (always one) | low (per use) | low (members) |
+| Tells you what's touched | no  | yes | partly (only USE-deps) |
+| Cross-module common      | trivial | trivial | awkward |
+| Multiple instances       | ctor a new `ProgramState` | construct each struct | ctor a new `Sim` |
+| `const` correctness      | only at object level | per parameter | per parameter |
+| Feels like C++           | utilitarian | utilitarian | idiomatic |
 
 ### D3 — Character variable representation
 
-Fortran character variables have a fixed length set at declaration
-time and are blank-padded on assignment.  Translation options:
+`std::string_view` (already mandated by R5 for character *literals*)
+is not a candidate for character *variables*.  `string_view` is a
+**non-owning** pointer + length: it can't be assigned to, can't be
+resized, and refers to storage someone else owns.  A Fortran character
+variable, by contrast, owns mutable storage with very specific
+semantics:
+
+  * **Fixed length** declared at the type level — `CHARACTER(LEN=10)`
+    and `CHARACTER(LEN=20)` are different types, not "strings of
+    different runtime length".
+  * **Blank-padding on assignment** — `name = 'hi'` for a `LEN=10`
+    name leaves `name` as `'hi        '` (8 trailing spaces), not
+    `'hi'`.
+  * **Truncation on overflow** — assigning `'this is too long'` to a
+    `LEN=10` name keeps only the first 10 characters.
+  * **Blank-padded equality** — `'hi' == 'hi        '` is **true** in
+    Fortran (the shorter string is conceptually padded for the
+    comparison) but **false** for `std::string`.
+  * **Substring assignment** — `name(3:5) = 'XYZ'` mutates `name` in
+    place; the type system has to know `name`'s declared length.
+
+`string_view` provides none of those.  `std::string` provides the
+storage but the wrong semantics (no padding, length-aware compare,
+etc.).  We therefore need at least one purpose-built type for
+character variables:
 
   * **D3.a — `std::string` everywhere.** Drop the fixed-length
-    constraint.  Easiest to read; subtly wrong for code that depends
-    on blank-padding semantics or substring assignment.
+    constraint.  Easiest to read; subtly wrong wherever
+    blank-padding, length-aware comparison, or substring assignment
+    matter.  Bugs are silent.
   * **D3.b — Custom `FortranString<N>`** fixed-length template
-    storing `std::array<char, N>`, with assignment that pads or
-    truncates exactly as Fortran does.  Preserves semantics; uglier
-    types.
-  * **D3.c — Hybrid.** Use `std::string_view` for read-only views,
-    `FortranString<N>` for declared-length variables, `std::string`
-    only for genuinely variable-length cases (`character(len=:),
-    allocatable`).
+    storing `std::array<char, N>`, with assignment that pads /
+    truncates, length-aware equality, and a `substr(lo, hi)` that
+    returns a writable proxy when used as an lvalue.  Preserves
+    semantics; types are noisier (the length is in the type).
+  * **D3.c — Hybrid.** `std::string_view` for read-only views
+    (literals, `intent(in)` parameters);  `FortranString<N>` for
+    declared-length variables;  `std::string` only when Fortran
+    itself uses variable-length (`character(len=:), allocatable`).
+    Best fidelity, most concept variety.
 
 ### D4 — Naming policy
 
@@ -199,20 +366,44 @@ consistent:
   * Save struct name → `<Subprogram>Save`?  `<Subprogram>State`?
   * Module namespace name → match Fortran spelling, or lowercase?
 
-### D5 — Formatted I/O
+### D5 — Formatted I/O **(resolved: `std::format` with complete fidelity)**
 
-Fortran `FORMAT` strings are powerful (edit descriptors `I5`, `F10.4`,
-`Ew.dEe`, repetition, etc.).  We need a translation target.
+The target is `std::format` (C++20), with the **non-negotiable
+constraint that every Fortran edit descriptor produces byte-identical
+output to what flang would produce at runtime.**
 
-  * **D5.a — `std::format`** (C++20).  Translate each Fortran edit
-    descriptor to the closest `std::format` specifier.  Some
-    descriptors don't map cleanly (e.g. `G`, `P` scale factors).
-  * **D5.b — `fmt::format`** (external library).  Same as above but
-    with the {fmt} library, which has wider behavior and is available
-    on older toolchains.
-  * **D5.c — Helper functions.** Emit calls to small format helpers
-    in our own runtime support library that implement Fortran's exact
-    edit descriptors.  Largest behavioral fidelity; biggest runtime.
+Descriptors that have a direct `std::format` analogue (`I`, `F`, `E`,
+`A`, `L`) translate to the corresponding spec.  Descriptors that don't
+(`G` general format, `P` scale factor, `BN`/`BZ` blank
+interpretation, `T`/`TL`/`TR` tab control, `S`/`SP`/`SS` sign
+control, repetition with parenthesized groups, the dollar-sign
+carriage-control extension, etc.) get implemented as helper functions
+in our runtime support library that internally call `std::format` on
+the pieces they can and hand-format the rest.
+
+Concretely the runtime will expose:
+
+```cpp
+namespace fortran::io {
+  std::string write_format(std::string_view fortran_format, /* args */);
+  void write_format_to(std::ostream& os,
+                       std::string_view fortran_format, /* args */);
+  // Per-descriptor helpers used by the generated code, e.g.:
+  std::string fmt_F(double value, int w, int d);
+  std::string fmt_E(double value, int w, int d, std::optional<int> e = {});
+  std::string fmt_G(double value, int w, int d, std::optional<int> e = {});
+  // ...
+}
+```
+
+A `WRITE(unit, '(F10.4, 1X, A)') x, name` lowers to something like
+
+```cpp
+out << fortran::io::fmt_F(x, 10, 4) << " " << name;
+```
+
+The runtime library is where fidelity edge-cases live; the generated
+code stays clean.
 
 ### D6 — Modules and `USE`
 
@@ -269,7 +460,8 @@ and so the intermediate model is inspectable.
 ## Status
 
   * `flang-ast-py` (parse + annotate + dependency order):  **done**
-  * D1–D7 decisions:                                       **pending**
+  * Decisions resolved:                                    D1, D5
+  * Decisions pending:                                     D2, D3, D4, D6, D7
   * Lowering pass:                                         **not started**
   * Emitter:                                               **not started**
   * Runtime support library (Array, FortranString, format helpers):
