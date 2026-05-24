@@ -863,7 +863,7 @@ _NON_ELEMENTAL: frozenset[str] = frozenset(
 # be expanded into an element loop (you can't index the call result);
 # it stays a move-assignment of the returned Array.
 _ARRAY_RETURNING: frozenset[str] = frozenset(
-    {"fortran::matmul", "fortran::transpose"}
+    {"fortran::matmul", "fortran::transpose", "fortran::reshape"}
 )
 
 
@@ -1830,6 +1830,14 @@ def _lower_function_reference(node: Node) -> IRExpr:
     conv = _lower_conversion_intrinsic(callee, args)
     if conv is not None:
         return conv
+
+    # reshape(source, [d1, d2, ...]) -> fortran::reshape(source, d1, d2, ...)
+    # so the result rank is deduced from the (literal) shape's length.
+    if callee == "reshape" and len(args) >= 2 and isinstance(
+        args[1], IRArrayConstructor
+    ):
+        flat = (args[0], *args[1].elements)
+        return IRFunctionCall(callee="fortran::reshape", args=flat)
 
     cpp_callee = _INTRINSIC_MAP.get(callee, callee)
     return IRFunctionCall(callee=cpp_callee, args=tuple(args))

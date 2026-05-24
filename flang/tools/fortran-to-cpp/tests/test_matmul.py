@@ -25,6 +25,15 @@ def _have_cxx() -> bool:
 RUNTIME_INCLUDE = Path(__file__).resolve().parent.parent / "runtime" / "include"
 
 
+RESHAPE_F90 = """\
+program rs
+  integer :: m(2,3)
+  m = reshape([1, 2, 3, 4, 5, 6], [2, 3])
+  print *, m(1,1), m(2,1), m(1,2), m(2,3)
+end program
+"""
+
+
 MM_F90 = """\
 program mm
   real :: a(2,3), b(3,2), c(2,2)
@@ -61,6 +70,14 @@ class MatmulEmitTests(unittest.TestCase):
         self.assertIn("b = fortran::transpose(a);", cpp)
         self.assertIn("c = fortran::matmul(a, b);", cpp)
 
+    def test_reshape_flattens_shape_to_dim_args(self) -> None:
+        cpp = _convert(RESHAPE_F90)
+        # shape [2,3] becomes trailing dim args so the rank is deduced.
+        self.assertIn(
+            "fortran::reshape(fortran::array_of({1, 2, 3, 4, 5, 6}), 2, 3)",
+            cpp,
+        )
+
 
 @unittest.skipUnless(
     _have_flang() and _have_cxx(), "need flang and a C++20 compiler"
@@ -93,6 +110,33 @@ class MatmulRunTests(unittest.TestCase):
             # a=[[1,2,3],[4,5,6]]; b=transpose(a); c=a*b.
             # c(1,1)=1+4+9=14; c(2,2)=16+25+36=77; b(3,1)=3.
             self.assertEqual(run.stdout.split(), ["14", "77", "3"])
+
+    def test_reshape_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "in.f90"
+            f.write_text(RESHAPE_F90)
+            cpp = Path(d) / "out.cpp"
+            cpp.write_text(convert_file(f))
+            exe = Path(d) / "out"
+            cxx = (
+                shutil.which("c++")
+                or shutil.which("g++")
+                or shutil.which("clang++")
+            )
+            assert cxx is not None
+            comp = subprocess.run(
+                [cxx, "-std=c++20", "-I", str(RUNTIME_INCLUDE),
+                 str(cpp), "-o", str(exe)],
+                capture_output=True, text=True, check=False,
+            )
+            if comp.returncode != 0:
+                self.fail(f"compile failed:\n{comp.stderr}\n{cpp.read_text()}")
+            run = subprocess.run(
+                [str(exe)], capture_output=True, text=True, check=False
+            )
+            self.assertEqual(run.returncode, 0, msg=run.stderr)
+            # column-major fill of 2x3: m(1,1)=1,m(2,1)=2,m(1,2)=3,m(2,3)=6.
+            self.assertEqual(run.stdout.split(), ["1", "2", "3", "6"])
 
 
 if __name__ == "__main__":

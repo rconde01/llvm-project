@@ -321,6 +321,20 @@ template <typename A, typename B> auto matmul(const A &a, const B &b) {
   }
 }
 
+/// RESHAPE — copy ``src``'s elements (array-element / column-major
+/// order) into a new array of the given extents.  The result rank is
+/// the number of extent arguments.  Caller must ensure sizes match
+/// (no PAD/ORDER support yet).
+template <typename A, typename... Dims>
+auto reshape(const A &src, Dims... dims) {
+  constexpr std::size_t N = sizeof...(Dims);
+  Array<typename A::value_type, N> r(
+      {static_cast<index_t>(dims)...});
+  index_t k = 0;
+  src.for_each([&](const auto &v) { r.data()[k++] = v; });
+  return r;
+}
+
 /// TRANSPOSE of a rank-2 array.
 template <typename A>
 Array<typename A::value_type, 2> transpose(const A &a) {
