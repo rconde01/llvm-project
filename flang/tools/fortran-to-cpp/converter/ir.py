@@ -115,6 +115,18 @@ class IRMember:
 
 
 @dataclass(frozen=True, slots=True)
+class IRCast:
+    """A type conversion: ``static_cast<cpp_type>(operand)``.
+
+    Produced by the kind-dependent conversion intrinsics (INT, REAL,
+    DBLE, ...) where the result type depends on a kind argument.
+    """
+
+    cpp_type: str
+    operand: "IRExpr"
+
+
+@dataclass(frozen=True, slots=True)
 class IRRaw:
     """Escape hatch: emit ``text`` verbatim into the output.
 
@@ -127,7 +139,8 @@ class IRRaw:
 
 
 IRExpr = Union[
-    IRLiteral, IRName, IRBinaryOp, IRUnaryOp, IRFunctionCall, IRMember, IRRaw
+    IRLiteral, IRName, IRBinaryOp, IRUnaryOp, IRFunctionCall, IRMember,
+    IRCast, IRRaw
 ]
 
 

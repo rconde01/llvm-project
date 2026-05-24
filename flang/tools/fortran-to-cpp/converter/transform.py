@@ -36,6 +36,7 @@ from .ir import (
     IRExit,
     IRExpr,
     IRFunctionCall,
+    IRCast,
     IRIf,
     IRLiteral,
     IRMember,
@@ -79,6 +80,8 @@ def map_expr(expr: IRExpr, fn: ExprFn) -> IRExpr:
         )
     elif isinstance(expr, IRMember):
         expr = IRMember(base=map_expr(expr.base, fn), field=expr.field)
+    elif isinstance(expr, IRCast):
+        expr = IRCast(cpp_type=expr.cpp_type, operand=map_expr(expr.operand, fn))
     # IRLiteral, IRName, IRRaw are leaves.
     return fn(expr)
 

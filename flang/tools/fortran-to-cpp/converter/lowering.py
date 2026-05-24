@@ -54,6 +54,7 @@ from .ir import (
 )
 from .ir import (
     IRAllocate,
+    IRCast,
     IRCaseClause,
     IRCycle,
     IRDeallocate,
@@ -897,6 +898,11 @@ def _index_array_expr(
             op=expr.op,
             operand=_index_array_expr(expr.operand, idx, array_names),
         )
+    if isinstance(expr, IRCast):
+        return IRCast(
+            cpp_type=expr.cpp_type,
+            operand=_index_array_expr(expr.operand, idx, array_names),
+        )
     if isinstance(expr, IRFunctionCall):
         if expr.callee in _NON_ELEMENTAL:
             return expr  # whole-array argument; do not index
@@ -1453,15 +1459,64 @@ _INTRINSIC_MAP: dict[str, str] = {
     "trim": "fortran::trim", "len": "fortran::len",
     "len_trim": "fortran::len_trim", "index": "fortran::index",
     "adjustl": "fortran::adjustl", "adjustr": "fortran::adjustr",
+    # Rounding / truncating conversions (plain int/real/dble are casts,
+    # handled separately in _lower_conversion_intrinsic).
+    "nint": "fortran::nint", "aint": "fortran::aint",
+    "anint": "fortran::anint",
 }
 
 
-def _lower_function_reference(node: Node) -> IRFunctionCall:
+# Kind-dependent numeric conversion intrinsics -> C++ casts.  The
+# target C++ type depends on the (optional) kind argument.
+_INT_KIND_CPP = {
+    None: "std::int32_t", 1: "std::int8_t", 2: "std::int16_t",
+    4: "std::int32_t", 8: "std::int64_t",
+}
+_REAL_KIND_CPP = {None: "float", 4: "float", 8: "double"}
+
+
+def _lower_function_reference(node: Node) -> IRExpr:
     call = node.first_child("Call") or node
     callee = _callee_name(call)
     args = _lower_actual_args(call)
+
+    # Conversion intrinsics become static_casts whose target type
+    # depends on the kind argument.
+    conv = _lower_conversion_intrinsic(callee, args)
+    if conv is not None:
+        return conv
+
     cpp_callee = _INTRINSIC_MAP.get(callee, callee)
     return IRFunctionCall(callee=cpp_callee, args=tuple(args))
+
+
+def _lower_conversion_intrinsic(
+    callee: str, args: list[IRExpr]
+) -> IRExpr | None:
+    """Lower INT / REAL / DBLE / FLOAT to a static_cast, honoring an
+    optional kind argument; return None for non-conversion callees."""
+    if not args:
+        return None
+    operand = args[0]
+    kind = _literal_int_value(args[1]) if len(args) > 1 else None
+    if callee == "int":
+        return IRCast(cpp_type=_INT_KIND_CPP.get(kind, "std::int32_t"),
+                      operand=operand)
+    if callee in ("real", "float"):
+        return IRCast(cpp_type=_REAL_KIND_CPP.get(kind, "float"),
+                      operand=operand)
+    if callee in ("dble", "dfloat"):
+        return IRCast(cpp_type="double", operand=operand)
+    return None
+
+
+def _literal_int_value(expr: IRExpr) -> int | None:
+    if isinstance(expr, IRLiteral):
+        try:
+            return int(expr.cpp_text.rstrip("Ll"))
+        except ValueError:
+            return None
+    return None
 
 
 def _callee_name(call: Node) -> str:

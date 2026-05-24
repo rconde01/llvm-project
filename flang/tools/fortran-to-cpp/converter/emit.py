@@ -21,6 +21,7 @@ from .ir import (
     IRAssignment,
     IRBinaryOp,
     IRCall,
+    IRCast,
     IRCaseClause,
     IRComment,
     IRCycle,
@@ -573,6 +574,8 @@ def _render_expr(expr: IRExpr) -> str:
         return f"{expr.callee}({args})"
     if isinstance(expr, IRMember):
         return f"{_render_expr(expr.base)}.{expr.field}"
+    if isinstance(expr, IRCast):
+        return f"static_cast<{expr.cpp_type}>({_render_expr(expr.operand)})"
     if isinstance(expr, IRRaw):
         return expr.text
     return f"/* unhandled expr {type(expr).__name__} */"

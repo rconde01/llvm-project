@@ -24,12 +24,29 @@
 
 #include "array.hpp"
 
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <string_view>
 
 namespace fortran {
+
+// ---- Numeric conversion helpers (rounding / truncating forms) -------------
+// The plain casts INT/REAL/DBLE are emitted as static_cast directly; these
+// are the ones that round or truncate.
+
+/// NINT — round to the nearest integer.
+template <typename T> std::int32_t nint(T x) {
+  return static_cast<std::int32_t>(std::llround(x));
+}
+
+/// AINT — truncate toward zero, result stays real.
+template <typename T> T aint(T x) { return std::trunc(x); }
+
+/// ANINT — round to nearest, result stays real.
+template <typename T> T anint(T x) { return std::round(x); }
 
 // ---- Character intrinsics -------------------------------------------------
 // These accept anything convertible to std::string_view, so they work on
