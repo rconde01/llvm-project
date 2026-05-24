@@ -1462,6 +1462,12 @@ def _lower_do_construct(node: Node) -> IRStatement:
         body = _lower_block(body_block) if body_block else []
         return IRWhile(condition=IRLiteral(cpp_text="true"), body=body)
 
+    # ``do concurrent (i = lo:hi[:st][, j = ...])`` — independent
+    # iterations; a plain (nested) for loop is a correct translation.
+    concurrent = loop_control.find_first("Concurrent")
+    if concurrent is not None:
+        return _lower_do_concurrent(concurrent, body_block)
+
     # ``do while (cond)`` — LoopControl wraps a Scalar logical expr and
     # has no LoopBounds child.
     bounds = loop_control.find_first("LoopBounds")
@@ -1483,6 +1489,39 @@ def _lower_do_construct(node: Node) -> IRStatement:
 
     body = _lower_block(body_block) if body_block else []
     return IRDo(var=var, lower=lo, upper=hi, step=step, body=body)
+
+
+def _lower_do_concurrent(concurrent: Node, body_block: Node | None) -> IRStatement:
+    """Lower ``do concurrent`` to a (nested) for loop.
+
+    Each ConcurrentControl is ``name = lo:hi[:stride]``.  The index is
+    construct-local, so it's declared in the for-init (declare=True);
+    leftmost control is the outermost loop.
+    """
+    controls = list(concurrent.find_all("ConcurrentControl"))
+    body: list[IRStatement] = _lower_block(body_block) if body_block else []
+    for ctrl in reversed(controls):
+        name = ctrl.find_first("Name")
+        var = name.fortran.lower() if name is not None and name.fortran else "i"
+        bounds = [
+            _lower_expression(s)
+            for s in ctrl.children
+            if s.kind == "Scalar"
+        ]
+        lo = bounds[0] if bounds else IRRaw("0")
+        hi = bounds[1] if len(bounds) > 1 else IRRaw("0")
+        step = bounds[2] if len(bounds) > 2 else None
+        body = [
+            IRDo(
+                var=var,
+                lower=lo,
+                upper=hi,
+                step=step,
+                body=body,
+                declare=True,
+            )
+        ]
+    return body[0] if body else _unsupported_stmt("empty do concurrent")
 
 
 def _lower_case_construct(node: Node) -> IRStatement:
