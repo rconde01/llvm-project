@@ -38,6 +38,29 @@ TEST(fmt_G_handles_zero) {
   CHECK_EQ(s.size(), 10u);
 }
 
+// ---- E edit descriptor ---------------------------------------------------
+
+TEST(fmt_E_fortran_style_mantissa) {
+  // Fortran E12.4 of 3.14159 -> "  0.3142E+01" (mantissa in [0.1,1)).
+  auto s = fortran::io::fmt_E(3.14159, 12, 4);
+  CHECK_EQ(s, "  0.3142E+01"sv);
+}
+
+TEST(fmt_E_negative) {
+  auto s = fortran::io::fmt_E(-3.14159, 12, 4);
+  CHECK_EQ(s, " -0.3142E+01"sv);
+}
+
+TEST(fmt_E_negative_exponent) {
+  auto s = fortran::io::fmt_E(0.0123, 12, 4);
+  CHECK_EQ(s, "  0.1230E-01"sv);
+}
+
+TEST(fmt_E_zero) {
+  auto s = fortran::io::fmt_E(0.0, 12, 4);
+  CHECK_EQ(s, "  0.0000E+00"sv);
+}
+
 // ---- P scale factor ------------------------------------------------------
 
 TEST(fmt_F_with_scale_shifts_decimal) {

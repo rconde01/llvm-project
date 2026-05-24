@@ -158,15 +158,18 @@ class IRCall:
 
 @dataclass(slots=True)
 class IRPrint:
-    """``print *, …``  /  ``write(unit, *) …`` — list-directed only for now.
+    """``print …``  /  ``write(unit, …) …`` output statement.
 
-    The emitter renders this as a chain of ``<<`` operators on the
-    chosen stream (``std::cout`` for ``print``, the bound stream for
-    ``write``).
+    When ``format`` is ``None`` the output is list-directed and the
+    emitter renders a plain ``<<`` chain.  When ``format`` holds a
+    Fortran format string (e.g. ``"(I5, 1X, F8.2)"``) the emitter maps
+    each edit descriptor to inline ``std::format`` or a ``fortran::io``
+    helper (see format.py / decision D5).
     """
 
     items: list[IRExpr] = field(default_factory=list)
     stream: str = "std::cout"  # C++ stream expression
+    format: str | None = None
     leading_comments: list[Comment] = field(default_factory=list)
     trailing_comments: list[Comment] = field(default_factory=list)
 

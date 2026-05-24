@@ -688,6 +688,11 @@ def _lower_action_statement(stmt: Node) -> IRStatement | None:
         p.leading_comments = leading
         p.trailing_comments = trailing
         return p
+    if inner.kind == "WriteStmt":
+        p = _lower_write(inner)
+        p.leading_comments = leading
+        p.trailing_comments = trailing
+        return p
     if inner.kind == "CallStmt":
         c = _lower_call(inner)
         c.leading_comments = leading
@@ -759,7 +764,54 @@ def _lower_print(node: Node) -> IRPrint:
             expr = sub.find_first("Expr")
             if expr is not None:
                 items.append(_lower_expression(expr))
-    return IRPrint(items=items)
+    return IRPrint(items=items, format=_extract_format(node))
+
+
+def _lower_write(node: Node) -> IRPrint:
+    """Lower ``write(unit, fmt) items``.
+
+    The unit selects the stream: ``*`` / ``6`` -> std::cout, ``0`` ->
+    std::cerr.  Other (file) units are a TODO; we default to cout.
+    """
+    items: list[IRExpr] = []
+    for sub in node.children:
+        if sub.kind == "OutputItem":
+            expr = sub.find_first("Expr")
+            if expr is not None:
+                items.append(_lower_expression(expr))
+    stream = _stream_for_unit(node.first_child("IoUnit"))
+    return IRPrint(items=items, stream=stream, format=_extract_format(node))
+
+
+def _stream_for_unit(io_unit: Node | None) -> str:
+    if io_unit is None:
+        return "std::cout"
+    if io_unit.first_child("Star") is not None:
+        return "std::cout"
+    # A literal unit number: map the conventional ones.
+    for lit in io_unit.find_all("IntLiteralConstant"):
+        if lit.fortran:
+            num = lit.fortran.split("_")[0]
+            if num == "0":
+                return "std::cerr"
+            if num in ("5", "6"):
+                return "std::cout"
+    return "std::cout"
+
+
+def _extract_format(node: Node) -> str | None:
+    """Return the format string for a Print/Write, or None for the
+    list-directed (``*``) form."""
+    fmt = node.first_child("Format")
+    if fmt is None:
+        return None
+    if fmt.first_child("Star") is not None:
+        return None
+    # The format is usually a character literal; pull its body.
+    for s in fmt.walk():
+        if s.kind == "string" and s.fortran is not None:
+            return s.fortran
+    return None
 
 
 def _lower_call(node: Node) -> IRCall:

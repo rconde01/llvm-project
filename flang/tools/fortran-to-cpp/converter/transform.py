@@ -154,6 +154,7 @@ def _map_statement_children(
         return IRPrint(
             items=[_e(a, on_expr) for a in stmt.items],
             stream=stmt.stream,
+            format=stmt.format,
             leading_comments=stmt.leading_comments,
             trailing_comments=stmt.trailing_comments,
         )

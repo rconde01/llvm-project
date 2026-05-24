@@ -54,6 +54,47 @@ namespace fortran::io {
 //   use F-format when 0.1 <= |x| < 10^d, else E-format.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// E edit descriptor — scientific notation, Fortran style.
+//
+// Fortran's ``Ew.d`` normalizes the mantissa to the range [0.1, 1.0)
+// and prints a leading "0.", e.g. ``E12.4`` of 3.14159 is
+// "  0.3142E+01" — distinct from C++'s ``{:e}`` which normalizes to
+// [1, 10) ("3.1416e+00").  We therefore hand-format to match Fortran.
+//
+//   w = total field width, d = digits after the decimal point,
+//   e = exponent digit count (default 2).
+// ---------------------------------------------------------------------------
+
+inline std::string fmt_E(double value, int w, int d,
+                         std::optional<int> e = std::nullopt) {
+  const int edigits = e.value_or(2);
+  const bool neg = std::signbit(value);
+  double a = std::abs(value);
+
+  int exp = 0;
+  if (a != 0.0) {
+    exp = static_cast<int>(std::floor(std::log10(a))) + 1;  // 0.x * 10^exp
+    a /= std::pow(10.0, exp);
+    // Guard against rounding pushing the mantissa to 1.0.
+    if (a >= 1.0) {
+      a /= 10.0;
+      ++exp;
+    }
+  }
+  // Mantissa with d digits after the implicit "0.".
+  std::string mant = std::format("{:.{}f}", a, d);  // "0.3142"
+  // Exponent field: sign + edigits digits.
+  std::string exp_str = std::format("{:0{}d}", std::abs(exp), edigits);
+  std::string body = (neg ? "-" : "") + mant + "E" +
+                     (exp < 0 ? "-" : "+") + exp_str;
+  // Right-justify into width w.
+  if (static_cast<int>(body.size()) < w) {
+    body.insert(body.begin(), w - body.size(), ' ');
+  }
+  return body;
+}
+
 inline std::string fmt_G(double value, int w, int d,
                          std::optional<int> e = std::nullopt) {
   using std::abs;

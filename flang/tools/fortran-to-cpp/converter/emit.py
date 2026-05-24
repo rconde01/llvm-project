@@ -260,13 +260,14 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
     if isinstance(stmt, IRPrint):
         _emit_comment_block(out, stmt.leading_comments, indent=indent)
         out.write(f"{pad}{stmt.stream}")
-        # Fortran list-directed I/O typically separates with a space.
-        sep_chunks = []
-        for i, item in enumerate(stmt.items):
-            if i > 0:
-                sep_chunks.append(" << ' '")
-            sep_chunks.append(f" << {_render_expr(item)}")
-        out.write("".join(sep_chunks))
+        if stmt.format is not None:
+            _emit_formatted_chunks(out, stmt)
+        else:
+            # List-directed: separate items with a single space.
+            for i, item in enumerate(stmt.items):
+                if i > 0:
+                    out.write(" << ' '")
+                out.write(f" << {_render_expr(item)}")
         out.write(" << '\\n';")
         _emit_trailing(out, stmt.trailing_comments)
         return
@@ -304,6 +305,31 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         _emit_unsupported(out, stmt, indent=indent)
         return
     out.write(f"{pad}// TODO: unhandled IR statement {type(stmt).__name__}\n")
+
+
+def _emit_formatted_chunks(out: StringIO, stmt: "IRPrint") -> None:
+    """Emit the ``<< ...`` chain for a format-directed print/write.
+
+    Falls back to list-directed output (with a TODO note) when the
+    format string uses a feature the parser doesn't model yet.
+    """
+    from .format import FormatParseError, render_format
+
+    assert stmt.format is not None
+    item_exprs = [_render_expr(it) for it in stmt.items]
+    try:
+        chunks = render_format(stmt.format, item_exprs)
+    except FormatParseError as exc:
+        # Couldn't parse — degrade gracefully to list-directed, leaving
+        # a marker so the user knows fidelity wasn't achieved.
+        out.write(f" /* TODO: format {stmt.format!r}: {exc} */")
+        for i, expr in enumerate(item_exprs):
+            if i > 0:
+                out.write(" << ' '")
+            out.write(f" << {expr}")
+        return
+    for chunk in chunks:
+        out.write(f" << {chunk}")
 
 
 def _emit_while(out: StringIO, node: IRWhile, *, indent: int) -> None:
