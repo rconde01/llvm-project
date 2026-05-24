@@ -33,6 +33,7 @@ from .ir import (
     IRExpr,
     IRFunctionCall,
     IRIf,
+    IRImpliedDo,
     IRLiteral,
     IRLocal,
     IRMember,
@@ -291,6 +292,9 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         _emit_trailing(out, stmt.trailing_comments)
         return
     if isinstance(stmt, IRPrint):
+        if any(isinstance(it, IRImpliedDo) for it in stmt.items):
+            _emit_io_with_implied_do(out, stmt, write=True, indent=indent)
+            return
         _emit_comment_block(out, stmt.leading_comments, indent=indent)
         out.write(f"{pad}{stmt.stream}")
         if stmt.format is not None:
@@ -305,6 +309,9 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         _emit_trailing(out, stmt.trailing_comments)
         return
     if isinstance(stmt, IRRead):
+        if any(isinstance(it, IRImpliedDo) for it in stmt.items):
+            _emit_io_with_implied_do(out, stmt, write=False, indent=indent)
+            return
         _emit_comment_block(out, stmt.leading_comments, indent=indent)
         out.write(f"{pad}{stmt.stream}")
         for item in stmt.items:
@@ -414,6 +421,45 @@ def _emit_formatted_chunks(out: StringIO, stmt: "IRPrint") -> None:
         return
     for chunk in chunks:
         out.write(f" << {chunk}")
+
+
+def _emit_io_with_implied_do(out, stmt, *, write: bool, indent: int) -> None:
+    """Emit a print/read whose item list contains an implied-do, as a
+    sequence of statements (plain items inline, implied-do items as
+    loops).  Used only for the list-directed forms."""
+    pad = "  " * indent
+    _emit_comment_block(out, stmt.leading_comments, indent=indent)
+    stream = stmt.stream
+    op = "<<" if write else ">>"
+
+    def emit_item(item, ind: int) -> None:
+        ipad = "  " * ind
+        if isinstance(item, IRImpliedDo):
+            var = item.var
+            lo = _render_expr(item.lower)
+            hi = _render_expr(item.upper)
+            step = _render_expr(item.step) if item.step is not None else "1"
+            cond = f"{var} <= {hi}" if step == "1" else (
+                f"({step} >= 0 ? {var} <= {hi} : {var} >= {hi})"
+            )
+            incr = f"++{var}" if step == "1" else f"{var} += {step}"
+            out.write(
+                f"{ipad}for (fortran::index_t {var} = {lo}; {cond}; {incr}) {{\n"
+            )
+            for sub in item.items:
+                emit_item(sub, ind + 1)
+            out.write(f"{ipad}}}\n")
+        else:
+            rendered = _render_expr(item)
+            if write:
+                out.write(f"{ipad}{stream} {op} {rendered} {op} ' ';\n")
+            else:
+                out.write(f"{ipad}{stream} {op} {rendered};\n")
+
+    for it in stmt.items:
+        emit_item(it, indent)
+    if write:
+        out.write(f"{pad}{stream} << '\\n';\n")
 
 
 def _emit_stop(out: StringIO, stmt: "IRStop", *, indent: int) -> None:

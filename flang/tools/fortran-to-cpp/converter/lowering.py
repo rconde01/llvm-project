@@ -62,6 +62,7 @@ from .ir import (
     IRDeallocate,
     IRDerivedType,
     IRExit,
+    IRImpliedDo,
     IRMember,
     IRModule,
     IRRead,
@@ -939,8 +940,11 @@ def _expand_array_assignments(sub: IRSubprogram) -> None:
             loop = _section_assignment_loop(stmt, arrays, array_names, counter)
             return loop if loop is not None else stmt
         if isinstance(tgt, IRName) and tgt.name in arrays:
-            # An array-returning intrinsic (matmul/transpose) stays a
-            # whole-array move-assignment, not an element loop.
+            # ``a = [(expr, i=lo,hi)]`` -> a fill loop.
+            if isinstance(stmt.value, IRImpliedDo):
+                return _implied_do_fill_loop(tgt.name, stmt.value, stmt)
+            # An array-returning intrinsic (matmul/transpose) or a plain
+            # array constructor stays a whole-array move-assignment.
             if isinstance(stmt.value, IRArrayConstructor) or (
                 isinstance(stmt.value, IRFunctionCall)
                 and stmt.value.callee in _ARRAY_RETURNING
@@ -1032,6 +1036,38 @@ def _where_loop(
 
 def _unsupported_stmt(note: str) -> IRStatement:
     return IRUnsupported(kind="WHERE", source_text="", note=note)
+
+
+def _implied_do_fill_loop(
+    target: str, impl: IRImpliedDo, stmt: IRAssignment
+) -> IRStatement:
+    """``a = [(value, i=lo,hi[,step])]`` -> a loop filling a in order.
+
+    Element position is ``(i - lo)`` (or ``(i - lo)/step``); the
+    destination index is ``a.lbound(1) + position``.
+    """
+    value = impl.items[0] if impl.items else IRRaw("0")
+    pos = IRBinaryOp(op="-", lhs=IRName(name=impl.var, fortran=impl.var),
+                     rhs=impl.lower)
+    if impl.step is not None:
+        pos = IRBinaryOp(op="/", lhs=pos, rhs=impl.step)
+    dest = IRBinaryOp(op="+", lhs=IRRaw(f"{target}.lbound(1)"), rhs=pos)
+    body: list[IRStatement] = [
+        IRAssignment(
+            target=IRFunctionCall(callee=target, args=(dest,)),
+            value=value,
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    ]
+    return IRDo(
+        var=impl.var,
+        lower=impl.lower,
+        upper=impl.upper,
+        step=impl.step,
+        body=body,
+        declare=True,
+    )
 
 
 def _contains_section(expr: IRExpr) -> bool:
@@ -1266,13 +1302,45 @@ def _lower_assignment(node: Node) -> IRAssignment:
 
 
 def _lower_print(node: Node) -> IRPrint:
+    return IRPrint(
+        items=_lower_io_items(node, "OutputItem", "OutputImpliedDo"),
+        format=_extract_format(node),
+    )
+
+
+def _lower_io_items(
+    node: Node, item_kind: str, implied_kind: str
+) -> list[IRExpr]:
+    """Lower a print/read item list, handling implied-do items."""
     items: list[IRExpr] = []
     for sub in node.children:
-        if sub.kind == "OutputItem":
-            expr = sub.find_first("Expr")
+        if sub.kind == item_kind:
+            # An item may wrap an implied-do; check that before falling
+            # back to a recursive Expr search (which would wrongly pick
+            # up the implied-do's inner element).
+            impl = sub.first_child(implied_kind)
+            if impl is not None:
+                items.append(
+                    _lower_io_implied_do(impl, item_kind, implied_kind)
+                )
+                continue
+            expr = sub.find_first("Expr") or sub.find_first("Variable")
             if expr is not None:
                 items.append(_lower_expression(expr))
-    return IRPrint(items=items, format=_extract_format(node))
+        elif sub.kind == implied_kind:
+            items.append(_lower_io_implied_do(sub, item_kind, implied_kind))
+    return items
+
+
+def _lower_io_implied_do(
+    node: Node, item_kind: str, implied_kind: str
+) -> IRExpr:
+    lb = node.find_first("LoopBounds")
+    var, lo, hi, step = _lower_loop_bounds(lb)
+    inner = _lower_io_items(node, item_kind, implied_kind)
+    return IRImpliedDo(
+        var=var, lower=lo, upper=hi, step=step, items=tuple(inner)
+    )
 
 
 def _lower_write(node: Node) -> IRPrint:
@@ -1297,12 +1365,7 @@ def _lower_read(node: Node) -> IRRead:
     Only list-directed input is handled; the items become a ``>>``
     chain on the stream (``*`` / ``5`` -> std::cin).
     """
-    items: list[IRExpr] = []
-    for sub in node.children:
-        if sub.kind == "InputItem":
-            var = sub.find_first("Variable") or sub.find_first("Designator")
-            if var is not None:
-                items.append(_lower_expression(var))
+    items = _lower_io_items(node, "InputItem", "InputImpliedDo")
     stream = _input_stream_for_unit(node.first_child("IoUnit"))
     return IRRead(items=items, stream=stream)
 
@@ -1687,17 +1750,55 @@ def _lower_array_constructor(node: Node) -> IRExpr:
     Only the plain element-list form is handled; implied-do array
     constructors (``[(i, i=1,n)]``) fall back to a TODO.
     """
-    elements: list[IRExpr] = []
     spec = node.first_child("AcSpec")
     if spec is None:
         return _expr_raw(node)
-    for ac in spec.children_of_kind("AcValue"):
+    ac_values = spec.children_of_kind("AcValue")
+    # A single bare implied-do: [(expr, i=lo,hi[,step])].
+    if len(ac_values) == 1:
+        impl = ac_values[0].find_first("AcImpliedDo")
+        if impl is not None:
+            return _lower_ac_implied_do(impl)
+    elements: list[IRExpr] = []
+    for ac in ac_values:
         if ac.find_first("AcImpliedDo") is not None:
-            return _expr_raw(node)  # TODO: implied-do constructors
+            return _expr_raw(node)  # TODO: mixed / nested implied-do
         expr = ac.find_first("Expr")
         if expr is not None:
             elements.append(_lower_expression(expr))
     return IRArrayConstructor(elements=tuple(elements))
+
+
+def _lower_ac_implied_do(node: Node) -> IRExpr:
+    value = node.find_first("Expr")
+    control = node.find_first("AcImpliedDoControl")
+    lb = control.find_first("LoopBounds") if control is not None else None
+    var, lo, hi, step = _lower_loop_bounds(lb)
+    items = (_lower_expression(value),) if value is not None else ()
+    return IRImpliedDo(var=var, lower=lo, upper=hi, step=step, items=items)
+
+
+def _lower_loop_bounds(
+    lb: Node | None,
+) -> tuple[str, IRExpr, IRExpr, IRExpr | None]:
+    """Lower a LoopBounds whose first Scalar is the index variable and
+    whose remaining Scalars are lo / hi / step expressions."""
+    if lb is None:
+        return "i", IRRaw("1"), IRRaw("1"), None
+    scalars = lb.children_of_kind("Scalar")
+    var = "i"
+    if scalars:
+        nm = scalars[0].find_first("Name")
+        if nm is not None and nm.fortran:
+            var = nm.fortran.lower()
+    bounds = []
+    for s in scalars[1:]:
+        e = s.find_first("Expr")
+        bounds.append(_lower_expression(e) if e is not None else IRRaw("0"))
+    lo = bounds[0] if bounds else IRRaw("1")
+    hi = bounds[1] if len(bounds) > 1 else IRRaw("1")
+    step = bounds[2] if len(bounds) > 2 else None
+    return var, lo, hi, step
 
 
 def _lower_structure_component(node: Node) -> IRExpr:

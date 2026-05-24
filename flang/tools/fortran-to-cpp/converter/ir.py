@@ -147,6 +147,22 @@ class IRArrayConstructor:
 
 
 @dataclass(frozen=True, slots=True)
+class IRImpliedDo:
+    """An implied-do ``(items..., var=lo,hi[,step])``.
+
+    Appears in array constructors (``[(i*i, i=1,5)]``) and in I/O item
+    lists (``print *, (a(i), i=1,n)``).  Expanded into an explicit loop
+    by the array-expansion pass (constructor form) or the emitter
+    (I/O form)."""
+
+    var: str
+    lower: "IRExpr"
+    upper: "IRExpr"
+    step: "IRExpr | None"
+    items: tuple  # tuple[IRExpr, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class IRCast:
     """A type conversion: ``static_cast<cpp_type>(operand)``.
 
@@ -172,7 +188,7 @@ class IRRaw:
 
 IRExpr = Union[
     IRLiteral, IRName, IRBinaryOp, IRUnaryOp, IRFunctionCall, IRMember,
-    IRCast, IRSection, IRArrayConstructor, IRRaw
+    IRCast, IRSection, IRArrayConstructor, IRImpliedDo, IRRaw
 ]
 
 

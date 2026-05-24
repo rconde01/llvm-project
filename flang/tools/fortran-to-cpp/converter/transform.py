@@ -40,6 +40,7 @@ from .ir import (
     IRFunctionCall,
     IRCast,
     IRIf,
+    IRImpliedDo,
     IRLiteral,
     IRMember,
     IRName,
@@ -86,6 +87,14 @@ def map_expr(expr: IRExpr, fn: ExprFn) -> IRExpr:
         expr = IRMember(base=map_expr(expr.base, fn), field=expr.field)
     elif isinstance(expr, IRCast):
         expr = IRCast(cpp_type=expr.cpp_type, operand=map_expr(expr.operand, fn))
+    elif isinstance(expr, IRImpliedDo):
+        expr = IRImpliedDo(
+            var=expr.var,
+            lower=map_expr(expr.lower, fn),
+            upper=map_expr(expr.upper, fn),
+            step=map_expr(expr.step, fn) if expr.step is not None else None,
+            items=tuple(map_expr(e, fn) for e in expr.items),
+        )
     elif isinstance(expr, IRArrayConstructor):
         expr = IRArrayConstructor(
             elements=tuple(map_expr(e, fn) for e in expr.elements)
