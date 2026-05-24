@@ -442,24 +442,76 @@ How do `USE`-imported names resolve at the C++ level?
   * Open: do we forbid wildcard `USE m`?  It expands to an
     enumeration of imported names — possibly hundreds.
 
-### D7 — Untranslatable constructs
+### D7 — Untranslatable constructs **(partial: EQUIVALENCE resolved)**
 
-We will hit Fortran features that don't have a clean C++ analogue:
+#### EQUIVALENCE → `std::bit_cast` + byte buffer
 
-  * `EQUIVALENCE` (memory aliasing)
-  * `ENTRY` statements (alternate entry points)
-  * Computed/assigned GOTO
-  * Alternate returns
-  * `HOLLERITH` and other ancient literals
-  * Fixed-form continuation past column 72
+Each `EQUIVALENCE` class becomes a struct with **one backing
+`std::array<std::byte, N>`** sized to cover the union of the aliased
+storages, plus **one accessor proxy per name** that reads / writes
+its declared type into the buffer via `std::bit_cast`
+(whole-value, same-size) or `std::memcpy` (offset or different-size
+access).  Both are defined behavior — no strict-aliasing UB even
+under `-O3`.
 
-Decide up front:
+Example: same-size type pun
 
-  * **D7.a — Fail with a clear diagnostic** and refuse to emit.
-  * **D7.b — Emit a `// TODO: translate <construct>` placeholder** so
-    the user can patch by hand.
-  * **D7.c — Mixed:** fail on memory-unsafe constructs (EQUIVALENCE,
-    assigned GOTO), `TODO` on awkward but safe ones.
+```fortran
+real    :: x
+integer :: bits
+equivalence (x, bits)
+```
+
+```cpp
+struct XBits_Equiv {
+  std::array<std::byte, sizeof(float)> _store{};
+  fortran::EquivSlot<float,         0> x   { _store.data() };
+  fortran::EquivSlot<std::int32_t,  0> bits{ _store.data() };
+};
+```
+
+Example: array overlap with offset
+
+```fortran
+real :: big(100), tail(10)
+equivalence (big(91), tail(1))
+```
+
+```cpp
+struct BigTail_Equiv {
+  std::array<std::byte, 100 * sizeof(float)> _store{};
+  fortran::ArrayRef<float, 1> big { _store.data(),  /*offset=*/ 0, /*extent=*/100 };
+  fortran::ArrayRef<float, 1> tail{ _store.data(),  /*offset=*/90, /*extent=*/ 10 };
+};
+```
+
+`EquivSlot<T, Offset>` is a runtime-support template that owns no
+storage; it converts to/from `T` via `bit_cast` and a 1-line
+`memcpy`-based load/store.  `ArrayRef` already takes a base pointer +
+lower-bound + extent (R1 / D1), so the array-overlap case needs no
+EQUIVALENCE-specific codepath in the array class.
+
+#### Other untranslatable constructs
+
+For everything else listed below, default policy is **D7.c — mixed**:
+
+  * **Fail with diagnostic** (memory-unsafe or genuinely
+    irreproducible control flow):
+      * Assigned `GOTO` (`goto i` where `i` is a variable)
+      * `ENTRY` statements (alternate entry points into a routine)
+      * Alternate returns (`call foo(*100, *200)`)
+  * **Emit `// TODO:` placeholder + clear comment** (awkward but
+    safe; user can hand-finish):
+      * `HOLLERITH` literals  →  comment + raw `char[]`
+      * Computed `GOTO`       →  comment + `switch` skeleton
+      * Fixed-form continuation past column 72  →  comment, drop
+        the continuation
+      * `FORALL`              →  comment + naive loop nest (deferred
+        until we tackle vectorization)
+
+Each fail-with-diagnostic case prints **what** the construct is,
+**where** it appears (file:line:col), and a one-line suggestion (e.g.
+"rewrite assigned GOTO as `select case`").
 
 ---
 
@@ -485,11 +537,12 @@ and so the intermediate model is inspectable.
 ## Status
 
   * `flang-ast-py` (parse + annotate + dependency order):  **done**
-  * Decisions resolved:                                    D1, D2, D3, D5
+  * Decisions resolved:                                    D1, D2, D3, D5,
+                                                           D7 (EQUIVALENCE
+                                                           + escape-hatch
+                                                           policy)
   * Decisions pending:                                     D4 (naming),
-                                                           D6 (modules / USE),
-                                                           D7 (untranslatable
-                                                           constructs)
+                                                           D6 (modules / USE)
   * Lowering pass:                                         **not started**
   * Emitter:                                               **not started**
   * Runtime support library (Array, FortranString, format helpers):
