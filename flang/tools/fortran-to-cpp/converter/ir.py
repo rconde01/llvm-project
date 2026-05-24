@@ -189,6 +189,59 @@ class IRDo:
 
 
 @dataclass(slots=True)
+class IRWhile:
+    """``do while (cond) ; … ; end do``."""
+
+    condition: IRExpr
+    body: list["IRStatement"] = field(default_factory=list)
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class IRCaseClause:
+    """One ``case (...)`` arm of a select-case construct."""
+
+    values: list[IRExpr] = field(default_factory=list)
+    """Single match values: ``case (1, 2, 3)`` -> three values."""
+
+    ranges: list[tuple[IRExpr | None, IRExpr | None]] = field(
+        default_factory=list
+    )
+    """Inclusive ranges: ``case (1:5)`` -> (1, 5).  An open end is
+    ``None`` (``case (:0)`` -> (None, 0))."""
+
+    body: list["IRStatement"] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class IRSelectCase:
+    """``select case (expr) ; case ... ; case default ; end select``."""
+
+    selector: IRExpr
+    clauses: list[IRCaseClause] = field(default_factory=list)
+    default_body: list["IRStatement"] | None = None
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class IRCycle:
+    """``cycle`` — C++ ``continue;``."""
+
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class IRExit:
+    """``exit`` — C++ ``break;``."""
+
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class IRReturn:
     value: IRExpr | None = None
     leading_comments: list[Comment] = field(default_factory=list)
@@ -216,6 +269,10 @@ IRStatement = Union[
     IRPrint,
     IRIf,
     IRDo,
+    IRWhile,
+    IRSelectCase,
+    IRCycle,
+    IRExit,
     IRReturn,
     IRComment,
     IRUnsupported,

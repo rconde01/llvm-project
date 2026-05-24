@@ -20,8 +20,11 @@ from .ir import (
     IRAssignment,
     IRBinaryOp,
     IRCall,
+    IRCaseClause,
     IRComment,
+    IRCycle,
     IRDo,
+    IRExit,
     IRExpr,
     IRFunctionCall,
     IRIf,
@@ -31,6 +34,7 @@ from .ir import (
     IRPrint,
     IRRaw,
     IRReturn,
+    IRSelectCase,
     IRStateStruct,
     IRStatement,
     IRSubprogram,
@@ -38,6 +42,7 @@ from .ir import (
     IRType,
     IRUnaryOp,
     IRUnsupported,
+    IRWhile,
 )
 
 
@@ -252,10 +257,109 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
     if isinstance(stmt, IRDo):
         _emit_do(out, stmt, indent=indent)
         return
+    if isinstance(stmt, IRWhile):
+        _emit_while(out, stmt, indent=indent)
+        return
+    if isinstance(stmt, IRSelectCase):
+        _emit_select_case(out, stmt, indent=indent)
+        return
+    if isinstance(stmt, IRCycle):
+        _emit_comment_block(out, stmt.leading_comments, indent=indent)
+        out.write(f"{pad}continue;")
+        _emit_trailing(out, stmt.trailing_comments)
+        return
+    if isinstance(stmt, IRExit):
+        _emit_comment_block(out, stmt.leading_comments, indent=indent)
+        out.write(f"{pad}break;")
+        _emit_trailing(out, stmt.trailing_comments)
+        return
     if isinstance(stmt, IRUnsupported):
         _emit_unsupported(out, stmt, indent=indent)
         return
     out.write(f"{pad}// TODO: unhandled IR statement {type(stmt).__name__}\n")
+
+
+def _emit_while(out: StringIO, node: IRWhile, *, indent: int) -> None:
+    pad = "  " * indent
+    _emit_comment_block(out, node.leading_comments, indent=indent)
+    out.write(f"{pad}while ({_render_expr(node.condition)}) {{\n")
+    for s in node.body:
+        _emit_statement(out, s, indent=indent + 1)
+    out.write(f"{pad}}}\n")
+    _emit_trailing(out, node.trailing_comments)
+
+
+def _emit_select_case(
+    out: StringIO, node: IRSelectCase, *, indent: int
+) -> None:
+    """Lower select-case to an if / else-if chain.
+
+    A switch would read more naturally for the pure integer-list case,
+    but Fortran case ranges (``case (1:5)``) and character selectors
+    don't map onto C++ switch, so an if-chain keeps one code path that
+    is always correct.  When the selector isn't a trivial name we bind
+    it to a local so it's evaluated once.
+    """
+    pad = "  " * indent
+    _emit_comment_block(out, node.leading_comments, indent=indent)
+    selector_text = _render_expr(node.selector)
+    sel = selector_text
+    opened_scope = not _is_simple_selector(node.selector)
+    if opened_scope:
+        # Bind the selector to a local so it's evaluated exactly once.
+        out.write(f"{pad}{{\n")
+        out.write(f"{pad}  const auto _sel = {selector_text};\n")
+        sel = "_sel"
+        inner_pad = pad + "  "
+        body_indent = indent + 2
+    else:
+        inner_pad = pad
+        body_indent = indent + 1
+
+    first = True
+    for clause in node.clauses:
+        cond = _case_condition(sel, clause)
+        if first:
+            out.write(f"{inner_pad}if ({cond}) {{\n")
+            first = False
+        else:
+            out.write(f" else if ({cond}) {{\n")
+        for s in clause.body:
+            _emit_statement(out, s, indent=body_indent)
+        out.write(f"{inner_pad}}}")
+    if node.default_body is not None:
+        if first:
+            # No case clauses, only a default — emit a bare block.
+            out.write(f"{inner_pad}{{\n")
+        else:
+            out.write(" else {\n")
+        for s in node.default_body:
+            _emit_statement(out, s, indent=body_indent)
+        out.write(f"{inner_pad}}}\n")
+    else:
+        out.write("\n")
+    if opened_scope:
+        out.write(f"{pad}}}\n")
+    _emit_trailing(out, node.trailing_comments)
+
+
+def _is_simple_selector(expr: IRExpr) -> bool:
+    return isinstance(expr, (IRName, IRLiteral))
+
+
+def _case_condition(sel: str, clause: "IRCaseClause") -> str:
+    """Build the boolean test for one case clause."""
+    parts: list[str] = []
+    for v in clause.values:
+        parts.append(f"{sel} == {_render_expr(v)}")
+    for lo, hi in clause.ranges:
+        if lo is not None and hi is not None:
+            parts.append(f"({sel} >= {_render_expr(lo)} && {sel} <= {_render_expr(hi)})")
+        elif lo is not None:
+            parts.append(f"{sel} >= {_render_expr(lo)}")
+        elif hi is not None:
+            parts.append(f"{sel} <= {_render_expr(hi)}")
+    return " || ".join(parts) if parts else "false"
 
 
 def _emit_if(out: StringIO, node: IRIf, *, indent: int) -> None:

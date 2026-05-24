@@ -52,6 +52,14 @@ from .ir import (
     IRUnaryOp,
     IRUnsupported,
 )
+from .ir import (
+    IRCaseClause,
+    IRCycle,
+    IRExit,
+    IRSelectCase,
+    IRWhile,
+)
+from .transform import map_statement, rename_var
 from .types import lower_type_spec
 
 
@@ -248,94 +256,10 @@ def _lift_function_return(
         0,
         IRLocal(name=result_name, type=return_type),
     )
-    sub.body = [_rename_name_in_stmt(s, sub.name, result_name) for s in sub.body]
-
-
-def _rename_name_in_stmt(stmt: IRStatement, old: str, new: str) -> IRStatement:
-    """Walk an IR statement and substitute every ``IRName(old)`` with ``IRName(new)``."""
-    if isinstance(stmt, IRAssignment):
-        return IRAssignment(
-            target=_rename_name_in_expr(stmt.target, old, new),
-            value=_rename_name_in_expr(stmt.value, old, new),
-            leading_comments=stmt.leading_comments,
-            trailing_comments=stmt.trailing_comments,
-        )
-    if isinstance(stmt, IRCall):
-        return IRCall(
-            callee=stmt.callee,
-            args=[_rename_name_in_expr(a, old, new) for a in stmt.args],
-            leading_comments=stmt.leading_comments,
-            trailing_comments=stmt.trailing_comments,
-        )
-    if isinstance(stmt, IRPrint):
-        return IRPrint(
-            items=[_rename_name_in_expr(a, old, new) for a in stmt.items],
-            stream=stmt.stream,
-            leading_comments=stmt.leading_comments,
-            trailing_comments=stmt.trailing_comments,
-        )
-    if isinstance(stmt, IRReturn):
-        if stmt.value is None:
-            return stmt
-        return IRReturn(
-            value=_rename_name_in_expr(stmt.value, old, new),
-            leading_comments=stmt.leading_comments,
-            trailing_comments=stmt.trailing_comments,
-        )
-    if isinstance(stmt, IRIf):
-        return IRIf(
-            branches=[
-                (
-                    _rename_name_in_expr(cond, old, new),
-                    [_rename_name_in_stmt(s, old, new) for s in body],
-                )
-                for cond, body in stmt.branches
-            ],
-            else_body=(
-                [_rename_name_in_stmt(s, old, new) for s in stmt.else_body]
-                if stmt.else_body is not None
-                else None
-            ),
-            leading_comments=stmt.leading_comments,
-            trailing_comments=stmt.trailing_comments,
-        )
-    if isinstance(stmt, IRDo):
-        return IRDo(
-            var=new if stmt.var == old else stmt.var,
-            lower=_rename_name_in_expr(stmt.lower, old, new),
-            upper=_rename_name_in_expr(stmt.upper, old, new),
-            step=(
-                _rename_name_in_expr(stmt.step, old, new)
-                if stmt.step is not None
-                else None
-            ),
-            body=[_rename_name_in_stmt(s, old, new) for s in stmt.body],
-            leading_comments=stmt.leading_comments,
-            trailing_comments=stmt.trailing_comments,
-        )
-    return stmt
-
-
-def _rename_name_in_expr(expr: IRExpr, old: str, new: str) -> IRExpr:
-    if isinstance(expr, IRName):
-        return IRName(name=new, fortran=expr.fortran) if expr.name == old else expr
-    if isinstance(expr, IRBinaryOp):
-        return IRBinaryOp(
-            op=expr.op,
-            lhs=_rename_name_in_expr(expr.lhs, old, new),
-            rhs=_rename_name_in_expr(expr.rhs, old, new),
-        )
-    if isinstance(expr, IRUnaryOp):
-        return IRUnaryOp(
-            op=expr.op,
-            operand=_rename_name_in_expr(expr.operand, old, new),
-        )
-    if isinstance(expr, IRFunctionCall):
-        return IRFunctionCall(
-            callee=expr.callee,
-            args=tuple(_rename_name_in_expr(a, old, new) for a in expr.args),
-        )
-    return expr
+    sub.body = [
+        map_statement(s, on_expr=lambda e: rename_var(e, sub.name, result_name))
+        for s in sub.body
+    ]
 
 
 def _extract_subprogram_name(node: Node, header_kind: str) -> str | None:
@@ -635,6 +559,8 @@ def _lower_construct(construct: Node) -> IRStatement | None:
         return _lower_if_construct(target)
     if target.kind == "DoConstruct":
         return _lower_do_construct(target)
+    if target.kind == "CaseConstruct":
+        return _lower_case_construct(target)
     return _unsupported(target, kind=target.kind)
 
 
@@ -664,9 +590,53 @@ def _lower_action_statement(stmt: Node) -> IRStatement | None:
         c.trailing_comments = trailing
         return c
     if inner.kind == "ReturnStmt":
-        r = IRReturn(leading_comments=leading, trailing_comments=trailing)
-        return r
+        return IRReturn(leading_comments=leading, trailing_comments=trailing)
+    if inner.kind == "CycleStmt":
+        return IRCycle(leading_comments=leading, trailing_comments=trailing)
+    if inner.kind == "ExitStmt":
+        return IRExit(leading_comments=leading, trailing_comments=trailing)
+    if inner.kind == "IfStmt":
+        return _lower_if_stmt(inner, leading, trailing)
     return _unsupported(inner, kind=inner.kind, leading=leading)
+
+
+def _lower_if_stmt(
+    node: Node, leading: list[Comment], trailing: list[Comment]
+) -> IRStatement:
+    """Lower a single-statement ``if (cond) action`` (no ``then``).
+
+    Modeled as an IRIf with one branch holding the single action.
+    """
+    cond_expr = node.find_first("Expr")
+    condition = _lower_expression(cond_expr) if cond_expr else IRRaw("true")
+    # The action lives under an UnlabeledStatement -> ActionStmt.
+    body: list[IRStatement] = []
+    unlabeled = node.find_first("UnlabeledStatement")
+    if unlabeled is not None:
+        action = unlabeled.find_first("ActionStmt")
+        if action is not None:
+            inner = next(iter(action.children), None)
+            if inner is not None:
+                if inner.kind == "CycleStmt":
+                    body = [IRCycle()]
+                elif inner.kind == "ExitStmt":
+                    body = [IRExit()]
+                elif inner.kind == "ReturnStmt":
+                    body = [IRReturn()]
+                elif inner.kind == "AssignmentStmt":
+                    body = [_lower_assignment(inner)]
+                elif inner.kind == "PrintStmt":
+                    body = [_lower_print(inner)]
+                elif inner.kind == "CallStmt":
+                    body = [_lower_call(inner)]
+                else:
+                    body = [_unsupported(inner, kind=inner.kind)]
+    return IRIf(
+        branches=[(condition, body)],
+        else_body=None,
+        leading_comments=leading,
+        trailing_comments=trailing,
+    )
 
 
 def _lower_assignment(node: Node) -> IRAssignment:
@@ -769,12 +739,20 @@ def _lower_do_construct(node: Node) -> IRStatement:
 
     loop_control = do_stmt.find_first("LoopControl")
     if loop_control is None:
-        return _unsupported(node, kind="DoConstruct (no LoopControl)")
+        # ``do ... end do`` with no control is an infinite loop.
+        body = _lower_block(body_block) if body_block else []
+        return IRWhile(condition=IRLiteral(cpp_text="true"), body=body)
 
-    # Only handle counted bounds for now (the LoopBounds case).
+    # ``do while (cond)`` — LoopControl wraps a Scalar logical expr and
+    # has no LoopBounds child.
     bounds = loop_control.find_first("LoopBounds")
     if bounds is None:
-        return _unsupported(node, kind="DoConstruct (only counted form supported)")
+        cond_expr = loop_control.find_first("Expr")
+        if cond_expr is not None:
+            condition = _lower_expression(cond_expr)
+            body = _lower_block(body_block) if body_block else []
+            return IRWhile(condition=condition, body=body)
+        return _unsupported(node, kind="DoConstruct (unsupported loop control)")
 
     name = bounds.find_first("Name")
     var = name.fortran.lower() if name and name.fortran else "i"
@@ -786,6 +764,69 @@ def _lower_do_construct(node: Node) -> IRStatement:
 
     body = _lower_block(body_block) if body_block else []
     return IRDo(var=var, lower=lo, upper=hi, step=step, body=body)
+
+
+def _lower_case_construct(node: Node) -> IRStatement:
+    """Lower ``select case (expr) ; case ... ; end select``."""
+    selector: IRExpr = IRRaw("/* ? */")
+    clauses: list[IRCaseClause] = []
+    default_body: list[IRStatement] | None = None
+
+    for child in node.children:
+        if child.kind == "Statement":
+            sel_stmt = child.find_first("SelectCaseStmt")
+            if sel_stmt is not None:
+                sel_expr = sel_stmt.find_first("Expr")
+                if sel_expr is not None:
+                    selector = _lower_expression(sel_expr)
+        elif child.kind == "Case":
+            clause, is_default = _lower_case(child)
+            if is_default:
+                default_body = clause.body
+            else:
+                clauses.append(clause)
+    return IRSelectCase(
+        selector=selector, clauses=clauses, default_body=default_body
+    )
+
+
+def _lower_case(case_node: Node) -> tuple[IRCaseClause, bool]:
+    """Lower one ``Case`` (a CaseStmt + Block).  Returns (clause, is_default)."""
+    values: list[IRExpr] = []
+    ranges: list[tuple[IRExpr | None, IRExpr | None]] = []
+    is_default = False
+
+    case_stmt = case_node.first_child("Statement")
+    if case_stmt is not None:
+        selector = case_stmt.find_first("CaseSelector")
+        if selector is not None:
+            if selector.first_child("Default") is not None:
+                is_default = True
+            for vr in selector.children_of_kind("CaseValueRange"):
+                _lower_case_value_range(vr, values, ranges)
+
+    block = case_node.first_child("Block")
+    body = _lower_block(block) if block is not None else []
+    return IRCaseClause(values=values, ranges=ranges, body=body), is_default
+
+
+def _lower_case_value_range(
+    vr: Node,
+    values: list[IRExpr],
+    ranges: list[tuple[IRExpr | None, IRExpr | None]],
+) -> None:
+    """A CaseValueRange is either a single value or a (lo:hi) range."""
+    range_node = vr.first_child("Range") or vr.first_child("CaseValueRange::Range")
+    if range_node is not None:
+        # Range form: children may include lower and/or upper bounds.
+        exprs = list(range_node.find_all("Expr"))
+        lo = _lower_expression(exprs[0]) if exprs else None
+        hi = _lower_expression(exprs[1]) if len(exprs) > 1 else None
+        ranges.append((lo, hi))
+        return
+    expr = vr.find_first("Expr")
+    if expr is not None:
+        values.append(_lower_expression(expr))
 
 
 # ---------------------------------------------------------------------------

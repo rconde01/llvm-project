@@ -22,26 +22,23 @@ before emission.  It mutates the translation unit in place to:
 from __future__ import annotations
 
 from .ir import (
-    IRAssignment,
-    IRBinaryOp,
     IRCall,
     IRDo,
     IRExpr,
-    IRFunctionCall,
     IRIf,
     IRLocal,
     IRName,
-    IRPrint,
     IRRaw,
-    IRReturn,
+    IRSelectCase,
     IRStateParam,
     IRStateStruct,
     IRStatement,
     IRSubprogram,
     IRTranslationUnit,
     IRType,
-    IRUnaryOp,
+    IRWhile,
 )
+from .transform import map_statement, rename_var
 
 
 # ---------------------------------------------------------------------------
@@ -284,12 +281,29 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
             if loc.type.cpp in all_struct_types:
                 caller_state_names.setdefault(loc.type.cpp, loc.name)
         local_state_instances: dict[str, str] = {}  # struct_type -> local name
-        new_body: list[IRStatement] = []
-        for stmt in caller.body:
-            new_body.append(_rewrite_calls_in_stmt(
-                stmt, by_name, caller_state_names, local_state_instances,
-                caller,
-            ))
+        def rewrite_call(stmt: IRStatement) -> IRStatement:
+            if not isinstance(stmt, IRCall):
+                return stmt
+            callee = by_name.get(stmt.callee)
+            if callee is None or not callee.state_params:
+                return stmt
+            extra_args: list[IRExpr] = []
+            for sp in callee.state_params:
+                if sp.struct_type in caller_state_names:
+                    nm = caller_state_names[sp.struct_type]
+                else:
+                    nm = local_state_instances.setdefault(sp.struct_type, sp.name)
+                extra_args.append(IRName(name=nm, fortran=nm))
+            return IRCall(
+                callee=stmt.callee,
+                args=extra_args + list(stmt.args),
+                leading_comments=stmt.leading_comments,
+                trailing_comments=stmt.trailing_comments,
+            )
+
+        new_body = [
+            map_statement(stmt, on_stmt=rewrite_call) for stmt in caller.body
+        ]
         # Prepend any newly-created locals (state instances) so they
         # come before the first use.
         if local_state_instances:
@@ -309,97 +323,18 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
 
 
 def _all_calls(body: list[IRStatement]):
-    """Yield every IRCall reachable inside ``body``, descending into
-    nested if / do blocks."""
-    for stmt in body:
+    """Yield every IRCall reachable inside ``body``, descending into all
+    nested statement blocks."""
+    calls: list[IRCall] = []
+
+    def collect(stmt: IRStatement) -> IRStatement:
         if isinstance(stmt, IRCall):
-            yield stmt
-        elif isinstance(stmt, IRIf):
-            for _, br in stmt.branches:
-                yield from _all_calls(br)
-            if stmt.else_body is not None:
-                yield from _all_calls(stmt.else_body)
-        elif isinstance(stmt, IRDo):
-            yield from _all_calls(stmt.body)
+            calls.append(stmt)
+        return stmt
 
-
-def _rewrite_calls_in_stmt(
-    stmt: IRStatement,
-    by_name: dict[str, IRSubprogram],
-    caller_state_names: dict[str, str],
-    local_state_instances: dict[str, str],
-    caller: IRSubprogram,
-) -> IRStatement:
-    if isinstance(stmt, IRCall):
-        callee = by_name.get(stmt.callee)
-        if callee is None or not callee.state_params:
-            return stmt
-        extra_args: list[IRExpr] = []
-        for sp in callee.state_params:
-            if sp.struct_type in caller_state_names:
-                extra_args.append(IRName(
-                    name=caller_state_names[sp.struct_type],
-                    fortran=caller_state_names[sp.struct_type],
-                ))
-            else:
-                # Allocate a local for this state struct (idempotent),
-                # named after the callee's parameter (globally unique).
-                local_name = local_state_instances.setdefault(
-                    sp.struct_type, sp.name
-                )
-                extra_args.append(IRName(name=local_name, fortran=local_name))
-        return IRCall(
-            callee=stmt.callee,
-            args=extra_args + list(stmt.args),
-            leading_comments=stmt.leading_comments,
-            trailing_comments=stmt.trailing_comments,
-        )
-    if isinstance(stmt, IRIf):
-        return IRIf(
-            branches=[
-                (
-                    cond,
-                    [
-                        _rewrite_calls_in_stmt(
-                            s, by_name, caller_state_names,
-                            local_state_instances, caller,
-                        )
-                        for s in body
-                    ],
-                )
-                for cond, body in stmt.branches
-            ],
-            else_body=(
-                [
-                    _rewrite_calls_in_stmt(
-                        s, by_name, caller_state_names,
-                        local_state_instances, caller,
-                    )
-                    for s in stmt.else_body
-                ]
-                if stmt.else_body is not None
-                else None
-            ),
-            leading_comments=stmt.leading_comments,
-            trailing_comments=stmt.trailing_comments,
-        )
-    if isinstance(stmt, IRDo):
-        return IRDo(
-            var=stmt.var,
-            lower=stmt.lower,
-            upper=stmt.upper,
-            step=stmt.step,
-            body=[
-                _rewrite_calls_in_stmt(
-                    s, by_name, caller_state_names,
-                    local_state_instances, caller,
-                )
-                for s in stmt.body
-            ],
-            leading_comments=stmt.leading_comments,
-            trailing_comments=stmt.trailing_comments,
-        )
-    return stmt
+    for stmt in body:
+        map_statement(stmt, on_stmt=collect)
+    return calls
 
 
 # ---------------------------------------------------------------------------
@@ -411,92 +346,8 @@ def _rewrite_to_field_access(
     stmt: IRStatement, var_name: str, struct_param: str
 ) -> IRStatement:
     """Replace ``IRName(var_name)`` with ``IRName(<struct_param>.<var_name>)``
-    everywhere inside ``stmt``."""
+    everywhere inside ``stmt`` (including nested blocks)."""
     replacement = struct_param + "." + var_name
-    return _rename_name_in_stmt(stmt, var_name, replacement)
-
-
-def _rename_name_in_stmt(stmt: IRStatement, old: str, new: str) -> IRStatement:
-    if isinstance(stmt, IRAssignment):
-        return IRAssignment(
-            target=_rename_name_in_expr(stmt.target, old, new),
-            value=_rename_name_in_expr(stmt.value, old, new),
-            leading_comments=stmt.leading_comments,
-            trailing_comments=stmt.trailing_comments,
-        )
-    if isinstance(stmt, IRCall):
-        return IRCall(
-            callee=stmt.callee,
-            args=[_rename_name_in_expr(a, old, new) for a in stmt.args],
-            leading_comments=stmt.leading_comments,
-            trailing_comments=stmt.trailing_comments,
-        )
-    if isinstance(stmt, IRPrint):
-        return IRPrint(
-            items=[_rename_name_in_expr(a, old, new) for a in stmt.items],
-            stream=stmt.stream,
-            leading_comments=stmt.leading_comments,
-            trailing_comments=stmt.trailing_comments,
-        )
-    if isinstance(stmt, IRReturn):
-        if stmt.value is None:
-            return stmt
-        return IRReturn(
-            value=_rename_name_in_expr(stmt.value, old, new),
-            leading_comments=stmt.leading_comments,
-            trailing_comments=stmt.trailing_comments,
-        )
-    if isinstance(stmt, IRIf):
-        return IRIf(
-            branches=[
-                (
-                    _rename_name_in_expr(cond, old, new),
-                    [_rename_name_in_stmt(s, old, new) for s in body],
-                )
-                for cond, body in stmt.branches
-            ],
-            else_body=(
-                [_rename_name_in_stmt(s, old, new) for s in stmt.else_body]
-                if stmt.else_body is not None
-                else None
-            ),
-            leading_comments=stmt.leading_comments,
-            trailing_comments=stmt.trailing_comments,
-        )
-    if isinstance(stmt, IRDo):
-        return IRDo(
-            var=new if stmt.var == old else stmt.var,
-            lower=_rename_name_in_expr(stmt.lower, old, new),
-            upper=_rename_name_in_expr(stmt.upper, old, new),
-            step=(
-                _rename_name_in_expr(stmt.step, old, new)
-                if stmt.step is not None
-                else None
-            ),
-            body=[_rename_name_in_stmt(s, old, new) for s in stmt.body],
-            leading_comments=stmt.leading_comments,
-            trailing_comments=stmt.trailing_comments,
-        )
-    return stmt
-
-
-def _rename_name_in_expr(expr: IRExpr, old: str, new: str) -> IRExpr:
-    if isinstance(expr, IRName):
-        return IRName(name=new, fortran=expr.fortran) if expr.name == old else expr
-    if isinstance(expr, IRBinaryOp):
-        return IRBinaryOp(
-            op=expr.op,
-            lhs=_rename_name_in_expr(expr.lhs, old, new),
-            rhs=_rename_name_in_expr(expr.rhs, old, new),
-        )
-    if isinstance(expr, IRUnaryOp):
-        return IRUnaryOp(
-            op=expr.op,
-            operand=_rename_name_in_expr(expr.operand, old, new),
-        )
-    if isinstance(expr, IRFunctionCall):
-        return IRFunctionCall(
-            callee=expr.callee,
-            args=tuple(_rename_name_in_expr(a, old, new) for a in expr.args),
-        )
-    return expr
+    return map_statement(
+        stmt, on_expr=lambda e: rename_var(e, var_name, replacement)
+    )
