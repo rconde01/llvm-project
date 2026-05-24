@@ -281,6 +281,40 @@ class IRParameter:
 
 
 @dataclass(slots=True)
+class IRStateStruct:
+    """A struct that bundles per-subprogram persistent state.
+
+    Used for ``SAVE`` locals (one struct per subprogram that has any)
+    and, in the future, for common blocks and module variables.  The
+    state plumbing pass moves the relevant IRLocal entries onto the
+    struct, generates a parameter for each subprogram that touches the
+    state, and rewrites the body to reference ``<param>.<name>``.
+    """
+
+    cpp_type: str
+    """Generated C++ type name (e.g. ``"CounterSave"``)."""
+
+    fields: list[IRLocal] = field(default_factory=list)
+    """Variables that moved onto the struct, in declared order."""
+
+
+@dataclass(slots=True)
+class IRStateParam:
+    """A subprogram parameter for one piece of plumbed state."""
+
+    name: str
+    """Parameter name in the generated C++ (e.g. ``"counter_save"``)."""
+
+    struct_type: str
+    """The C++ type spelling (e.g. ``"CounterSave"``)."""
+
+    owned_by: str
+    """Canonical lower-cased name of the subprogram that owns this
+    struct's *definition* — i.e. whose SAVE locals it groups.  Used
+    when forwarding state through a call chain."""
+
+
+@dataclass(slots=True)
 class IRSubprogram:
     """A single subprogram (main / function / subroutine)."""
 
@@ -296,6 +330,31 @@ class IRSubprogram:
     leading_comments: list[Comment] = field(default_factory=list)
     source: SourceRange | None = None
 
+    save_struct: IRStateStruct | None = None
+    """The save struct *owned* by this subprogram (None if it has no
+    SAVE locals).  Always added as the first state parameter."""
+
+    common_uses: list["IRCommonUse"] = field(default_factory=list)
+    """Common blocks this subprogram declares / references, in source
+    order.  Populated by lowering; consumed by the state plumbing
+    pass which synthesizes one shared struct per block name."""
+
+    state_params: list[IRStateParam] = field(default_factory=list)
+    """State parameters this subprogram receives from its callers
+    (own save struct + transitively-required ones from callees).
+    Plumbed in front of the user-visible parameters at emit time."""
+
+
+@dataclass(slots=True)
+class IRCommonUse:
+    """One ``common /name/ a, b, c`` declaration in a subprogram."""
+
+    block_name: str
+    """Canonical lower-cased block name; empty string for blank common."""
+
+    member_names: list[str] = field(default_factory=list)
+    """Member variable names, in declared order (canonical lower-case)."""
+
 
 @dataclass(slots=True)
 class IRTranslationUnit:
@@ -303,6 +362,10 @@ class IRTranslationUnit:
 
     subprograms: list[IRSubprogram] = field(default_factory=list)
     """Subprograms in callee-first dependency order."""
+
+    common_structs: list[IRStateStruct] = field(default_factory=list)
+    """One shared struct per common-block name, synthesized by the
+    state plumbing pass."""
 
     source_file: str | None = None
     """Original Fortran path, for the ``// generated from …`` header."""

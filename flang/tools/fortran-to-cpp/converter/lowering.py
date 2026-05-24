@@ -33,6 +33,7 @@ from .ir import (
     IRAssignment,
     IRBinaryOp,
     IRCall,
+    IRCommonUse,
     IRDo,
     IRExpr,
     IRFunctionCall,
@@ -356,8 +357,39 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     for child in node.children:
         if child.kind == "SpecificationPart":
             sub.locals.extend(_lower_specification(child))
+            sub.common_uses.extend(_lower_common_statements(child))
         elif child.kind == "ExecutionPart":
             sub.body.extend(_lower_execution(child))
+
+
+def _lower_common_statements(spec_part: Node) -> list[IRCommonUse]:
+    """Collect ``common /name/ a, b, c`` declarations.
+
+    AST shape: ``CommonStmt -> Block -> [Name (block), CommonBlockObject*]``
+    where the first ``Name`` in the inner Block is the block name and
+    each ``CommonBlockObject`` names a member.  A blank common block
+    has no leading Name.
+    """
+    out: list[IRCommonUse] = []
+    for common_stmt in spec_part.find_all("CommonStmt"):
+        for block in common_stmt.children_of_kind("Block"):
+            block_name = ""
+            members: list[str] = []
+            # A leading bare Name (not wrapped in CommonBlockObject) is
+            # the block name.
+            leading_name = next(
+                (c for c in block.children if c.kind == "Name"), None
+            )
+            if leading_name is not None and leading_name.fortran:
+                block_name = leading_name.fortran.lower()
+            for obj in block.children_of_kind("CommonBlockObject"):
+                name = obj.find_first("Name")
+                if name is not None and name.fortran:
+                    members.append(name.fortran.lower())
+            out.append(
+                IRCommonUse(block_name=block_name, member_names=members)
+            )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -403,18 +435,19 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
     intent: Literal["in", "out", "inout"] | None = None
     shared_array_spec: Node | None = None
     for attr in decl.find_all("AttrSpec"):
-        if attr.source and "PARAMETER" in attr.source.text.upper():
-            is_parameter = True
-        if attr.source and "SAVE" in attr.source.text.upper():
-            is_save = True
-        intent_node = attr.find_first("IntentSpec")
-        if intent_node is not None:
-            intent = _extract_intent(intent_node)
-        # ``dimension(...)`` AttrSpec applies its ArraySpec to every
-        # EntityDecl in the statement that doesn't carry its own.
-        arr = attr.find_first("ArraySpec")
-        if arr is not None:
-            shared_array_spec = arr
+        # AttrSpec wraps the specific attribute child node — e.g.
+        # ``Parameter``, ``Save``, ``IntentSpec``, ``ArraySpec``, etc.
+        for child in attr.children:
+            if child.kind == "Parameter":
+                is_parameter = True
+            elif child.kind == "Save":
+                is_save = True
+            elif child.kind == "IntentSpec":
+                intent = _extract_intent(child)
+            elif child.kind == "ArraySpec":
+                # ``dimension(...)`` applies to every EntityDecl that
+                # doesn't carry its own ArraySpec.
+                shared_array_spec = child
 
     out: list[IRLocal] = []
     for entity in decl.children:

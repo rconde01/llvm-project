@@ -24,6 +24,7 @@ from flang_ast import (
 from .emit import emit_translation_unit
 from .ir import IRTranslationUnit
 from .lowering import lower_program
+from .state_plumbing import plumb_state
 
 
 def convert_file(
@@ -36,6 +37,7 @@ def convert_file(
     root = parse_fortran_file(source, flang=flang, sema=sema)
     annotate_tree(root)
     tu = lower_program(root, source_file=str(source))
+    plumb_state(tu)
     return emit_translation_unit(tu)
 
 
@@ -48,6 +50,7 @@ def convert_ast(
     root = parse_json_file(ast_json)
     annotate_tree(root)
     tu = lower_program(root, source_file=source_file)
+    plumb_state(tu)
     return emit_translation_unit(tu)
 
 

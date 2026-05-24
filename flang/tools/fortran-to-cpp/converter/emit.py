@@ -31,6 +31,7 @@ from .ir import (
     IRPrint,
     IRRaw,
     IRReturn,
+    IRStateStruct,
     IRStatement,
     IRSubprogram,
     IRTranslationUnit,
@@ -50,11 +51,37 @@ def emit_translation_unit(tu: IRTranslationUnit) -> str:
     out = StringIO()
     _emit_file_header(out, tu)
     _emit_includes(out, tu)
+    # State structs come first so subprograms below can reference them
+    # by name in their parameter lists.
+    _emit_state_structs(out, tu)
     for sub in tu.subprograms:
         out.write("\n")
         _emit_subprogram(out, sub)
     _emit_cpp_main(out, tu)
     return out.getvalue()
+
+
+def _emit_state_structs(out: StringIO, tu: IRTranslationUnit) -> None:
+    if tu.common_structs:
+        out.write("\n// ---- Common block structs (shared program state) ----\n")
+        for s in tu.common_structs:
+            _emit_one_struct(out, s)
+    save_structs = [
+        s.save_struct for s in tu.subprograms if s.save_struct is not None
+    ]
+    if save_structs:
+        out.write("\n// ---- Per-subprogram state structs (SAVE locals) ----\n")
+        for s in save_structs:
+            _emit_one_struct(out, s)
+
+
+def _emit_one_struct(out: StringIO, s: IRStateStruct) -> None:
+    out.write(f"\nstruct {s.cpp_type} {{\n")
+    for field_local in s.fields:
+        # Reuse the local-declaration emitter so types and defaults
+        # stay consistent.
+        _emit_local(out, field_local, indent=1)
+    out.write("};\n")
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +140,11 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
         out.write(f"{ret} {sub.name}(")
     else:  # subroutine
         out.write(f"void {sub.name}(")
-    out.write(", ".join(p.cpp_param_decl() for p in sub.parameters))
+    # State parameters first (D2.b — granular per-routine state),
+    # then the user-visible Fortran dummy args.
+    parts = [f"{sp.struct_type}& {sp.name}" for sp in sub.state_params]
+    parts.extend(p.cpp_param_decl() for p in sub.parameters)
+    out.write(", ".join(parts))
     out.write(") {\n")
 
     # Local variable declarations.
