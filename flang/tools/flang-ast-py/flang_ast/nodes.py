@@ -47,10 +47,87 @@ class SourceRange:
             end_col=_opt_int(raw.get("endCol")),
         )
 
+    def to_json(self) -> dict[str, object]:
+        out: dict[str, object] = {"text": self.text}
+        if self.file is not None:
+            out["file"] = self.file
+        if self.line is not None:
+            out["line"] = self.line
+        if self.col is not None:
+            out["col"] = self.col
+        if self.end_line is not None:
+            out["endLine"] = self.end_line
+        if self.end_col is not None:
+            out["endCol"] = self.end_col
+        return out
+
     def __str__(self) -> str:
         if self.file and self.line is not None and self.col is not None:
             return f"{self.file}:{self.line}:{self.col}"
         return repr(self.text)
+
+
+@dataclass(frozen=True, slots=True)
+class Comment:
+    """A comment extracted from the original Fortran source.
+
+    Comments are not part of the parse tree — flang's parser discards
+    them — so they are recovered by re-scanning the source file and
+    associated with parse tree nodes by the ``annotate`` module.
+    """
+
+    text: str
+    """Comment body without the leading ``!`` or fixed-form prefix character."""
+
+    raw: str
+    """Full comment text including the leading marker."""
+
+    file: str
+    """Source file the comment came from."""
+
+    line: int
+    """1-based line number containing the comment."""
+
+    col: int
+    """1-based column where the comment marker starts."""
+
+    is_full_line: bool
+    """True when the comment is the only non-whitespace on its line."""
+
+    is_directive: bool = False
+    """True for compiler / OpenMP / OpenACC directives (``!$OMP``, ``!DIR$``, …).
+
+    Directives parse as comments to a free-form Fortran scanner but are
+    semantically meaningful, so consumers usually want to handle them
+    separately from prose comments.
+    """
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "text": self.text,
+            "raw": self.raw,
+            "file": self.file,
+            "line": self.line,
+            "col": self.col,
+            "isFullLine": self.is_full_line,
+            "isDirective": self.is_directive,
+        }
+
+    @classmethod
+    def from_json(cls, raw: dict[str, object]) -> Comment:
+        line_raw = raw["line"]
+        col_raw = raw["col"]
+        if not isinstance(line_raw, int) or not isinstance(col_raw, int):
+            raise ValueError("Comment 'line' and 'col' must be integers")
+        return cls(
+            text=str(raw["text"]),
+            raw=str(raw["raw"]),
+            file=str(raw["file"]),
+            line=line_raw,
+            col=col_raw,
+            is_full_line=bool(raw.get("isFullLine", False)),
+            is_directive=bool(raw.get("isDirective", False)),
+        )
 
 
 @dataclass(slots=True)
@@ -82,6 +159,16 @@ class Node:
     children: list[Node] = field(default_factory=list)
     """Direct sub-nodes, in source order."""
 
+    leading_comments: list[Comment] = field(default_factory=list)
+    """Comments attached to this node by ``annotate.annotate_tree``.
+
+    Populated for "anchorable" nodes (statements, program units, …).
+    Defaults to empty; ``annotate_tree`` is responsible for filling them.
+    """
+
+    trailing_comments: list[Comment] = field(default_factory=list)
+    """Inline / same-line comments associated with this node."""
+
     # -- Construction -------------------------------------------------------
 
     @classmethod
@@ -99,13 +186,44 @@ class Node:
                 f"node {kind!r}: 'children' must be a list, got {type(children_raw).__name__}"
             )
         children = [cls.from_json(c) for c in children_raw if isinstance(c, dict)]
+        leading_raw = raw.get("leadingComments", [])
+        trailing_raw = raw.get("trailingComments", [])
+        leading = (
+            [Comment.from_json(c) for c in leading_raw if isinstance(c, dict)]
+            if isinstance(leading_raw, list)
+            else []
+        )
+        trailing = (
+            [Comment.from_json(c) for c in trailing_raw if isinstance(c, dict)]
+            if isinstance(trailing_raw, list)
+            else []
+        )
         return cls(
             kind=kind,
             source=source,
             fortran=_opt_str(raw.get("fortran")),
             label=_opt_int(raw.get("label")),
             children=children,
+            leading_comments=leading,
+            trailing_comments=trailing,
         )
+
+    def to_json(self) -> dict[str, object]:
+        """Serialize back to a JSON-compatible dict (round-trip friendly)."""
+        out: dict[str, object] = {"kind": self.kind}
+        if self.source is not None:
+            out["source"] = self.source.to_json()
+        if self.fortran is not None:
+            out["fortran"] = self.fortran
+        if self.label is not None:
+            out["label"] = self.label
+        if self.leading_comments:
+            out["leadingComments"] = [c.to_json() for c in self.leading_comments]
+        if self.trailing_comments:
+            out["trailingComments"] = [c.to_json() for c in self.trailing_comments]
+        if self.children:
+            out["children"] = [c.to_json() for c in self.children]
+        return out
 
     # -- Convenience accessors ---------------------------------------------
 

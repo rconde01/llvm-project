@@ -17,7 +17,14 @@ Quick start
 
 from __future__ import annotations
 
+from .annotate import (
+    CommentAnnotator,
+    annotate_tree,
+    extract_comments,
+    render_report,
+)
 from .nodes import (
+    Comment,
     Node,
     NodeKind,
     SourceRange,
@@ -32,19 +39,25 @@ from .runner import (
     parse_fortran_file,
     parse_fortran_source,
 )
-from .visitor import NodeVisitor, walk
+from .visitor import NodeTransformer, NodeVisitor, walk
 
 __all__ = [
+    "Comment",
+    "CommentAnnotator",
     "FlangError",
     "Node",
     "NodeKind",
+    "NodeTransformer",
     "NodeVisitor",
     "SourceRange",
+    "annotate_tree",
+    "extract_comments",
     "parse_fortran_file",
     "parse_fortran_source",
     "parse_json",
     "parse_json_file",
     "parse_json_string",
+    "render_report",
     "walk",
 ]
 

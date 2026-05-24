@@ -102,6 +102,51 @@ collector.visit(program)
 `NodeTransformer` is the same idea but returns a (possibly rewritten)
 node from each method — children paths are reused when nothing changes.
 
+### Comment annotation
+
+flang discards source comments during parsing, so they aren't present
+in the JSON dump.  `flang_ast.annotate` re-scans the source file and
+attaches each comment to the most plausible parse tree node:
+
+  * **Trailing** — same-line inline comments (`x = 1  ! count`).
+  * **Leading** — full-line comments immediately above a construct;
+    consecutive comment lines are grouped into one block.
+
+```python
+from flang_ast import annotate_tree, parse_fortran_file
+
+program = parse_fortran_file("hello.f90")
+annotate_tree(program)
+
+for stmt in program.find_all("Statement"):
+    for c in stmt.leading_comments:
+        print("  before:", c.raw.strip())
+    for c in stmt.trailing_comments:
+        print("  inline:", c.raw.strip())
+```
+
+OpenMP / OpenACC / `!DIR$` directives are recognized and flagged with
+`is_directive=True` so you can route them separately.  Fixed-form files
+(`.f`, `.for`) are detected automatically; pass `fixed_form=True` to
+force it.
+
+### CLI
+
+The package installs a `flang-ast-annotate` console script, and is also
+runnable via `python -m flang_ast`:
+
+```bash
+# JSON output with leadingComments/trailingComments fields populated
+flang-ast-annotate hello.f90
+
+# Human-readable summary
+flang-ast-annotate hello.f90 --report
+
+# Re-use a pre-computed AST
+flang -fc1 -fdebug-dump-parse-tree-json hello.f90 > dump.json
+flang-ast-annotate --ast dump.json --source-file hello.f90 --report
+```
+
 ## Why a single `Node` class instead of one per kind?
 
 The flang parse tree defines ~600 node classes.  Mirroring each one as a
