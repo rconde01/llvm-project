@@ -45,9 +45,11 @@ from .ir import (
     IRRaw,
     IRRead,
     IRReturn,
+    IRSection,
     IRSelectCase,
     IRStatement,
     IRStop,
+    IRTriplet,
     IRUnaryOp,
     IRUnsupported,
     IRWhile,
@@ -82,6 +84,20 @@ def map_expr(expr: IRExpr, fn: ExprFn) -> IRExpr:
         expr = IRMember(base=map_expr(expr.base, fn), field=expr.field)
     elif isinstance(expr, IRCast):
         expr = IRCast(cpp_type=expr.cpp_type, operand=map_expr(expr.operand, fn))
+    elif isinstance(expr, IRSection):
+        new_subs = []
+        for s in expr.subscripts:
+            if isinstance(s, IRTriplet):
+                new_subs.append(
+                    IRTriplet(
+                        lower=map_expr(s.lower, fn) if s.lower is not None else None,
+                        upper=map_expr(s.upper, fn) if s.upper is not None else None,
+                        stride=map_expr(s.stride, fn) if s.stride is not None else None,
+                    )
+                )
+            else:
+                new_subs.append(map_expr(s, fn))
+        expr = IRSection(array=expr.array, subscripts=tuple(new_subs))
     # IRLiteral, IRName, IRRaw are leaves.
     return fn(expr)
 

@@ -39,12 +39,14 @@ from .ir import (
     IRRaw,
     IRRead,
     IRReturn,
+    IRSection,
     IRSelectCase,
     IRStateStruct,
     IRStatement,
     IRStop,
     IRSubprogram,
     IRTranslationUnit,
+    IRTriplet,
     IRType,
     IRUnaryOp,
     IRUnsupported,
@@ -558,6 +560,23 @@ def _emit_unsupported(
 # ---------------------------------------------------------------------------
 
 
+def _render_section(expr: "IRSection") -> str:
+    """Render a section that survived expansion (e.g. passed as an
+    argument) as a runtime ``a.section(lo, hi, stride)`` view.  Only
+    rank-1 single-triplet sections are supported; anything else gets a
+    TODO marker."""
+    triplets = [s for s in expr.subscripts if isinstance(s, IRTriplet)]
+    if len(triplets) != 1 or len(expr.subscripts) != 1:
+        return f"/* TODO: rank>=2 or mixed section of {expr.array} */ {expr.array}"
+    trip = triplets[0]
+    a = expr.array
+    lo = _render_expr(trip.lower) if trip.lower is not None else f"{a}.lbound(1)"
+    hi = _render_expr(trip.upper) if trip.upper is not None else f"{a}.ubound(1)"
+    if trip.stride is not None:
+        return f"{a}.section({lo}, {hi}, {_render_expr(trip.stride)})"
+    return f"{a}.section({lo}, {hi})"
+
+
 def _render_expr(expr: IRExpr) -> str:
     if isinstance(expr, IRLiteral):
         return expr.cpp_text
@@ -576,6 +595,8 @@ def _render_expr(expr: IRExpr) -> str:
         return f"{_render_expr(expr.base)}.{expr.field}"
     if isinstance(expr, IRCast):
         return f"static_cast<{expr.cpp_type}>({_render_expr(expr.operand)})"
+    if isinstance(expr, IRSection):
+        return _render_section(expr)
     if isinstance(expr, IRRaw):
         return expr.text
     return f"/* unhandled expr {type(expr).__name__} */"

@@ -63,8 +63,10 @@ from .ir import (
     IRMember,
     IRModule,
     IRRead,
+    IRSection,
     IRSelectCase,
     IRStop,
+    IRTriplet,
     IRWhile,
 )
 from .transform import map_statement, rename_var
@@ -823,17 +825,161 @@ def _expand_array_assignments(sub: IRSubprogram) -> None:
     counter = [0]
 
     def expand(stmt: IRStatement) -> IRStatement:
-        if (
-            isinstance(stmt, IRAssignment)
-            and isinstance(stmt.target, IRName)
-            and stmt.target.name in arrays
-        ):
+        if not isinstance(stmt, IRAssignment):
+            return stmt
+        tgt = stmt.target
+        rhs_has_section = _contains_section(stmt.value)
+        if isinstance(tgt, IRSection) or rhs_has_section:
+            loop = _section_assignment_loop(stmt, arrays, array_names, counter)
+            return loop if loop is not None else stmt
+        if isinstance(tgt, IRName) and tgt.name in arrays:
             return _array_assignment_loop(
-                stmt, arrays[stmt.target.name], array_names, counter
+                stmt, arrays[tgt.name], array_names, counter
             )
         return stmt
 
     sub.body = [map_statement(s, on_stmt=expand) for s in sub.body]
+
+
+def _contains_section(expr: IRExpr) -> bool:
+    found = [False]
+
+    def note(e: IRExpr) -> IRExpr:
+        if isinstance(e, IRSection):
+            found[0] = True
+        return e
+
+    from .transform import map_expr
+
+    map_expr(expr, note)
+    return found[0]
+
+
+def _section_assignment_loop(
+    stmt: IRAssignment,
+    arrays: dict[str, IRType],
+    array_names: set[str],
+    counter: list[int],
+) -> IRStatement | None:
+    """Expand a rank-1 section assignment into an explicit element loop.
+
+    Iterates an element-position counter ``_k`` (0-based) and maps each
+    array operand / section to its own index at ``_k`` — which is what
+    makes ``a(1:5) = b(2:6)`` correct even though the index ranges
+    differ.  Returns None for unsupported shapes (rank >= 2 sections).
+    """
+    counter[0] += 1
+    kname = f"_k{counter[0]}"
+    kvar = IRName(name=kname, fortran=kname)
+
+    target_access, count = _section_kth(stmt.target, kvar, array_names)
+    if target_access is None or count is None:
+        return None
+    rhs = _section_index_rhs(stmt.value, kvar, array_names)
+    body: list[IRStatement] = [
+        IRAssignment(
+            target=target_access,
+            value=rhs,
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    ]
+    upper = IRBinaryOp(op="-", lhs=count, rhs=IRLiteral(cpp_text="1"))
+    return IRDo(
+        var=kname,
+        lower=IRLiteral(cpp_text="0"),
+        upper=upper,
+        step=None,
+        body=body,
+        declare=True,
+    )
+
+
+def _section_kth(
+    operand: IRExpr, kvar: IRExpr, array_names: set[str]
+) -> tuple[IRExpr | None, IRExpr | None]:
+    """Return (element-access-at-k, element-count) for a rank-1 section
+    or whole array operand; (None, None) if unsupported."""
+    if isinstance(operand, IRSection):
+        triplet_pos = [
+            i for i, s in enumerate(operand.subscripts)
+            if isinstance(s, IRTriplet)
+        ]
+        if len(triplet_pos) != 1:
+            return None, None  # only rank-1 sections for now
+        d = triplet_pos[0]
+        trip = operand.subscripts[d]
+        a = operand.array
+        lower = trip.lower if trip.lower is not None else IRRaw(f"{a}.lbound({d + 1})")
+        upper = trip.upper if trip.upper is not None else IRRaw(f"{a}.ubound({d + 1})")
+        if trip.stride is None:
+            idx_d: IRExpr = IRBinaryOp(op="+", lhs=lower, rhs=kvar)
+            count: IRExpr = IRBinaryOp(
+                op="+",
+                lhs=IRBinaryOp(op="-", lhs=upper, rhs=lower),
+                rhs=IRLiteral(cpp_text="1"),
+            )
+        else:
+            st = trip.stride
+            idx_d = IRBinaryOp(
+                op="+", lhs=lower, rhs=IRBinaryOp(op="*", lhs=kvar, rhs=st)
+            )
+            count = IRBinaryOp(
+                op="+",
+                lhs=IRBinaryOp(
+                    op="/", lhs=IRBinaryOp(op="-", lhs=upper, rhs=lower), rhs=st
+                ),
+                rhs=IRLiteral(cpp_text="1"),
+            )
+        args = tuple(
+            idx_d if i == d else s for i, s in enumerate(operand.subscripts)
+        )
+        return IRFunctionCall(callee=a, args=args), count
+    if isinstance(operand, IRName) and operand.name in array_names:
+        a = operand.name
+        access = IRFunctionCall(
+            callee=a,
+            args=(IRBinaryOp(op="+", lhs=IRRaw(f"{a}.lbound(1)"), rhs=kvar),),
+        )
+        return access, IRRaw(f"{a}.extent(1)")
+    return None, None
+
+
+def _section_index_rhs(
+    expr: IRExpr, kvar: IRExpr, array_names: set[str]
+) -> IRExpr:
+    """Rewrite an RHS for the section (position-k) model."""
+    if isinstance(expr, IRSection):
+        access, _ = _section_kth(expr, kvar, array_names)
+        return access if access is not None else expr
+    if isinstance(expr, IRName) and expr.name in array_names:
+        access, _ = _section_kth(expr, kvar, array_names)
+        return access if access is not None else expr
+    if isinstance(expr, IRBinaryOp):
+        return IRBinaryOp(
+            op=expr.op,
+            lhs=_section_index_rhs(expr.lhs, kvar, array_names),
+            rhs=_section_index_rhs(expr.rhs, kvar, array_names),
+        )
+    if isinstance(expr, IRUnaryOp):
+        return IRUnaryOp(
+            op=expr.op, operand=_section_index_rhs(expr.operand, kvar, array_names)
+        )
+    if isinstance(expr, IRCast):
+        return IRCast(
+            cpp_type=expr.cpp_type,
+            operand=_section_index_rhs(expr.operand, kvar, array_names),
+        )
+    if isinstance(expr, IRFunctionCall):
+        if expr.callee in _NON_ELEMENTAL:
+            return expr
+        return IRFunctionCall(
+            callee=expr.callee,
+            args=tuple(
+                _section_index_rhs(a, kvar, array_names) for a in expr.args
+            ),
+        )
+    return expr
 
 
 def _array_assignment_loop(
@@ -1343,18 +1489,46 @@ def _lower_array_element(node: Node) -> IRExpr:
         name = data_ref.find_first("Name")
         if name is not None and name.fortran:
             array_name = name.fortran.lower()
-    subscripts: list[IRExpr] = []
+    raw_subs: list[IRExpr | IRTriplet] = []
+    has_triplet = False
     for sub in node.children_of_kind("SectionSubscript"):
-        # A SectionSubscript wraps either a single integer expression
-        # (element access) or a SubscriptTriplet (slice).  For now we
-        # only handle the element-access form.
         triplet = sub.find_first("SubscriptTriplet")
         if triplet is not None:
-            return _expr_raw(node)  # TODO: array slicing
-        expr = sub.find_first("Expr")
-        if expr is not None:
-            subscripts.append(_lower_expression(expr))
-    return IRFunctionCall(callee=array_name, args=tuple(subscripts))
+            has_triplet = True
+            raw_subs.append(_lower_subscript_triplet(triplet))
+        else:
+            expr = sub.find_first("Expr")
+            raw_subs.append(
+                _lower_expression(expr) if expr is not None else IRRaw("0")
+            )
+    if has_triplet:
+        return IRSection(array=array_name, subscripts=tuple(raw_subs))
+    # Plain element access -> call operator.
+    return IRFunctionCall(
+        callee=array_name,
+        args=tuple(s for s in raw_subs if not isinstance(s, IRTriplet)),
+    )
+
+
+def _lower_subscript_triplet(triplet: Node) -> IRTriplet:
+    """Lower ``lo:hi:stride`` (any part optional)."""
+    # The triplet's direct children are the present bound expressions,
+    # in order: it may have lower, upper, and/or stride.  flang wraps
+    # each in a Scalar/Integer; we lower each present Expr.  Missing
+    # parts default to the array's bounds at emit/expansion time.
+    parts: list[IRExpr | None] = [None, None, None]
+    # Each bound is under a direct child that contains an Expr.
+    bound_children = [
+        c for c in triplet.children if c.find_first("Expr") is not None
+    ]
+    # SubscriptTriplet stores (lower?, upper?, stride?) — but with
+    # optionals collapsed, we can't always tell which is which by
+    # position alone.  Use the source text to disambiguate the common
+    # forms; default to filling lower, then upper, then stride.
+    for i, c in enumerate(bound_children[:3]):
+        expr = c.find_first("Expr")
+        parts[i] = _lower_expression(expr) if expr is not None else None
+    return IRTriplet(lower=parts[0], upper=parts[1], stride=parts[2])
 
 
 def _lower_name(node: Node) -> IRName:

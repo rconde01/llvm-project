@@ -284,6 +284,10 @@ public:
   operator ArrayRef<T, Rank>() noexcept;
   operator ArrayRef<const T, Rank>() const noexcept;
 
+  /// Rank-1 section view ``a(lo:hi:stride)``.  Convenience that
+  /// forwards to ArrayRef::section (defined in array_ref.hpp).
+  ArrayRef<T, 1> section(index_t lo, index_t hi, index_t stride = 1) noexcept;
+
 private:
   void init_storage() {
     strides_ = detail::column_major_strides(extents_);

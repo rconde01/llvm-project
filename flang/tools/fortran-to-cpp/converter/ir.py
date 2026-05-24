@@ -115,6 +115,31 @@ class IRMember:
 
 
 @dataclass(frozen=True, slots=True)
+class IRTriplet:
+    """One ``lo:hi:stride`` subscript of an array section.
+
+    Any of the three may be ``None`` (``a(:)`` -> all None; defaults
+    are the array's lbound / ubound / 1)."""
+
+    lower: "IRExpr | None" = None
+    upper: "IRExpr | None" = None
+    stride: "IRExpr | None" = None
+
+
+@dataclass(frozen=True, slots=True)
+class IRSection:
+    """An array section ``a(sub, sub, ...)``.
+
+    Each subscript is either a scalar ``IRExpr`` (a fixed index that
+    drops that dimension) or an ``IRTriplet`` (a ranged dimension).
+    The section's rank is the number of triplet subscripts.
+    """
+
+    array: str
+    subscripts: tuple  # tuple[IRExpr | IRTriplet, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class IRCast:
     """A type conversion: ``static_cast<cpp_type>(operand)``.
 
@@ -140,7 +165,7 @@ class IRRaw:
 
 IRExpr = Union[
     IRLiteral, IRName, IRBinaryOp, IRUnaryOp, IRFunctionCall, IRMember,
-    IRCast, IRRaw
+    IRCast, IRSection, IRRaw
 ]
 
 

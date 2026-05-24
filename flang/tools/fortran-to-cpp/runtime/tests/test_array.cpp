@@ -271,6 +271,42 @@ TEST(deallocate_releases_storage) {
   CHECK_EQ(a.size(), 0);
 }
 
+// ---- Sections -------------------------------------------------------------
+
+TEST(rank1_contiguous_section) {
+  Array<int, 1> a({10});
+  for (index_t i = 1; i <= 10; ++i) {
+    a(i) = static_cast<int>(i);
+  }
+  auto s = a.section(3, 7); // a(3:7) -> 5 elements, 1-based
+  CHECK_EQ(s.size(), 5);
+  CHECK_EQ(s(1), 3);
+  CHECK_EQ(s(5), 7);
+}
+
+TEST(rank1_strided_section) {
+  Array<int, 1> a({10});
+  for (index_t i = 1; i <= 10; ++i) {
+    a(i) = static_cast<int>(i);
+  }
+  auto s = a.section(2, 10, 2); // a(2:10:2) -> 2,4,6,8,10
+  CHECK_EQ(s.size(), 5);
+  CHECK_EQ(s(1), 2);
+  CHECK_EQ(s(5), 10);
+  CHECK(!s.is_contiguous());
+}
+
+TEST(section_writes_through_to_parent) {
+  Array<int, 1> a({6});
+  a.fill(0);
+  auto s = a.section(2, 4); // a(2:4)
+  s(1) = 20;
+  s(3) = 40;
+  CHECK_EQ(a(2), 20);
+  CHECK_EQ(a(4), 40);
+  CHECK_EQ(a(1), 0);
+}
+
 // ---- Bounds type helper ---------------------------------------------------
 
 TEST(bounds_extent_is_inclusive) {

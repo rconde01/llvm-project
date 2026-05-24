@@ -111,6 +111,17 @@ public:
 
   T *data() const noexcept { return data_; }
 
+  /// Rank-1 section view ``a(lo:hi:stride)`` as a new ArrayRef whose
+  /// elements are 1-based.  Only valid on a rank-1 view.
+  ArrayRef<T, 1> section(index_t lo, index_t hi, index_t stride = 1) const
+      noexcept {
+    static_assert(Rank == 1, "section(lo,hi,stride) is rank-1 only");
+    const index_t n = stride != 0 ? (hi - lo) / stride + 1 : 0;
+    T *base = &data_[(lo - lower_[0]) * strides_[0]];
+    return ArrayRef<T, 1>(base, {index_t{1}}, {n < 0 ? index_t{0} : n},
+                          {strides_[0] * stride});
+  }
+
   /// Visit every element once.  Handles arbitrary (possibly
   /// non-contiguous) strides by walking the Fortran index tuple in
   /// column-major order.
@@ -175,6 +186,13 @@ Array<T, Rank>::operator ArrayRef<T, Rank>() noexcept {
 template <typename T, std::size_t Rank>
 Array<T, Rank>::operator ArrayRef<const T, Rank>() const noexcept {
   return ArrayRef<const T, Rank>(data(), lower_, extents_, strides_);
+}
+
+template <typename T, std::size_t Rank>
+ArrayRef<T, 1> Array<T, Rank>::section(index_t lo, index_t hi,
+                                       index_t stride) noexcept {
+  static_assert(Rank == 1, "section(lo,hi,stride) is rank-1 only");
+  return ArrayRef<T, Rank>(*this).section(lo, hi, stride);
 }
 
 } // namespace fortran
