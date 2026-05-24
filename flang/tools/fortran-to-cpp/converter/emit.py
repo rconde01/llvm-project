@@ -38,6 +38,7 @@ from .ir import (
     IRLocal,
     IRMember,
     IRName,
+    IRPointerAssign,
     IRPrint,
     IRRaw,
     IRRead,
@@ -253,6 +254,11 @@ def _emit_local(out: StringIO, loc: IRLocal, *, indent: int) -> None:
         out.write("};")
         _emit_trailing(out, loc.trailing_comments)
         return
+    if loc.type.is_pointer and not loc.type.is_array and loc.initializer is None:
+        # Scalar pointer (T*) starts disassociated.
+        out.write(f"{pad}{prefix}{loc.type.cpp} {loc.name} = nullptr;")
+        _emit_trailing(out, loc.trailing_comments)
+        return
     out.write(f"{pad}{prefix}{loc.type.cpp} {loc.name}")
     if loc.initializer is not None:
         out.write(f" = {_render_expr(loc.initializer)}")
@@ -341,6 +347,18 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
     if isinstance(stmt, IRDeallocate):
         _emit_comment_block(out, stmt.leading_comments, indent=indent)
         out.write(f"{pad}{stmt.obj}.deallocate();")
+        _emit_trailing(out, stmt.trailing_comments)
+        return
+    if isinstance(stmt, IRPointerAssign):
+        _emit_comment_block(out, stmt.leading_comments, indent=indent)
+        if stmt.target is None:
+            # nullify / => null()
+            rhs = "{}" if stmt.is_array else "nullptr"
+        elif stmt.is_array:
+            rhs = _render_expr(stmt.target)  # ArrayRef view
+        else:
+            rhs = f"&{_render_expr(stmt.target)}"  # take target's address
+        out.write(f"{pad}{stmt.pointer} = {rhs};")
         _emit_trailing(out, stmt.trailing_comments)
         return
     if isinstance(stmt, IRReturn):

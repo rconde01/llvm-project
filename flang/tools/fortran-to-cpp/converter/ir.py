@@ -57,6 +57,10 @@ class IRType:
     array can be hoisted into a workspace struct sized at construction
     (vs an automatic array whose size depends on runtime arguments)."""
 
+    is_pointer: bool = False
+    """True for POINTER variables: scalar pointers are ``T*``, array
+    pointers are non-owning ``fortran::ArrayRef``."""
+
     element_type_cpp: str = ""
     """For arrays, the element type spelling (e.g. ``"std::int32_t"``)."""
 
@@ -380,6 +384,19 @@ class IRDeallocate:
 
 
 @dataclass(slots=True)
+class IRPointerAssign:
+    """``p => target`` (or nullify).  For a scalar pointer this is
+    ``p = &target;``; for an array pointer ``p = target;`` (an ArrayRef
+    view).  ``target`` is None for nullify / ``=> null()``."""
+
+    pointer: str
+    target: IRExpr | None
+    is_array: bool = False
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class IRBlock:
     """A scoped block: ``associate`` (``auto&&`` bindings) or ``block``
     (local declarations), each followed by a body and a closing brace.
@@ -444,6 +461,7 @@ IRStatement = Union[
     IRStop,
     IRAllocate,
     IRDeallocate,
+    IRPointerAssign,
     IRIf,
     IRDo,
     IRWhile,
@@ -474,6 +492,9 @@ class IRLocal:
 
     is_save: bool = False
     """True for ``SAVE``d locals — moved into the per-subprogram save struct."""
+
+    is_pointer: bool = False
+    """True for POINTER locals (scalar -> ``T*``, array -> ArrayRef)."""
 
     intent: Literal["in", "out", "inout"] | None = None
     """Set when the declaration carried an ``INTENT(...)`` attribute.

@@ -65,6 +65,7 @@ from .ir import (
     IRImpliedDo,
     IRMember,
     IRModule,
+    IRPointerAssign,
     IRRead,
     IRSection,
     IRSelectCase,
@@ -417,6 +418,7 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     # DATA-statement initializations run before the executable body.
     sub.body = data_inits + sub.body
     _resolve_allocations(sub)
+    _resolve_pointers(sub)
     _expand_array_assignments(sub)
 
 
@@ -550,6 +552,7 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
     is_parameter = False
     is_save = False
     is_optional = False
+    is_pointer = False
     intent: Literal["in", "out", "inout"] | None = None
     shared_array_spec: Node | None = None
     for attr in decl.find_all("AttrSpec"):
@@ -562,6 +565,9 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
                 is_save = True
             elif child.kind == "Optional":
                 is_optional = True
+            elif child.kind == "Pointer":
+                is_pointer = True
+            # ``Target`` needs no C++ analogue (any object is addressable).
             elif child.kind == "IntentSpec":
                 intent = _extract_intent(child)
             elif child.kind == "ArraySpec":
@@ -584,9 +590,19 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
                 initializer = _lower_expression(expr)
         per_entity_array = entity.first_child("ArraySpec")
         array_spec = per_entity_array if per_entity_array is not None else shared_array_spec
-        loc_type = (
-            _make_array_type(ir_type, array_spec) if array_spec else ir_type
-        )
+        if array_spec is not None:
+            loc_type = _make_array_type(ir_type, array_spec, is_pointer=is_pointer)
+        elif is_pointer:
+            # Scalar pointer -> raw C++ pointer.
+            loc_type = IRType(
+                cpp=f"{ir_type.cpp}*", fortran=f"{ir_type.fortran}, pointer",
+                is_pointer=True,
+                is_integer=ir_type.is_integer, is_real=ir_type.is_real,
+                is_logical=ir_type.is_logical, is_character=ir_type.is_character,
+                element_type_cpp=ir_type.cpp,
+            )
+        else:
+            loc_type = ir_type
         out.append(
             IRLocal(
                 name=name_node.fortran.lower(),
@@ -596,14 +612,19 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
                 is_save=is_save,
                 intent=intent,
                 is_optional=is_optional,
+                is_pointer=is_pointer,
             )
         )
     return out
 
 
-def _make_array_type(element_type: IRType, array_spec: Node) -> IRType:
+def _make_array_type(
+    element_type: IRType, array_spec: Node, *, is_pointer: bool = False
+) -> IRType:
     """Wrap ``element_type`` in ``fortran::Array<T, Rank>`` with
-    extent / lower-bound expressions extracted from ``array_spec``."""
+    extent / lower-bound expressions extracted from ``array_spec``.
+
+    A POINTER deferred-shape array becomes a non-owning ``ArrayRef``."""
     extents: list[str] = []
     lowers: list[str] = []
     has_explicit_lower = False
@@ -620,22 +641,25 @@ def _make_array_type(element_type: IRType, array_spec: Node) -> IRType:
             if not _explicit_shape_is_const(shape):
                 all_static = False
         elif shape.kind == "DeferredShapeSpecList":
-            # ``a(:)`` / ``a(:,:)`` — allocatable / pointer array.  The
-            # rank is the ``int`` child; extents are unknown until
-            # ALLOCATE, so we emit no extents (default-constructed,
-            # empty array) and let the allocate statement size it.
+            # ``a(:)`` / ``a(:,:)`` — allocatable or pointer array.  The
+            # rank is the ``int`` child; extents are unknown (no extents
+            # -> default-constructed).  Pointer arrays are non-owning
+            # ArrayRef views; allocatable arrays own their storage.
             rank_node = shape.first_child("int")
             try:
                 rank_n = int(rank_node.fortran) if rank_node and rank_node.fortran else 1
             except ValueError:
                 rank_n = 1
+            cont = "fortran::ArrayRef" if is_pointer else "fortran::Array"
             return IRType(
-                cpp=f"fortran::Array<{element_type.cpp}, {rank_n}>",
-                fortran=f"{element_type.fortran}, allocatable",
+                cpp=f"{cont}<{element_type.cpp}, {rank_n}>",
+                fortran=f"{element_type.fortran}"
+                + (", pointer" if is_pointer else ", allocatable"),
                 is_array=True,
                 array_rank=rank_n,
                 array_extent_exprs=(),  # empty -> default-constructed
                 array_static=False,
+                is_pointer=is_pointer,
                 element_type_cpp=element_type.cpp,
                 is_integer=element_type.is_integer,
                 is_real=element_type.is_real,
@@ -935,6 +959,10 @@ def _lower_action_inner(inner: Node) -> IRStatement | None:
             return _lower_deallocate(inner)
         case "WhereStmt":
             return _lower_where_stmt(inner)
+        case "PointerAssignmentStmt":
+            return _lower_pointer_assignment(inner)
+        case "NullifyStmt":
+            return _lower_nullify(inner)
         case "CallStmt":
             return _lower_call(inner)
         case "ReturnStmt":
@@ -1505,6 +1533,62 @@ def _lower_allocate(node: Node) -> IRStatement:
     return IRAllocate(
         obj=obj, extents=extents, lowers=lowers if has_lower else []
     )
+
+
+def _lower_pointer_assignment(node: Node) -> IRStatement:
+    """``p => target`` -> IRPointerAssign (is_array fixed up later)."""
+    dataref = node.first_child("DataRef")
+    name = dataref.find_first("Name") if dataref is not None else None
+    ptr = name.fortran.lower() if name is not None and name.fortran else "?"
+    target_node = node.first_child("Expr")
+    target: IRExpr | None = None
+    if target_node is not None:
+        lowered = _lower_expression(target_node)
+        # ``p => null()`` disassociates.
+        if isinstance(lowered, IRFunctionCall) and lowered.callee == "null":
+            target = None
+        else:
+            target = lowered
+    return IRPointerAssign(pointer=ptr, target=target)
+
+
+def _lower_nullify(node: Node) -> IRStatement:
+    """``nullify(p)`` -> a null pointer assignment (first object only)."""
+    name = node.find_first("Name")
+    ptr = name.fortran.lower() if name is not None and name.fortran else "?"
+    return IRPointerAssign(pointer=ptr, target=None)
+
+
+def _resolve_pointers(sub: IRSubprogram) -> None:
+    """Mark pointer-assignments to array pointers, and dereference value
+    uses of scalar pointers (``p`` -> ``(*p)``)."""
+    types = {loc.name: loc.type for loc in sub.locals}
+    scalar_ptrs = {
+        n for n, t in types.items() if t.is_pointer and not t.is_array
+    }
+    array_ptrs = {n for n, t in types.items() if t.is_pointer and t.is_array}
+
+    def fix(stmt: IRStatement) -> IRStatement:
+        if isinstance(stmt, IRPointerAssign) and stmt.pointer in array_ptrs:
+            return IRPointerAssign(
+                pointer=stmt.pointer, target=stmt.target, is_array=True,
+                leading_comments=stmt.leading_comments,
+                trailing_comments=stmt.trailing_comments,
+            )
+        return stmt
+
+    sub.body = [map_statement(s, on_stmt=fix) for s in sub.body]
+
+    if scalar_ptrs:
+        def deref(e: IRExpr) -> IRExpr:
+            if isinstance(e, IRName) and e.name in scalar_ptrs:
+                return IRRaw(f"(*{e.name})")
+            return e
+
+        sub.body = [
+            map_statement(s, on_expr=lambda e: map_expr(e, deref))
+            for s in sub.body
+        ]
 
 
 def _lower_deallocate(node: Node) -> IRStatement:
@@ -2100,6 +2184,11 @@ def _lower_function_reference(node: Node) -> IRExpr:
     # raw optional name; the deref pass won't touch this IRRaw.
     if callee == "present" and len(args) == 1 and isinstance(args[0], IRName):
         return IRRaw(f"({args[0].name}.has_value())")
+
+    # associated(p) -> fortran::associated(p) using the raw pointer name
+    # (not the deref'd value), overloaded for T* and ArrayRef.
+    if callee == "associated" and len(args) == 1 and isinstance(args[0], IRName):
+        return IRRaw(f"fortran::associated({args[0].name})")
 
     # Conversion intrinsics become static_casts whose target type
     # depends on the kind argument.

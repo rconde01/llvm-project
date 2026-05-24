@@ -196,6 +196,17 @@ ArrayRef<T, 1> Array<T, Rank>::section(index_t lo, index_t hi,
   return ArrayRef<T, Rank>(*this).section(lo, hi, stride);
 }
 
+// ---- ASSOCIATED ----------------------------------------------------------
+
+/// ASSOCIATED for a scalar pointer (``T*``).
+template <typename T> bool associated(T *p) noexcept { return p != nullptr; }
+
+/// ASSOCIATED for an array pointer (non-owning ArrayRef view).
+template <typename T, std::size_t R>
+bool associated(const ArrayRef<T, R> &p) noexcept {
+  return p.data() != nullptr;
+}
+
 } // namespace fortran
 
 #endif // FORTRAN_RT_ARRAY_REF_HPP

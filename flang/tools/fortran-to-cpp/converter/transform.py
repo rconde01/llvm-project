@@ -44,6 +44,7 @@ from .ir import (
     IRLiteral,
     IRMember,
     IRName,
+    IRPointerAssign,
     IRPrint,
     IRRaw,
     IRRead,
@@ -222,6 +223,14 @@ def _map_statement_children(
         )
     if isinstance(stmt, IRDeallocate):
         return stmt
+    if isinstance(stmt, IRPointerAssign):
+        return IRPointerAssign(
+            pointer=stmt.pointer,
+            target=_e(stmt.target, on_expr) if stmt.target is not None else None,
+            is_array=stmt.is_array,
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
     if isinstance(stmt, IRReturn):
         return IRReturn(
             value=_e(stmt.value, on_expr) if stmt.value is not None else None,
