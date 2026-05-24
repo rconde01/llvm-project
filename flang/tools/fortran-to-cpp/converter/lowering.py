@@ -382,15 +382,68 @@ def _extract_subprogram_name(node: Node, header_kind: str) -> str | None:
 
 def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     """Walk the SpecificationPart (declarations) and ExecutionPart (body)."""
+    data_inits: list[IRStatement] = []
     for child in node.children:
         if child.kind == "SpecificationPart":
             sub.locals.extend(_lower_specification(child))
             sub.common_uses.extend(_lower_common_statements(child))
             sub.used_modules.extend(_lower_use_statements(child))
+            data_inits.extend(_lower_data_statements(child, sub.locals))
         elif child.kind == "ExecutionPart":
             sub.body.extend(_lower_execution(child))
+    # DATA-statement initializations run before the executable body.
+    sub.body = data_inits + sub.body
     _resolve_allocations(sub)
     _expand_array_assignments(sub)
+
+
+def _lower_data_statements(
+    spec_part: Node, locals_: list[IRLocal]
+) -> list[IRStatement]:
+    """Turn ``data`` statements into initializing assignments.
+
+    ``data a /1,2,3/`` (a is an array) becomes ``a = [1,2,3]``;
+    ``data n, x /5, 3.14/`` becomes ``n = 5; x = 3.14;``.  Values are
+    distributed across objects left-to-right; an array object consumes
+    the remaining values (correct when it's the last/only object).
+    """
+    arrays = {loc.name for loc in locals_ if loc.type.is_array}
+    out: list[IRStatement] = []
+    for ds in spec_part.find_all("DataStmt"):
+        for dset in ds.children_of_kind("DataStmtSet"):
+            objs = dset.children_of_kind("DataStmtObject")
+            values = [
+                _lower_data_value(v)
+                for v in dset.children_of_kind("DataStmtValue")
+            ]
+            vi = 0
+            for obj in objs:
+                var = obj.first_child("Variable")
+                expr = _lower_expression(var) if var is not None else None
+                if not isinstance(expr, IRName):
+                    continue
+                if expr.name in arrays:
+                    rest = values[vi:]
+                    out.append(
+                        IRAssignment(
+                            target=expr,
+                            value=IRArrayConstructor(elements=tuple(rest)),
+                        )
+                    )
+                    vi = len(values)
+                elif vi < len(values):
+                    out.append(IRAssignment(target=expr, value=values[vi]))
+                    vi += 1
+    return out
+
+
+def _lower_data_value(value_node: Node) -> IRExpr:
+    """Lower one ``DataStmtValue`` (its constant) to an expression."""
+    dc = value_node.find_first("DataStmtConstant")
+    if dc is None:
+        return IRRaw("0")
+    inner = next(iter(dc.children), None)
+    return _lower_expression(inner) if inner is not None else IRRaw("0")
 
 
 def _lower_use_statements(spec_part: Node) -> list[str]:
