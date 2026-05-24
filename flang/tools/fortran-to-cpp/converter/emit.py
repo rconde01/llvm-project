@@ -104,6 +104,14 @@ def _emit_state_structs(out: StringIO, tu: IRTranslationUnit) -> None:
         out.write("\n// ---- Per-subprogram state structs (SAVE locals) ----\n")
         for s in save_structs:
             _emit_one_struct(out, s)
+    workspaces = [s.workspace for s in tu.subprograms if s.workspace is not None]
+    if workspaces:
+        out.write(
+            "\n// ---- Per-subprogram workspaces (hoisted local arrays, "
+            "allocated once) ----\n"
+        )
+        for s in workspaces:
+            _emit_one_struct(out, s)
 
 
 def _emit_one_struct(out: StringIO, s: IRStateStruct) -> None:
@@ -178,10 +186,18 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
     out.write(", ".join(parts))
     out.write(") {\n")
 
-    # Local variable declarations.
+    # Local variable declarations (state-instance locals come first so
+    # the bindings below can refer to them).
     for loc in sub.locals:
         _emit_local(out, loc, indent=1)
-    if sub.locals and sub.body:
+
+    # State bindings: ``auto& field = param.field;`` so the body can use
+    # plumbed common / save / module / workspace state by its original
+    # name and stay clean.
+    for b in sub.state_bindings:
+        out.write(f"  auto& {b.name} = {b.param}.{b.field};\n")
+
+    if (sub.locals or sub.state_bindings) and sub.body:
         out.write("\n")
 
     # Body.
@@ -205,10 +221,12 @@ def _emit_local(out: StringIO, loc: IRLocal, *, indent: int) -> None:
     _emit_comment_block(out, loc.leading_comments, indent=indent)
     prefix = "constexpr " if loc.is_parameter else ""
     if loc.type.is_array and loc.initializer is None:
-        # ``fortran::Array<T, R> name({ext1, ext2, ...});`` — using the
-        # extent-only constructor when no explicit lower bounds were
-        # given, and the (lower-bounds, extents) constructor otherwise.
-        out.write(f"{pad}{prefix}{loc.type.cpp} {loc.name}(")
+        # Brace-init form ``Array<T,R> name{ {extents} };`` (or
+        # ``{ {lowers}, {extents} }`` for explicit lower bounds).  Braces
+        # rather than parens so the same emit works whether ``name`` is a
+        # local variable or a struct data member (parens aren't allowed
+        # for default member initializers).
+        out.write(f"{pad}{prefix}{loc.type.cpp} {loc.name}{{")
         if loc.type.array_lower_bound_exprs:
             lowers = ", ".join(loc.type.array_lower_bound_exprs)
             extents = ", ".join(loc.type.array_extent_exprs)
@@ -216,7 +234,7 @@ def _emit_local(out: StringIO, loc: IRLocal, *, indent: int) -> None:
         else:
             extents = ", ".join(loc.type.array_extent_exprs)
             out.write(f"{{{extents}}}")
-        out.write(");")
+        out.write("};")
         _emit_trailing(out, loc.trailing_comments)
         return
     out.write(f"{pad}{prefix}{loc.type.cpp} {loc.name}")

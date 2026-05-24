@@ -514,6 +514,7 @@ def _make_array_type(element_type: IRType, array_spec: Node) -> IRType:
     extents: list[str] = []
     lowers: list[str] = []
     has_explicit_lower = False
+    all_static = True
     for shape in array_spec.children:
         if shape.kind == "ExplicitShapeSpec":
             lo, hi = _lower_explicit_shape(shape)
@@ -523,6 +524,8 @@ def _make_array_type(element_type: IRType, array_spec: Node) -> IRType:
             else:
                 lowers.append("1")
             extents.append(hi)
+            if not _explicit_shape_is_const(shape):
+                all_static = False
         elif shape.kind in (
             "AssumedShapeSpec",
             "DeferredShapeSpec",
@@ -532,6 +535,7 @@ def _make_array_type(element_type: IRType, array_spec: Node) -> IRType:
             # emitted code fails to compile.
             extents.append(f"/* TODO: {shape.kind} */ 0")
             lowers.append("1")
+            all_static = False
     rank = len(extents)
     return IRType(
         cpp=f"fortran::Array<{element_type.cpp}, {rank}>",
@@ -540,12 +544,34 @@ def _make_array_type(element_type: IRType, array_spec: Node) -> IRType:
         array_rank=rank,
         array_extent_exprs=tuple(extents),
         array_lower_bound_exprs=tuple(lowers) if has_explicit_lower else (),
+        array_static=all_static,
         element_type_cpp=element_type.cpp,
         is_integer=element_type.is_integer,
         is_real=element_type.is_real,
         is_logical=element_type.is_logical,
         is_character=element_type.is_character,
     )
+
+
+def _explicit_shape_is_const(shape: Node) -> bool:
+    """True when every bound in an ExplicitShapeSpec is a compile-time
+    constant (so the array size is fixed and can be hoisted)."""
+    for spec in shape.find_all("SpecificationExpr"):
+        inner = spec.find_first("Expr")
+        if inner is None or not _is_const_expr(_lower_expression(inner)):
+            return False
+    return True
+
+
+def _is_const_expr(expr: IRExpr) -> bool:
+    """Whether an IRExpr is a compile-time integer constant expression."""
+    if isinstance(expr, IRLiteral):
+        return True
+    if isinstance(expr, IRBinaryOp):
+        return _is_const_expr(expr.lhs) and _is_const_expr(expr.rhs)
+    if isinstance(expr, IRUnaryOp):
+        return _is_const_expr(expr.operand)
+    return False
 
 
 def _lower_explicit_shape(shape: Node) -> tuple[str | None, str]:

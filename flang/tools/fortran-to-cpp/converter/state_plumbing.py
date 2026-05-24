@@ -1,44 +1,50 @@
-"""Post-lowering pass that plumbs persistent state through call chains.
+"""Post-lowering pass that plumbs persistent / scratch state through calls.
 
-For now this only handles SAVE locals.  Common blocks and module
-variables will land in subsequent passes following the same pattern.
+Fortran has several kinds of state that a naive translation would turn
+into globals (unsafe for threads) or per-call stack/heap objects (a
+stack-overflow risk or a per-call allocation cost).  Following decision
+D2.b, this pass turns every such category into an explicit,
+caller-owned struct threaded through the call graph — no statics, no
+thread_local — so independent program instances stay isolated and
+large buffers are allocated exactly once.
 
-The pass runs after lowering (which marks ``is_save`` on IRLocal) and
-before emission.  It mutates the translation unit in place to:
+Categories handled, each becoming a struct + a reference parameter:
 
-  1. Move every subprogram's SAVE locals onto a generated state struct
-     (the subprogram "owns" that struct).
-  2. Rewrite the subprogram's body so references to the saved
-     variables become ``<param>.<name>``.
-  3. Add a state parameter to the subprogram's signature.
-  4. Walk the call graph and forward each save struct up to wherever
-     it needs to be allocated.  The first non-state-parameterised
-     caller in each chain owns the *instance* (allocated as a local
-     IRLocal) and passes it to every callee in its dynamic extent.
-  5. Rewrite each ``IRCall`` to prepend the state arguments expected
-     by the callee, in the order declared in callee.state_params.
+  * **module variables**  -> ``<Name>Module`` (shared program state)
+  * **common blocks**     -> ``<Name>Common`` (shared program state)
+  * **SAVE locals**       -> ``<Routine>Save``  (persists across calls)
+  * **fixed-size local arrays** -> ``<Routine>Workspace``
+        (scratch, allocated once and reused — fixes the
+         stack-overflow-vs-per-call-allocation dilemma).  Only applied
+         to non-recursive routines, since a single shared workspace
+         can't back two simultaneously-active invocations.
+
+Rather than rewrite body references into ``param.field`` accesses, the
+pass records ``auto& field = param.field;`` bindings (emitted at the
+top of the body) so the body keeps referring to variables by their
+original names and stays readable.
+
+Each struct is owned (allocated) by the top of its call chain — the
+main program, typically — and forwarded down by reference.
 """
 
 from __future__ import annotations
 
 from .ir import (
     IRCall,
-    IRDo,
     IRExpr,
-    IRIf,
     IRLocal,
     IRName,
     IRRaw,
-    IRSelectCase,
+    IRStateBinding,
     IRStateParam,
     IRStateStruct,
     IRStatement,
     IRSubprogram,
     IRTranslationUnit,
     IRType,
-    IRWhile,
 )
-from .transform import map_expr, map_statement, rename_var
+from .transform import map_expr, map_statement
 
 
 # ---------------------------------------------------------------------------
@@ -47,24 +53,27 @@ from .transform import map_expr, map_statement, rename_var
 
 
 def plumb_state(tu: IRTranslationUnit) -> None:
-    """Run all state-plumbing transformations on ``tu``.
-
-    Mutates the translation unit in place.
-    """
+    """Run all state-plumbing transformations on ``tu`` (in place)."""
     _build_module_structs(tu)
     _build_common_structs(tu)
     _build_save_structs(tu)
+    _build_workspaces(tu)
     _propagate_state_parameters(tu)
     _rewrite_call_sites(tu)
 
 
 # ---------------------------------------------------------------------------
-# Module variables
+# Shared helpers
 # ---------------------------------------------------------------------------
 
 
+def _camelcase(name: str) -> str:
+    parts = name.replace("-", "_").split("_")
+    return "".join(p.capitalize() if p else "" for p in parts)
+
+
 def _collect_names(body: list[IRStatement]) -> set[str]:
-    """Return the set of every IRName referenced anywhere in ``body``."""
+    """Every IRName referenced anywhere in ``body``."""
     names: set[str] = set()
 
     def note(expr: IRExpr) -> IRExpr:
@@ -77,26 +86,59 @@ def _collect_names(body: list[IRStatement]) -> set[str]:
     return names
 
 
-def _build_module_structs(tu: IRTranslationUnit) -> None:
-    """Turn each module's variables into a shared state struct and
-    thread it through every subprogram that references those vars.
+def _attach_state(
+    sub: IRSubprogram,
+    *,
+    struct_type: str,
+    param_name: str,
+    owned_by: str,
+    bound_fields: list[str],
+) -> None:
+    """Give ``sub`` access to a state struct and bind the fields it uses.
 
-    A subprogram "references" a module variable when:
-      * it is a procedure of that module (implicit host association), or
-      * it ``use``s the module,
-    AND the variable name appears in its body and is not shadowed by a
-    local / parameter of the same name.
+    A non-main routine receives the struct as a reference parameter; the
+    main program owns the instance as a value-initialized local (it
+    can't take parameters).  Either way we emit ``auto& f = p.f;``
+    bindings so the body references the fields by name.
     """
+    if sub.kind == "main":
+        if not any(loc.name == param_name for loc in sub.locals):
+            sub.locals.insert(
+                0,
+                IRLocal(
+                    name=param_name,
+                    type=IRType(cpp=struct_type, fortran=struct_type),
+                    initializer=IRRaw("{}"),
+                ),
+            )
+    else:
+        if not any(sp.struct_type == struct_type for sp in sub.state_params):
+            sub.state_params.append(
+                IRStateParam(
+                    name=param_name, struct_type=struct_type, owned_by=owned_by
+                )
+            )
+    for f in bound_fields:
+        if not any(
+            b.name == f and b.param == param_name for b in sub.state_bindings
+        ):
+            sub.state_bindings.append(
+                IRStateBinding(name=f, param=param_name, field=f)
+            )
+
+
+# ---------------------------------------------------------------------------
+# Module variables
+# ---------------------------------------------------------------------------
+
+
+def _build_module_structs(tu: IRTranslationUnit) -> None:
     modules = [m for m in tu.modules if m.variables]
     if not modules:
         return
-    var_names_by_module = {
-        m.fortran_name: {v.name for v in m.variables} for m in modules
-    }
     module_by_name = {m.fortran_name: m for m in modules}
 
     for sub in tu.subprograms:
-        # Which modules' variables are in scope for this subprogram?
         in_scope: list[str] = []
         if sub.parent_module in module_by_name:
             in_scope.append(sub.parent_module)  # type: ignore[arg-type]
@@ -106,15 +148,13 @@ def _build_module_structs(tu: IRTranslationUnit) -> None:
         if not in_scope:
             continue
 
-        local_names = (
-            {loc.name for loc in sub.locals}
-            | {p.name for p in sub.parameters}
-        )
+        local_names = {loc.name for loc in sub.locals} | {
+            p.name for p in sub.parameters
+        }
         referenced = _collect_names(sub.body)
 
         for mod_name in in_scope:
             module = module_by_name[mod_name]
-            # Module vars this subprogram actually touches (not shadowed).
             touched = [
                 v
                 for v in module.variables
@@ -122,34 +162,13 @@ def _build_module_structs(tu: IRTranslationUnit) -> None:
             ]
             if not touched:
                 continue
-            param_name = mod_name + "_module"
-            if sub.kind == "main":
-                if not any(loc.name == param_name for loc in sub.locals):
-                    sub.locals.insert(
-                        0,
-                        IRLocal(
-                            name=param_name,
-                            type=IRType(cpp=module.cpp_type,
-                                        fortran=module.cpp_type),
-                            initializer=IRRaw("{}"),
-                        ),
-                    )
-            else:
-                if not any(
-                    sp.struct_type == module.cpp_type for sp in sub.state_params
-                ):
-                    sub.state_params.append(
-                        IRStateParam(
-                            name=param_name,
-                            struct_type=module.cpp_type,
-                            owned_by="__module_" + mod_name,
-                        )
-                    )
-            for v in touched:
-                sub.body = [
-                    _rewrite_to_field_access(s, v.name, param_name)
-                    for s in sub.body
-                ]
+            _attach_state(
+                sub,
+                struct_type=module.cpp_type,
+                param_name=mod_name + "_module",
+                owned_by="__module_" + mod_name,
+                bound_fields=[v.name for v in touched],
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -158,16 +177,6 @@ def _build_module_structs(tu: IRTranslationUnit) -> None:
 
 
 def _build_common_structs(tu: IRTranslationUnit) -> None:
-    """Synthesize one shared struct per common-block name and rewrite
-    every using subprogram to reference it.
-
-    Member types are resolved from each subprogram's own locals (the
-    block members are also declared as regular locals in Fortran), so
-    we pull those declarations onto the struct and drop them from the
-    local list.
-    """
-    # Gather the union of member names per block (in first-seen order)
-    # and resolve a type for each from whichever subprogram declares it.
     block_members: dict[str, list[str]] = {}
     block_member_types: dict[str, dict[str, IRType]] = {}
     for sub in tu.subprograms:
@@ -180,91 +189,54 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
                     members.append(m)
                 if m not in types and m in local_types:
                     types[m] = local_types[m]
-
     if not block_members:
         return
 
-    # Build a struct + (param-name, struct-type) for each block.
     struct_for_block: dict[str, IRStateStruct] = {}
     for block_name, members in block_members.items():
-        struct_type = _common_struct_name(block_name)
         types = block_member_types.get(block_name, {})
         fields = [
             IRLocal(
                 name=m,
-                type=types.get(m, IRType(cpp="/* TODO: type */ double",
-                                         fortran="?")),
+                type=types.get(
+                    m, IRType(cpp="/* TODO: type */ double", fortran="?")
+                ),
             )
             for m in members
         ]
         struct_for_block[block_name] = IRStateStruct(
-            cpp_type=struct_type, fields=fields
+            cpp_type=_common_struct_name(block_name), fields=fields
         )
-
     for struct in struct_for_block.values():
         tu.common_structs.append(struct)
 
-    # Rewrite each using subprogram.
     for sub in tu.subprograms:
-        used_blocks = {u.block_name for u in sub.common_uses}
-        for block_name in used_blocks:
+        for block_name in {u.block_name for u in sub.common_uses}:
             struct = struct_for_block[block_name]
-            param_name = _common_param_name(block_name)
-            # A non-main routine receives the block as a state
-            # parameter; the main program *owns* the instance as a
-            # local (it can't take parameters).  Either way, body
-            # references to the members become ``<name>.<member>``.
-            if sub.kind == "main":
-                if not any(
-                    loc.name == param_name for loc in sub.locals
-                ):
-                    sub.locals.insert(
-                        0,
-                        IRLocal(
-                            name=param_name,
-                            type=IRType(cpp=struct.cpp_type,
-                                        fortran=struct.cpp_type),
-                            initializer=IRRaw("{}"),
-                        ),
-                    )
-            else:
-                if not any(
-                    sp.struct_type == struct.cpp_type for sp in sub.state_params
-                ):
-                    sub.state_params.append(
-                        IRStateParam(
-                            name=param_name,
-                            struct_type=struct.cpp_type,
-                            owned_by="__common_" + block_name,
-                        )
-                    )
-            # Drop the block members from this sub's locals and rewrite
-            # references to ``<param>.<member>``.
             member_names = {f.name for f in struct.fields}
+            # Members are also declared as locals in Fortran; drop them.
             sub.locals = [
                 loc for loc in sub.locals if loc.name not in member_names
             ]
-            for m in member_names:
-                sub.body = [
-                    _rewrite_to_field_access(s, m, param_name)
-                    for s in sub.body
-                ]
+            _attach_state(
+                sub,
+                struct_type=struct.cpp_type,
+                param_name=_common_param_name(block_name),
+                owned_by="__common_" + block_name,
+                bound_fields=[f.name for f in struct.fields],
+            )
 
 
 def _common_struct_name(block_name: str) -> str:
-    if not block_name:
-        return "BlankCommon"
-    return _camelcase(block_name) + "Common"
+    return "BlankCommon" if not block_name else _camelcase(block_name) + "Common"
 
 
 def _common_param_name(block_name: str) -> str:
-    if not block_name:
-        return "blank_common"
-    return block_name + "_common"
+    return "blank_common" if not block_name else block_name + "_common"
 
 
 # ---------------------------------------------------------------------------
-# Step 1: extract SAVE locals into per-subprogram state structs
+# SAVE locals
 # ---------------------------------------------------------------------------
 
 
@@ -274,61 +246,91 @@ def _build_save_structs(tu: IRTranslationUnit) -> None:
         if not save_locals:
             continue
         struct_type = _camelcase(sub.display_name) + "Save"
-        param_name = sub.name + "_save"
-        sub.save_struct = IRStateStruct(
-            cpp_type=struct_type,
-            fields=save_locals,
-        )
-        # Remove saved locals from the regular local list.
+        sub.save_struct = IRStateStruct(cpp_type=struct_type, fields=save_locals)
         sub.locals = [loc for loc in sub.locals if not loc.is_save]
-        # The own-save struct becomes the first state parameter.
-        sub.state_params.insert(
-            0,
-            IRStateParam(
-                name=param_name,
-                struct_type=struct_type,
-                owned_by=sub.name,
-            ),
+        _attach_state(
+            sub,
+            struct_type=struct_type,
+            param_name=sub.name + "_save",
+            owned_by=sub.name,
+            bound_fields=[loc.name for loc in save_locals],
         )
-        # Rewrite the body: bare references to a saved name become
-        # ``<param_name>.<name>``.
-        for loc in save_locals:
-            sub.body = [
-                _rewrite_to_field_access(s, loc.name, param_name)
-                for s in sub.body
-            ]
-
-
-def _camelcase(name: str) -> str:
-    """Turn a Fortran identifier into a CamelCase struct name."""
-    parts = name.replace("-", "_").split("_")
-    return "".join(p.capitalize() if p else "" for p in parts)
 
 
 # ---------------------------------------------------------------------------
-# Step 2: forward state parameters up call chains
+# Fixed-size local arrays -> per-routine workspace (allocated once)
+# ---------------------------------------------------------------------------
+
+
+def _build_workspaces(tu: IRTranslationUnit) -> None:
+    recursive = _recursive_routines(tu)
+    for sub in tu.subprograms:
+        if sub.kind == "main":
+            # The main program runs once, so its arrays are already
+            # allocated once as plain locals — a workspace would just
+            # add noise with no per-call-allocation benefit.
+            continue
+        if sub.name in recursive:
+            # A shared workspace can't back two active invocations of a
+            # recursive routine; leave its arrays as per-call locals.
+            continue
+        hoist = [
+            loc
+            for loc in sub.locals
+            if loc.type.is_array and loc.type.array_static and not loc.is_save
+        ]
+        if not hoist:
+            continue
+        hoist_names = {loc.name for loc in hoist}
+        struct_type = _camelcase(sub.display_name) + "Workspace"
+        sub.workspace = IRStateStruct(cpp_type=struct_type, fields=hoist)
+        sub.locals = [loc for loc in sub.locals if loc.name not in hoist_names]
+        _attach_state(
+            sub,
+            struct_type=struct_type,
+            param_name=sub.name + "_workspace",
+            owned_by=sub.name,
+            bound_fields=[loc.name for loc in hoist],
+        )
+
+
+def _recursive_routines(tu: IRTranslationUnit) -> set[str]:
+    """Names of routines that can (transitively) call themselves."""
+    names = {s.name for s in tu.subprograms}
+    adj: dict[str, set[str]] = {s.name: set() for s in tu.subprograms}
+    for s in tu.subprograms:
+        for call in _all_calls(s.body):
+            if call.callee in names:
+                adj[s.name].add(call.callee)
+    recursive: set[str] = set()
+    for start in adj:
+        seen: set[str] = set()
+        stack = list(adj[start])
+        while stack:
+            n = stack.pop()
+            if n == start:
+                recursive.add(start)
+                break
+            if n in seen:
+                continue
+            seen.add(n)
+            stack.extend(adj.get(n, ()))
+    return recursive
+
+
+# ---------------------------------------------------------------------------
+# Forward state parameters up call chains
 # ---------------------------------------------------------------------------
 
 
 def _propagate_state_parameters(tu: IRTranslationUnit) -> None:
-    """For each call site, ensure the caller receives (or owns) every
-    state struct the callee expects.
-
-    We iterate until the per-subprogram state-parameter set stops
-    growing.  A subprogram that doesn't *own* a struct but *calls*
-    something that needs one must forward the parameter from its own
-    signature.  Mains never gain parameters — they instantiate the
-    struct as a local instead (handled in step 3).
-    """
     by_name = {s.name: s for s in tu.subprograms}
     changed = True
     while changed:
         changed = False
         for caller in tu.subprograms:
             if caller.kind == "main":
-                # Main can't grow state parameters — it'll own the
-                # instances locally at step 3.
-                continue
+                continue  # main owns instances locally (handled below)
             for stmt in _all_calls(caller.body):
                 callee = by_name.get(stmt.callee)
                 if callee is None:
@@ -339,9 +341,6 @@ def _propagate_state_parameters(tu: IRTranslationUnit) -> None:
                         for existing in caller.state_params
                     ):
                         continue
-                    # Caller doesn't have this state yet.  Forward it
-                    # under the callee's parameter name (which is
-                    # globally unique: ``<owner>_save`` / ``<block>_common``).
                     caller.state_params.append(
                         IRStateParam(
                             name=sp.name,
@@ -353,7 +352,7 @@ def _propagate_state_parameters(tu: IRTranslationUnit) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Step 3: at every call site, prepend the state arguments
+# At every call site, prepend the state arguments the callee expects
 # ---------------------------------------------------------------------------
 
 
@@ -363,65 +362,55 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
         {sp.struct_type for s in tu.subprograms for sp in s.state_params}
         | {st.cpp_type for st in tu.common_structs}
         | {m.cpp_type for m in tu.modules}
+        | {s.workspace.cpp_type for s in tu.subprograms if s.workspace}
+        | {s.save_struct.cpp_type for s in tu.subprograms if s.save_struct}
     )
     for caller in tu.subprograms:
-        # For each callee state param, decide what to pass:
-        #   * If caller has a matching state_param of its own, forward
-        #     it by name.
-        #   * If the caller already owns a local instance of that
-        #     struct (e.g. main owning a common block), reuse it.
-        #   * Otherwise (main calling a SAVE routine), allocate a fresh
-        #     local IRLocal of that struct type and pass it.
-        caller_state_names = {sp.struct_type: sp.name for sp in caller.state_params}
-        # Seed with any owned local instances (common blocks in main).
+        caller_state_names = {
+            sp.struct_type: sp.name for sp in caller.state_params
+        }
         for loc in caller.locals:
             if loc.type.cpp in all_struct_types:
                 caller_state_names.setdefault(loc.type.cpp, loc.name)
-        local_state_instances: dict[str, str] = {}  # struct_type -> local name
+        local_state_instances: dict[str, str] = {}
+
         def rewrite_call(stmt: IRStatement) -> IRStatement:
             if not isinstance(stmt, IRCall):
                 return stmt
             callee = by_name.get(stmt.callee)
             if callee is None or not callee.state_params:
                 return stmt
-            extra_args: list[IRExpr] = []
+            extra: list[IRExpr] = []
             for sp in callee.state_params:
                 if sp.struct_type in caller_state_names:
                     nm = caller_state_names[sp.struct_type]
                 else:
-                    nm = local_state_instances.setdefault(sp.struct_type, sp.name)
-                extra_args.append(IRName(name=nm, fortran=nm))
+                    nm = local_state_instances.setdefault(
+                        sp.struct_type, sp.name
+                    )
+                extra.append(IRName(name=nm, fortran=nm))
             return IRCall(
                 callee=stmt.callee,
-                args=extra_args + list(stmt.args),
+                args=extra + list(stmt.args),
                 leading_comments=stmt.leading_comments,
                 trailing_comments=stmt.trailing_comments,
             )
 
-        new_body = [
-            map_statement(stmt, on_stmt=rewrite_call) for stmt in caller.body
-        ]
-        # Prepend any newly-created locals (state instances) so they
-        # come before the first use.
+        new_body = [map_statement(s, on_stmt=rewrite_call) for s in caller.body]
         if local_state_instances:
-            instance_locals = [
+            instances = [
                 IRLocal(
                     name=name,
-                    # The state struct is value-initialized via {}
-                    # so its scalar fields zero out, matching
-                    # Fortran's typical -finit-zero behavior.
                     type=IRType(cpp=struct_type, fortran=struct_type),
                     initializer=IRRaw("{}"),
                 )
                 for struct_type, name in local_state_instances.items()
             ]
-            caller.locals = instance_locals + caller.locals
+            caller.locals = instances + caller.locals
         caller.body = new_body
 
 
-def _all_calls(body: list[IRStatement]):
-    """Yield every IRCall reachable inside ``body``, descending into all
-    nested statement blocks."""
+def _all_calls(body: list[IRStatement]) -> list[IRCall]:
     calls: list[IRCall] = []
 
     def collect(stmt: IRStatement) -> IRStatement:
@@ -432,19 +421,3 @@ def _all_calls(body: list[IRStatement]):
     for stmt in body:
         map_statement(stmt, on_stmt=collect)
     return calls
-
-
-# ---------------------------------------------------------------------------
-# Helpers — rewriting variable references to struct field accesses
-# ---------------------------------------------------------------------------
-
-
-def _rewrite_to_field_access(
-    stmt: IRStatement, var_name: str, struct_param: str
-) -> IRStatement:
-    """Replace ``IRName(var_name)`` with ``IRName(<struct_param>.<var_name>)``
-    everywhere inside ``stmt`` (including nested blocks)."""
-    replacement = struct_param + "." + var_name
-    return map_statement(
-        stmt, on_expr=lambda e: rename_var(e, var_name, replacement)
-    )

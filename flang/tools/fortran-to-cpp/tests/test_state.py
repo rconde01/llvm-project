@@ -102,8 +102,9 @@ class StateEmitTests(unittest.TestCase):
         self.assertIn("struct CounterSave {", cpp)
         self.assertIn("std::int32_t n{};", cpp)
         self.assertIn("void counter(CounterSave& counter_save)", cpp)
-        # References rewritten to field access.
-        self.assertIn("counter_save.n = counter_save.n + 1;", cpp)
+        # State bound with auto& so the body stays clean.
+        self.assertIn("auto& n = counter_save.n;", cpp)
+        self.assertIn("n = n + 1;", cpp)
         # Main owns the instance and threads it through.
         self.assertIn("CounterSave counter_save", cpp)
         self.assertIn("counter(counter_save);", cpp)
@@ -125,8 +126,9 @@ class StateEmitTests(unittest.TestCase):
         # Main owns the instance (no parameter on the main program).
         self.assertNotIn("void demo(StateCommon", cpp)
         self.assertIn("StateCommon state_common", cpp)
-        # Member references rewritten.
-        self.assertIn("state_common.x = 1.0f;", cpp)
+        # Members bound with auto&; body uses the bare names.
+        self.assertIn("auto& x = state_common.x;", cpp)
+        self.assertIn("x = 1.0f;", cpp)
 
 
 @unittest.skipUnless(

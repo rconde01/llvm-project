@@ -92,13 +92,15 @@ class ModuleEmitTests(unittest.TestCase):
     def test_module_procedure_takes_module_state(self) -> None:
         cpp = _convert(CONFIG_F90)
         self.assertIn("void bump(ConfigModule& config_module)", cpp)
-        self.assertIn("config_module.count = config_module.count + 1;", cpp)
+        # Bound with auto&; body stays clean.
+        self.assertIn("auto& count = config_module.count;", cpp)
+        self.assertIn("count = count + 1;", cpp)
 
     def test_using_program_owns_instance(self) -> None:
         cpp = _convert(CONFIG_F90)
         self.assertNotIn("void demo(ConfigModule", cpp)
         self.assertIn("ConfigModule config_module", cpp)
-        self.assertIn("config_module.gravity", cpp)
+        self.assertIn("auto& gravity = config_module.gravity;", cpp)
 
     def test_main_without_use_still_threads_state(self) -> None:
         cpp = _convert(COUNTERS_F90)

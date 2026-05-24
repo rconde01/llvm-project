@@ -333,12 +333,13 @@ class EmitTests(unittest.TestCase):
 
     def test_array_declaration_uses_fortran_array(self) -> None:
         cpp = self._convert(ARRAY_F90)
-        # 1-D array with default bound -> extents-only constructor.
-        self.assertIn("fortran::Array<std::int32_t, 1> a({10});", cpp)
+        # Brace-init form (works as both local and struct member).  The
+        # main program's arrays stay as direct locals (no workspace).
+        self.assertIn("fortran::Array<std::int32_t, 1> a{{10}};", cpp)
         # Explicit lower bound -> (lower, extent) constructor.
-        self.assertIn("fortran::Array<std::int32_t, 1> b({0}", cpp)
+        self.assertIn("fortran::Array<std::int32_t, 1> b{{0}", cpp)
         # 2-D array.
-        self.assertIn("fortran::Array<std::int32_t, 2> c({3, 4});", cpp)
+        self.assertIn("fortran::Array<std::int32_t, 2> c{{3, 4}};", cpp)
 
     def test_array_index_translates_to_call_operator(self) -> None:
         cpp = self._convert(ARRAY_F90)

@@ -52,6 +52,11 @@ class IRType:
     """Per-dimension lower-bound expressions when explicit, else empty
     (extent-only constructor is used and lower bounds default to 1)."""
 
+    array_static: bool = False
+    """True when every array bound is a compile-time constant, so the
+    array can be hoisted into a workspace struct sized at construction
+    (vs an automatic array whose size depends on runtime arguments)."""
+
     element_type_cpp: str = ""
     """For arrays, the element type spelling (e.g. ``"std::int32_t"``)."""
 
@@ -367,6 +372,15 @@ class IRStateStruct:
 
 
 @dataclass(slots=True)
+class IRStateBinding:
+    """A ``auto& <name> = <param>.<field>;`` reference binding."""
+
+    name: str
+    param: str
+    field: str
+
+
+@dataclass(slots=True)
 class IRStateParam:
     """A subprogram parameter for one piece of plumbed state."""
 
@@ -406,6 +420,16 @@ class IRSubprogram:
     """Common blocks this subprogram declares / references, in source
     order.  Populated by lowering; consumed by the state plumbing
     pass which synthesizes one shared struct per block name."""
+
+    workspace: IRStateStruct | None = None
+    """Per-routine workspace holding hoisted fixed-size local arrays
+    (allocated once, threaded like other state).  None when the
+    routine has no hoistable arrays (or is recursive)."""
+
+    state_bindings: list["IRStateBinding"] = field(default_factory=list)
+    """``auto& name = param.field;`` bindings emitted at the top of the
+    body so it can reference plumbed state (common / save / module /
+    workspace) by its original name and stay clean."""
 
     parent_module: str | None = None
     """Canonical name of the module that hosts this subprogram (for
