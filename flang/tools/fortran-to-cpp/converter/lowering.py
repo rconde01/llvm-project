@@ -1753,13 +1753,22 @@ def _extract_format(node: Node) -> str | None:
     return None
 
 
+# Fortran intrinsic *subroutines* (invoked with CALL) that map to a
+# ``fortran::`` runtime helper rather than a user-defined function.
+_INTRINSIC_SUBROUTINE_MAP: dict[str, str] = {
+    "cpu_time": "fortran::cpu_time",
+    "system_clock": "fortran::system_clock",
+}
+
+
 def _lower_call(node: Node) -> IRCall:
     call = node.first_child("Call") or node
     callee, leading = _resolve_callee(call)
-    return IRCall(
-        callee=_safe_name(callee),
-        args=_resolve_call_args(callee, leading, call),
-    )
+    args = _resolve_call_args(callee, leading, call)
+    intrinsic = _INTRINSIC_SUBROUTINE_MAP.get(callee)
+    if intrinsic is not None and not leading:
+        return IRCall(callee=intrinsic, args=args)
+    return IRCall(callee=_safe_name(callee), args=args)
 
 
 def _lower_if_construct(node: Node) -> IRIf:
