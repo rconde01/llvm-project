@@ -190,4 +190,13 @@ inline std::string fmt_int_no_sign(long long value, int w) {
 
 } // namespace fortran::io
 
+namespace fortran {
+
+/// List-directed logical output character.  Fortran prints logicals as
+/// ``T`` / ``F`` rather than C++'s default ``1`` / ``0``; generated
+/// ``print *`` chains wrap logical items in this so the output matches.
+inline char logical_text(bool b) noexcept { return b ? 'T' : 'F'; }
+
+} // namespace fortran
+
 #endif // FORTRAN_RT_IO_HPP

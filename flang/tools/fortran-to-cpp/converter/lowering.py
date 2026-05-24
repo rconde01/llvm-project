@@ -139,7 +139,58 @@ def lower_program(
                 seen_types.add(dt.fortran_name)
                 tu.derived_types.append(dt)
     _collect_units(root, tu, parent_module=None)
+    _apply_logical_print_format(tu)
     return tu
+
+
+# Operators whose result is logical, so a list-directed print item built
+# from them must render as Fortran ``T`` / ``F``.
+_LOGICAL_RESULT_OPS = frozenset(
+    {"==", "!=", "<", "<=", ">", ">=", "&&", "||"}
+)
+
+
+def _apply_logical_print_format(tu: IRTranslationUnit) -> None:
+    """Wrap logical items of list-directed ``print`` in ``fortran::
+    logical_text`` so they render as Fortran ``T`` / ``F`` rather than
+    C++'s default ``1`` / ``0``."""
+    for sub in tu.subprograms:
+        logical_names = {
+            loc.name
+            for loc in sub.locals
+            if loc.type.is_logical and not loc.type.is_array
+        }
+        logical_names |= {
+            p.name
+            for p in sub.parameters
+            if p.type.is_logical and not p.type.is_array
+        }
+
+        def fix(stmt: IRStatement) -> IRStatement:
+            if isinstance(stmt, IRPrint) and stmt.format is None:
+                stmt.items = [
+                    IRFunctionCall(callee="fortran::logical_text", args=(it,))
+                    if _is_logical_expr(it, logical_names)
+                    else it
+                    for it in stmt.items
+                ]
+            return stmt
+
+        sub.body = [map_statement(s, on_stmt=fix) for s in sub.body]
+
+
+def _is_logical_expr(expr: IRExpr, logical_names: set[str]) -> bool:
+    if isinstance(expr, IRName):
+        return expr.name in logical_names
+    if isinstance(expr, IRBinaryOp):
+        return expr.op in _LOGICAL_RESULT_OPS
+    if isinstance(expr, IRUnaryOp):
+        if expr.op == "()":  # parentheses: logical iff the operand is
+            return _is_logical_expr(expr.operand, logical_names)
+        return expr.op == "!"
+    if isinstance(expr, IRLiteral):
+        return expr.cpp_text in ("true", "false")
+    return False
 
 
 def _build_signatures(root: Node) -> dict[str, list[str]]:
