@@ -913,13 +913,29 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     _expand_array_assignments(sub)
     # Eliminate goto in favor of structured control flow.
     sub.body, used_dispatch = structure_gotos(sub.body)
-    if used_dispatch:
+    # ``structure_gotos`` only reports a *top-level* dispatch; a dispatch
+    # created inside a nested loop body still references ``_pc``, so scan
+    # the structured body to be sure the state local is declared.
+    if used_dispatch or _references_name(sub.body, "_pc"):
         sub.locals.append(
             IRLocal(
                 name="_pc",
                 type=IRType(cpp="int", fortran="integer", is_integer=True),
             )
         )
+
+
+def _references_name(body: list[IRStatement], name: str) -> bool:
+    found = [False]
+
+    def note(expr: IRExpr) -> IRExpr:
+        if isinstance(expr, IRName) and expr.name == name:
+            found[0] = True
+        return expr
+
+    for stmt in body:
+        map_statement(stmt, on_expr=lambda e: map_expr(e, note))
+    return found[0]
 
 
 _FTYPE_RE = re.compile(r"^\s*([A-Za-z ]+?)\s*(?:\(([^)]*)\))?\s*$")
