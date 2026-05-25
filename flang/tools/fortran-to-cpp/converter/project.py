@@ -17,11 +17,12 @@ after it — no separate compilation step is required.
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Iterable
 
-from flang_ast import annotate_tree, parse_fortran_file
+from flang_ast import FlangError, annotate_tree, parse_fortran_file
 from flang_ast.nodes import Node
 
 from .emit import emit_shared_header, emit_translation_unit
@@ -62,9 +63,17 @@ def convert_files(
             extra = ["-I", moddir]
             if _needs_cpp(src):
                 extra.append("-cpp")
-            root = parse_fortran_file(
-                src, flang=flang, sema=True, extra_args=extra, module_dir=moddir
-            )
+            try:
+                root = parse_fortran_file(
+                    src, flang=flang, sema=True, extra_args=extra, module_dir=moddir
+                )
+            except FlangError as exc:
+                # flang couldn't parse/analyze this file (bad encoding,
+                # a sema error, or a dependency that itself failed).  Skip
+                # it and still convert the rest of the project rather than
+                # aborting the whole run.
+                _warn_skip(src, exc)
+                continue
             annotate_tree(root)
             per_file[src] = lower_program(root, source_file=str(src))
 
@@ -82,10 +91,20 @@ def convert_files(
         Path(header_name): emit_shared_header(combined, guard=_SHARED_HEADER_GUARD)
     }
     for src in order:
-        results[src] = emit_translation_unit(
-            per_file[src], shared_header=header_name
-        )
+        if src in per_file:  # skipped (unparseable) files contribute nothing
+            results[src] = emit_translation_unit(
+                per_file[src], shared_header=header_name
+            )
     return results
+
+
+def _warn_skip(src: Path, exc: FlangError) -> None:
+    detail = (exc.stderr or str(exc)).strip().splitlines()
+    first = detail[0] if detail else str(exc)
+    print(
+        f"fortran-to-cpp: skipping {src} (flang could not process it): {first}",
+        file=sys.stderr,
+    )
 
 
 def _combine(tus: Iterable[IRTranslationUnit]) -> IRTranslationUnit:
@@ -127,8 +146,17 @@ def _dependency_order(
     uses: dict[Path, set[str]] = {}
     for src in paths:
         extra = ["-cpp"] if _needs_cpp(src) else []
-        # ``-no-sema`` never needs the .mod files, so it always succeeds.
-        root = parse_fortran_file(src, flang=flang, sema=False, extra_args=extra)
+        # ``-no-sema`` doesn't need the .mod files, but a file flang can't
+        # even scan (e.g. a stray DOS ^Z byte) still fails; treat it as
+        # defining/using nothing so the rest of the project proceeds (the
+        # later sema parse will skip it too, with a warning).
+        try:
+            root = parse_fortran_file(
+                src, flang=flang, sema=False, extra_args=extra
+            )
+        except FlangError:
+            uses[src] = set()
+            continue
         for mod in _defined_modules(root):
             defines.setdefault(mod.lower(), src)
         uses[src] = {m.lower() for m in _used_modules(root)}

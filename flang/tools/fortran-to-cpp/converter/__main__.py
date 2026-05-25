@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from flang_ast import FlangError
+
 from . import convert_ast, convert_file, convert_files
 
 
@@ -53,20 +55,27 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    if args.ast:
-        cpp = convert_ast(
-            args.ast,
-            source_file=str(args.source_file) if args.source_file else None,
-        )
-    elif len(args.source) > 1:
-        return _convert_project(args)
-    elif args.source:
-        cpp = convert_file(
-            args.source[0], flang=args.flang, sema=not args.no_sema
-        )
-    else:
-        _build_parser().error("no source file given")
-        return 2
+    try:
+        if args.ast:
+            cpp = convert_ast(
+                args.ast,
+                source_file=str(args.source_file) if args.source_file else None,
+            )
+        elif len(args.source) > 1:
+            return _convert_project(args)
+        elif args.source:
+            cpp = convert_file(
+                args.source[0], flang=args.flang, sema=not args.no_sema
+            )
+        else:
+            _build_parser().error("no source file given")
+            return 2
+    except FlangError as exc:
+        # flang couldn't parse/analyze the input (bad encoding, a sema
+        # error, ...).  Report cleanly rather than dumping a traceback.
+        detail = (exc.stderr or str(exc)).strip().splitlines()
+        print(f"fortran-to-cpp: {detail[0] if detail else exc}", file=sys.stderr)
+        return 1
     if args.output:
         args.output.write_text(cpp, encoding="utf-8")
     else:

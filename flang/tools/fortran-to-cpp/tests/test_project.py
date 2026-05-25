@@ -106,6 +106,19 @@ class ProjectTests(unittest.TestCase):
         )
         self.assertIn("pi", circle_cpp)
 
+    def test_unparseable_file_is_skipped_not_fatal(self) -> None:
+        # A file flang can't parse must not abort the whole project: the
+        # good files still convert, the bad one is just skipped.
+        bad = self.dir / "bad.f90"
+        bad.write_text("this is not fortran @@@ !!!\n")
+        results = convert_files(
+            [self.consts, self.circle, bad], flang=self.flang
+        )
+        self.assertIn(self.consts, results)
+        self.assertIn(self.circle, results)
+        self.assertNotIn(bad, results)  # skipped
+        self.assertIn(Path(SHARED_HEADER_NAME), results)
+
 
 @unittest.skipUnless(
     _have_flang() and _have_cxx(), "need flang and a C++20 compiler"
