@@ -2958,6 +2958,7 @@ _INTRINSIC_MAP: dict[str, str] = {
     "achar": "fortran::achar", "char": "fortran::achar",
     "iachar": "fortran::ichar", "ichar": "fortran::ichar",
     "mod": "fortran::mod",       # generic: integer % or std::fmod
+    "amod": "fortran::mod", "dmod": "fortran::mod",  # real/double specifics
     "modulo": "fortran::modulo",  # remainder with sign of divisor
     "merge": "fortran::merge",
     "sign": "std::copysign",
@@ -3046,6 +3047,8 @@ def _lower_conversion_intrinsic(
                       operand=operand)
     if callee in ("dble", "dfloat"):
         return IRCast(cpp_type="double", operand=operand)
+    if callee == "sngl":  # double -> single precision
+        return IRCast(cpp_type="float", operand=operand)
     return None
 
 
