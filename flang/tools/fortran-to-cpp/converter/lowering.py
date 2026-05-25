@@ -1021,8 +1021,11 @@ def _resolved_array_types(node: Node) -> dict[str, IRType]:
             shapes[key] = n.shape
     out: dict[str, IRType] = {}
     for key, element in elem.items():
-        if ranks.get(key, 0) > 0 and key in shapes:
+        rank = ranks.get(key, 0)
+        if rank > 0 and key in shapes:
             out[key] = _array_type_from_shape(element, shapes[key])
+        elif rank > 0:
+            out[key] = _deferred_array_type(element, rank)
     return out
 
 
@@ -1082,11 +1085,36 @@ def _apply_implicit_typing(
         if elem is None:
             # No resolved type — nothing to declare from (do not guess).
             continue
-        if ranks.get(nm, 0) > 0 and nm in shapes:
+        rank = ranks.get(nm, 0)
+        if rank > 0 and nm in shapes:
             ty = _array_type_from_shape(elem, shapes[nm])
+        elif rank > 0:
+            # Rank known but shape not constant (an adjustable-bound dummy
+            # array, ``a(n)``); the rank alone is enough — as a dummy it
+            # becomes a non-owning ArrayRef sized by the caller.
+            ty = _deferred_array_type(elem, rank)
         else:
             ty = elem
         sub.locals.append(IRLocal(name=nm, type=ty))
+
+
+def _deferred_array_type(element_type: IRType, rank: int) -> IRType:
+    """A rank-``rank`` array with unknown extents (an adjustable/assumed
+    dummy array, or a deferred-shape local).  As a dummy this lowers to a
+    non-owning ``ArrayRef<T, rank>``; as a local it default-constructs."""
+    return IRType(
+        cpp=f"fortran::Array<{element_type.cpp}, {rank}>",
+        fortran=f"{element_type.fortran}, dimension({rank})",
+        is_array=True,
+        array_rank=rank,
+        array_extent_exprs=(),
+        array_static=False,
+        element_type_cpp=element_type.cpp,
+        is_integer=element_type.is_integer,
+        is_real=element_type.is_real,
+        is_logical=element_type.is_logical,
+        is_character=element_type.is_character,
+    )
 
 
 def _array_type_from_shape(
