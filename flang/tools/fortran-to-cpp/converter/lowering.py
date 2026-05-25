@@ -2191,13 +2191,30 @@ def _index_array_expr(
     return expr
 
 
-def _lower_assignment(node: Node) -> IRAssignment:
+def _lower_assignment(node: Node) -> IRStatement:
     target = node.first_child("Variable") or node.first_child("Designator")
     value = node.first_child("Expr")
-    return IRAssignment(
-        target=_lower_expression(target) if target else IRRaw("/* ? */"),
-        value=_lower_expression(value) if value else IRRaw("/* ? */"),
-    )
+    tgt = _lower_expression(target) if target else IRRaw("/* ? */")
+    val = _lower_expression(value) if value else IRRaw("/* ? */")
+    # Vector subscript on the left: ``a([i, j, k]) = rhs`` assigns ``rhs``
+    # to each indexed element.  Expand to one assignment per index (the
+    # subscript constructor's elements are constants here).
+    if (
+        isinstance(tgt, IRFunctionCall)
+        and len(tgt.args) == 1
+        and isinstance(tgt.args[0], IRArrayConstructor)
+    ):
+        return IRBlock(
+            bindings=[],
+            body=[
+                IRAssignment(
+                    target=IRFunctionCall(callee=tgt.callee, args=(idx,)),
+                    value=val,
+                )
+                for idx in tgt.args[0].elements
+            ],
+        )
+    return IRAssignment(target=tgt, value=val)
 
 
 def _lower_print(node: Node) -> IRPrint:

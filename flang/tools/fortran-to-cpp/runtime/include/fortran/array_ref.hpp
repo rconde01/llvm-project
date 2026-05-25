@@ -143,9 +143,20 @@ public:
 
   /// Copy an array-valued result into the viewed elements (Fortran
   /// ``a(lo:hi) = matmul(...)``).  Writes through the view, with element
-  /// conversion; shapes are assumed conformable.
+  /// conversion; shapes are assumed conformable.  The same-element-type
+  /// overload is a non-template, and these are intentionally *non-const*
+  /// (like the implicit move-assignment) so that for an ``Array`` source
+  /// — which would otherwise convert to an ``ArrayRef`` and pick the
+  /// rebinding move-assignment — this element-copy is the unambiguous
+  /// best match.  (Non-ref-qualified, so it still binds a section rvalue.)
+  const ArrayRef &operator=(const Array<value_type, Rank> &src) {
+    for (index_t i = 0; i < size(); ++i) {
+      linear_at(i) = src.linear_at(i);
+    }
+    return *this;
+  }
   template <typename U>
-  const ArrayRef &operator=(const Array<U, Rank> &src) const {
+  const ArrayRef &operator=(const Array<U, Rank> &src) {
     for (index_t i = 0; i < size(); ++i) {
       linear_at(i) = static_cast<T>(src.linear_at(i));
     }
