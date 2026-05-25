@@ -565,21 +565,24 @@ def _extract_subprogram_name(node: Node, header_kind: str) -> str | None:
 
 def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     """Walk the SpecificationPart (declarations) and ExecutionPart (body)."""
-    data_inits: list[IRStatement] = []
+    spec_part: Node | None = None
     for child in node.children:
         if child.kind == "SpecificationPart":
+            spec_part = child
             sub.locals.extend(_lower_specification(child))
             sub.common_uses.extend(_lower_common_statements(child))
             sub.used_modules.extend(_lower_use_statements(child))
-            data_inits.extend(_lower_data_statements(child, sub.locals))
         elif child.kind == "ExecutionPart":
             sub.body.extend(_lower_execution(child))
-    # DATA-statement initializations run before the executable body.
-    sub.body = data_inits + sub.body
     # FORTRAN 77 implicit typing: synthesize declarations for undeclared
     # variables (must precede array-assignment expansion, which keys off
     # which locals are arrays).
     _apply_implicit_typing(node, sub)
+    # DATA initializations run after implicit typing so array-vs-scalar is
+    # known, and before the executable body.
+    if spec_part is not None:
+        data_inits = _lower_data_statements(spec_part, sub.locals)
+        sub.body = data_inits + sub.body
     _resolve_allocations(sub)
     _resolve_pointers(sub)
     _expand_array_assignments(sub)
@@ -644,6 +647,13 @@ def _apply_implicit_typing(node: Node, sub: IRSubprogram) -> None:
     known.add(sub.name + "_result")
 
     referenced, loop_vars = _collect_referenced_names(sub.body)
+    # DATA initializers haven't been lowered into the body yet; collect
+    # their target names too so a DATA-only variable still gets declared.
+    if spec is not None:
+        for obj in spec.find_all("DataStmtObject"):
+            nm = obj.find_first("Name")
+            if nm is not None and nm.fortran:
+                referenced.add(_safe_name(nm.fortran))
 
     to_declare: dict[str, IRType] = {}
     for nm, asp in array_specs.items():
@@ -732,10 +742,9 @@ def _lower_data_statements(
     for ds in spec_part.find_all("DataStmt"):
         for dset in ds.children_of_kind("DataStmtSet"):
             objs = dset.children_of_kind("DataStmtObject")
-            values = [
-                _lower_data_value(v)
-                for v in dset.children_of_kind("DataStmtValue")
-            ]
+            values: list[IRExpr] = []
+            for v in dset.children_of_kind("DataStmtValue"):
+                values.extend(_lower_data_value(v))
             vi = 0
             for obj in objs:
                 var = obj.first_child("Variable")
@@ -757,13 +766,26 @@ def _lower_data_statements(
     return out
 
 
-def _lower_data_value(value_node: Node) -> IRExpr:
-    """Lower one ``DataStmtValue`` (its constant) to an expression."""
-    dc = value_node.find_first("DataStmtConstant")
+def _lower_data_value(value_node: Node) -> list[IRExpr]:
+    """Lower one ``DataStmtValue`` to its constant(s).
+
+    A ``DataStmtRepeat`` child (``3*7``) repeats the constant that many
+    times, so this returns a list."""
+    dc = value_node.first_child("DataStmtConstant")
     if dc is None:
-        return IRRaw("0")
+        return [IRRaw("0")]
     inner = next(iter(dc.children), None)
-    return _lower_expression(inner) if inner is not None else IRRaw("0")
+    val = _lower_expression(inner) if inner is not None else IRRaw("0")
+    count = 1
+    repeat = value_node.first_child("DataStmtRepeat")
+    if repeat is not None:
+        lit = repeat.find_first("IntLiteralConstant")
+        if lit is not None and lit.fortran:
+            try:
+                count = int(lit.fortran.split("_")[0])
+            except ValueError:
+                count = 1
+    return [val] * count
 
 
 def _lower_use_statements(spec_part: Node) -> list[str]:

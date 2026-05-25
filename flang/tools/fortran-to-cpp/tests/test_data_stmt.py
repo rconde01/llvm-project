@@ -36,6 +36,15 @@ end program
 """
 
 
+REPEAT_F90 = """\
+program dt
+  integer :: k(6)
+  data k /1, 2, 3*7, 9/
+  print *, k(1), k(3), k(4), k(6)
+end program
+"""
+
+
 def _convert(src: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".f90", delete=False, encoding="utf-8"
@@ -63,6 +72,11 @@ class DataEmitTests(unittest.TestCase):
         cpp = _convert(DATA_F90)
         # Inits precede the print statement.
         self.assertLess(cpp.index("a = fortran::array_of"), cpp.index("std::cout"))
+
+    def test_repeat_count_expanded(self) -> None:
+        cpp = _convert(REPEAT_F90)
+        # ``3*7`` expands to three 7s.
+        self.assertIn("k = fortran::array_of({1, 2, 7, 7, 7, 9});", cpp)
 
 
 @unittest.skipUnless(
