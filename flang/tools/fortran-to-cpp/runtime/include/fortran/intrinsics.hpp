@@ -23,6 +23,7 @@
 #define FORTRAN_RT_INTRINSICS_HPP
 
 #include "array.hpp"
+#include "array_ops.hpp" // detail::ArrayLike, elem_t, rank_of
 
 #include <cmath>
 #include <cstddef>
@@ -34,6 +35,47 @@
 #include <type_traits>
 
 namespace fortran {
+
+// ---- Elemental math intrinsics --------------------------------------------
+//
+// Fortran's math intrinsics are *elemental*: applied to an array they map
+// over every element.  Each ``fortran::<fn>`` therefore has a scalar
+// overload (delegating to the standard-library function) and an array
+// overload returning a fresh Array (like the array-returning intrinsics).
+// The converter emits ``fortran::<fn>`` so the same spelling works for
+// scalar and array arguments.
+
+#define FORTRAN_RT_ELEMENTAL(NAME, FN)                                         \
+  template <typename T>                                                        \
+    requires std::is_arithmetic_v<T>                                           \
+  auto NAME(T x) {                                                             \
+    return FN(x);                                                              \
+  }                                                                            \
+  template <detail::ArrayLike A>                                               \
+  auto NAME(const A &a) {                                                      \
+    using R = decltype(FN(std::declval<detail::elem_t<A>>()));                 \
+    Array<R, detail::rank_of<A>> out(a.lower_bounds(), a.extents());           \
+    for (index_t i = 0; i < a.size(); ++i)                                     \
+      out.linear_at(i) = FN(a.linear_at(i));                                   \
+    return out;                                                                \
+  }
+
+FORTRAN_RT_ELEMENTAL(sqrt, std::sqrt)
+FORTRAN_RT_ELEMENTAL(exp, std::exp)
+FORTRAN_RT_ELEMENTAL(log, std::log)
+FORTRAN_RT_ELEMENTAL(log10, std::log10)
+FORTRAN_RT_ELEMENTAL(sin, std::sin)
+FORTRAN_RT_ELEMENTAL(cos, std::cos)
+FORTRAN_RT_ELEMENTAL(tan, std::tan)
+FORTRAN_RT_ELEMENTAL(asin, std::asin)
+FORTRAN_RT_ELEMENTAL(acos, std::acos)
+FORTRAN_RT_ELEMENTAL(atan, std::atan)
+FORTRAN_RT_ELEMENTAL(sinh, std::sinh)
+FORTRAN_RT_ELEMENTAL(cosh, std::cosh)
+FORTRAN_RT_ELEMENTAL(tanh, std::tanh)
+FORTRAN_RT_ELEMENTAL(abs, std::abs)
+
+#undef FORTRAN_RT_ELEMENTAL
 
 // ---- Bit-manipulation intrinsics ------------------------------------------
 

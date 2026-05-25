@@ -97,8 +97,8 @@ class WholeArrayEmitTests(unittest.TestCase):
 
     def test_elemental_intrinsic_indexes_arg(self) -> None:
         cpp = _convert(WHOLE_2D_F90)
-        # ``w = sqrt(v)`` -> ``w(_i) = std::sqrt(v(_i))``
-        self.assertRegex(cpp, r"w\(_i\d\) = std::sqrt\(v\(_i\d\)\);")
+        # ``w = sqrt(v)`` -> ``w(_i) = fortran::sqrt(v(_i))``
+        self.assertRegex(cpp, r"w\(_i\d\) = fortran::sqrt\(v\(_i\d\)\);")
 
     def test_reduction_arg_not_indexed(self) -> None:
         cpp = _convert(WHOLE_2D_F90)

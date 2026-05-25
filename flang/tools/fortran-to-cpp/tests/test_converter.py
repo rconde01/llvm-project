@@ -323,13 +323,13 @@ class EmitTests(unittest.TestCase):
         # The function name local should be renamed to <name>_result
         # and a trailing return statement added.
         self.assertIn("float hypot_result{};", cpp)
-        self.assertIn("hypot_result = std::sqrt(", cpp)
+        self.assertIn("hypot_result = fortran::sqrt(", cpp)
         self.assertIn("return hypot_result;", cpp)
 
     def test_intrinsic_calls_map_to_std(self) -> None:
         cpp = self._convert(PARAMS_F90)
         # ``sqrt`` is a Fortran intrinsic; we route it to <cmath>.
-        self.assertIn("std::sqrt(", cpp)
+        self.assertIn("fortran::sqrt(", cpp)
 
     def test_array_declaration_uses_fortran_array(self) -> None:
         cpp = self._convert(ARRAY_F90)

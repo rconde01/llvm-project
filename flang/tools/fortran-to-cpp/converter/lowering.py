@@ -2938,12 +2938,14 @@ def _lower_logical_literal(node: Node) -> IRLiteral:
 # own functions therefore "just work" as long as they have a C++
 # definition (typically a translated sibling subprogram).
 _INTRINSIC_MAP: dict[str, str] = {
-    "sqrt": "std::sqrt", "abs": "std::abs", "exp": "std::exp",
-    "log": "std::log", "log10": "std::log10",
-    "sin": "std::sin", "cos": "std::cos", "tan": "std::tan",
-    "asin": "std::asin", "acos": "std::acos", "atan": "std::atan",
-    "atan2": "std::atan2", "sinh": "std::sinh", "cosh": "std::cosh",
-    "tanh": "std::tanh", "floor": "std::floor", "ceiling": "std::ceil",
+    # Elemental math -> fortran:: overloads that map over arrays as well
+    # as scalars (intrinsics.hpp); scalar calls delegate to std::.
+    "sqrt": "fortran::sqrt", "abs": "fortran::abs", "exp": "fortran::exp",
+    "log": "fortran::log", "log10": "fortran::log10",
+    "sin": "fortran::sin", "cos": "fortran::cos", "tan": "fortran::tan",
+    "asin": "fortran::asin", "acos": "fortran::acos", "atan": "fortran::atan",
+    "atan2": "std::atan2", "sinh": "fortran::sinh", "cosh": "fortran::cosh",
+    "tanh": "fortran::tanh", "floor": "std::floor", "ceiling": "std::ceil",
     "min": "std::min", "max": "std::max",
     # Bit-manipulation intrinsics.
     "iand": "fortran::iand", "ior": "fortran::ior", "ieor": "fortran::ieor",
