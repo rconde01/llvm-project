@@ -213,6 +213,22 @@ public:
     return *this;
   }
 
+  /// Elementwise copy from a (possibly differently-typed, possibly
+  /// strided) view — Fortran ``a = b`` / ``a%c = b(:,j)`` where ``b`` is
+  /// a dummy array or section.  Copies in place into this array's
+  /// existing storage (shapes are assumed conformable, as Fortran
+  /// requires); does not rebind.  Distinct from the deleted Array copy-
+  /// assignment, so ``a = other_array`` still requires an explicit
+  /// ``clone()`` (copy cost stays visible, D1).
+  template <typename U>
+  Array &operator=(const ArrayRef<U, Rank> &src) {
+    const index_t n = size();
+    for (index_t i = 0; i < n; ++i) {
+      linear_at(i) = static_cast<T>(src.linear_at(i));
+    }
+    return *this;
+  }
+
   /// Swap with another array of the same type.  Used by the move ops.
   void swap(Array &other) noexcept {
     using std::swap;

@@ -78,6 +78,36 @@ TEST(comparison_yields_bool_array) {
   CHECK(!eq(1));
 }
 
+TEST(array_assign_from_view_converts) {
+  // Array = ArrayRef of a different element type (Fortran a = b(:,j)).
+  Array<double, 1> src({3});
+  for (index_t i = 1; i <= 3; ++i) {
+    src(i) = static_cast<double>(i) + 0.5;
+  }
+  Array<float, 1> dst({3});
+  dst = ArrayRef<double, 1>(src); // elementwise copy + convert
+  CHECK_EQ(dst(1), 1.5f);
+  CHECK_EQ(dst(3), 3.5f);
+}
+
+TEST(view_broadcast_assignment_writes_through) {
+  Array<int, 1> a({5});
+  a = 0;
+  a.section(2, 4) = 7; // a(2:4) = 7, through the view
+  CHECK_EQ(a(1), 0);
+  CHECK_EQ(a(2), 7);
+  CHECK_EQ(a(4), 7);
+  CHECK_EQ(a(5), 0);
+}
+
+TEST(mutable_view_converts_to_const_view) {
+  Array<float, 1> a({3});
+  a = 2.0f;
+  ArrayRef<float, 1> mut(a);
+  ArrayRef<const float, 1> ro = mut; // add const
+  CHECK_EQ(ro(1), 2.0f);
+}
+
 TEST(rank2_keeps_shape_and_bounds) {
   Array<int, 2> m({{-1, 0}, {2, 3}}); // lower (-1,0), extents (2,3)
   m = 1;
