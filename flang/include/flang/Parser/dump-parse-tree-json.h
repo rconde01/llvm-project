@@ -17,6 +17,8 @@
 #include "tools.h"
 #include "unparse.h"
 #include "flang/Common/indirection.h"
+#include "flang/Semantics/symbol.h"
+#include "flang/Semantics/type.h"
 #include "llvm/Support/raw_ostream.h"
 #include <string>
 #include <type_traits>
@@ -87,6 +89,29 @@ public:
   }
   template <typename T> void Post(const UnlabeledStatement<T> &) {
     CloseNode();
+  }
+
+  // A Name carries the resolved semantic Symbol after analysis.  Emit its
+  // resolved type (e.g. "REAL(8)", "INTEGER(4)", "TYPE(point)") and rank so
+  // the converter can read types directly — including those set by implicit
+  // typing, custom IMPLICIT statements, KINDs, and host/use association —
+  // rather than re-deriving them.
+  bool Pre(const Name &x) {
+    OpenNode("Name");
+    EmitSource(x.source);
+    out_ << ",\"fortran\":\"";
+    EmitJSONString(x.source.ToString());
+    out_ << "\"";
+    if (x.symbol) {
+      const semantics::Symbol &sym{x.symbol->GetUltimate()};
+      if (const semantics::DeclTypeSpec * type{sym.GetType()}) {
+        out_ << ",\"type\":\"";
+        EmitJSONString(type->AsFortran());
+        out_ << "\"";
+      }
+      out_ << ",\"rank\":" << sym.Rank();
+    }
+    return true;
   }
 
   template <typename T> bool Pre(const common::Indirection<T> &) {
@@ -260,6 +285,12 @@ private:
       ss << x;
     } else if constexpr (std::is_same_v<T, Name>) {
       ss << x.source.ToString();
+    } else if constexpr (std::is_same_v<T, const char *>) {
+      // A source Location (e.g. an IMPLICIT LetterSpec range bound) — emit
+      // the single character it points at.
+      if (x) {
+        ss << *x;
+      }
     } else if constexpr (std::is_same_v<T, int>) {
       ss << x;
     } else if constexpr (std::is_same_v<T, bool>) {

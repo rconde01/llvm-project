@@ -577,10 +577,20 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
             sub.used_modules.extend(_lower_use_statements(child))
         elif child.kind == "ExecutionPart":
             sub.body.extend(_lower_execution(child))
+    # Prefer flang's resolved types (handles KINDs, ``integer*8``, custom
+    # IMPLICIT, etc.) over the parse-tree spelling for scalar locals, and
+    # for the implicit-typing synthesis below.
+    resolved = _resolved_types(node)
+    for loc in sub.locals:
+        if loc.type.is_array or loc.type.is_pointer:
+            continue
+        rt = resolved.get(loc.name)
+        if rt is not None and not rt.is_array:
+            loc.type = rt
     # FORTRAN 77 implicit typing: synthesize declarations for undeclared
     # variables (must precede array-assignment expansion, which keys off
     # which locals are arrays).
-    _apply_implicit_typing(node, sub)
+    _apply_implicit_typing(node, sub, resolved)
     # DATA initializations run after implicit typing so array-vs-scalar is
     # known, and before the executable body.
     if spec_part is not None:
@@ -616,7 +626,69 @@ def _implicit_type_for(name: str) -> IRType:
     return IRType(cpp="float", fortran="real(kind=4)", is_real=True)
 
 
-def _apply_implicit_typing(node: Node, sub: IRSubprogram) -> None:
+_FTYPE_RE = re.compile(r"^\s*([A-Za-z ]+?)\s*(?:\(([^)]*)\))?\s*$")
+
+
+def _scalar_type_from_fortran(spelling: str) -> IRType | None:
+    """Map a resolved type spelling from the dumper (e.g. ``"REAL(8)"``,
+    ``"INTEGER(4)"``, ``"TYPE(point)"``) to an :class:`IRType` (element
+    type for arrays).  Returns ``None`` for spellings we don't model."""
+    m = _FTYPE_RE.match(spelling)
+    if m is None:
+        return None
+    cat = m.group(1).strip().upper()
+    arg = (m.group(2) or "").strip()
+
+    def _first_int(text: str) -> int | None:
+        mm = re.match(r"\s*(\d+)", text)
+        return int(mm.group(1)) if mm is not None else None
+
+    if cat == "INTEGER":
+        return IRType(cpp=_INT_KIND_CPP.get(_first_int(arg), "std::int32_t"),
+                      fortran=spelling, is_integer=True)
+    if cat in ("REAL", "DOUBLE PRECISION"):
+        kind = 8 if cat == "DOUBLE PRECISION" else _first_int(arg)
+        cpp = {None: "float", 4: "float", 8: "double", 16: "long double"}.get(
+            kind, "float"
+        )
+        return IRType(cpp=cpp, fortran=spelling, is_real=True)
+    if cat == "LOGICAL":
+        return IRType(cpp="bool", fortran=spelling, is_logical=True)
+    if cat == "COMPLEX":
+        inner = {None: "float", 4: "float", 8: "double"}.get(_first_int(arg), "float")
+        return IRType(cpp=f"std::complex<{inner}>", fortran=spelling)
+    if cat in ("TYPE", "CLASS"):
+        name = arg.split(",")[0].strip()
+        return IRType(cpp=camelcase(name), fortran=spelling) if name else None
+    if cat == "CHARACTER":
+        length = (arg.split(",")[0].strip() if arg else "*")
+        if length.isdigit():
+            return IRType(
+                cpp=f"fortran::FortranString<{length}>",
+                fortran=spelling,
+                is_character=True,
+            )
+        return None
+    return None
+
+
+def _resolved_types(node: Node) -> dict[str, IRType]:
+    """Collect resolved scalar/element types for every Name in ``node``
+    that the dumper annotated, keyed by the safe-named identifier."""
+    out: dict[str, IRType] = {}
+    for n in node.walk():
+        if n.kind == "Name" and n.sym_type and n.fortran:
+            key = _safe_name(n.fortran)
+            if key not in out:
+                ty = _scalar_type_from_fortran(n.sym_type)
+                if ty is not None:
+                    out[key] = ty
+    return out
+
+
+def _apply_implicit_typing(
+    node: Node, sub: IRSubprogram, resolved: dict[str, IRType]
+) -> None:
     """Declare undeclared variables using Fortran's implicit-typing rule.
 
     Only runs when the unit does not specify ``implicit none`` (which all
@@ -667,13 +739,18 @@ def _apply_implicit_typing(node: Node, sub: IRSubprogram) -> None:
             if nm is not None and nm.fortran:
                 referenced.add(_safe_name(nm.fortran))
 
+    # Prefer the type flang resolved (handles custom IMPLICIT, KINDs, etc.);
+    # fall back to the default I-N rule only when unavailable.
+    def element_type(nm: str) -> IRType:
+        return resolved.get(nm) or _implicit_type_for(nm)
+
     to_declare: dict[str, IRType] = {}
     for nm, asp in array_specs.items():
         if nm not in known:
-            to_declare[nm] = _make_array_type(_implicit_type_for(nm), asp)
+            to_declare[nm] = _make_array_type(element_type(nm), asp)
     for nm in sorted(referenced | loop_vars):
         if nm not in known and nm not in to_declare:
-            to_declare[nm] = _implicit_type_for(nm)
+            to_declare[nm] = element_type(nm)
 
     for nm, ty in to_declare.items():
         sub.locals.append(IRLocal(name=nm, type=ty))

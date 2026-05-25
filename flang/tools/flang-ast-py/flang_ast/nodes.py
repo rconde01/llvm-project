@@ -156,6 +156,14 @@ class Node:
     label: int | None = None
     """Statement label, only set on ``Statement`` wrapper nodes."""
 
+    sym_type: str | None = None
+    """Resolved declared type of a ``Name``'s symbol, as Fortran text
+    (e.g. ``"REAL(8)"``, ``"INTEGER(4)"``, ``"TYPE(point)"``).  Set by the
+    dumper after semantics; ``None`` when the name has no resolved type."""
+
+    rank: int | None = None
+    """Rank of a ``Name``'s symbol (0 for scalars), when resolved."""
+
     children: list[Node] = field(default_factory=list)
     """Direct sub-nodes, in source order."""
 
@@ -203,6 +211,8 @@ class Node:
             source=source,
             fortran=_opt_str(raw.get("fortran")),
             label=_opt_int(raw.get("label")),
+            sym_type=_opt_str(raw.get("type")),
+            rank=_opt_int(raw.get("rank")),
             children=children,
             leading_comments=leading,
             trailing_comments=trailing,
@@ -217,6 +227,10 @@ class Node:
             out["fortran"] = self.fortran
         if self.label is not None:
             out["label"] = self.label
+        if self.sym_type is not None:
+            out["type"] = self.sym_type
+        if self.rank is not None:
+            out["rank"] = self.rank
         if self.leading_comments:
             out["leadingComments"] = [c.to_json() for c in self.leading_comments]
         if self.trailing_comments:
