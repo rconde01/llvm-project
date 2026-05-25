@@ -41,6 +41,7 @@ from .ir import (
     IRCast,
     IRIf,
     IRImpliedDo,
+    IRLambda,
     IRLiteral,
     IRMember,
     IRName,
@@ -101,6 +102,8 @@ def map_expr(expr: IRExpr, fn: ExprFn) -> IRExpr:
         expr = IRArrayConstructor(
             elements=tuple(map_expr(e, fn) for e in expr.elements)
         )
+    elif isinstance(expr, IRLambda):
+        expr = IRLambda(params=expr.params, body=map_expr(expr.body, fn))
     elif isinstance(expr, IRSection):
         new_subs = []
         for s in expr.subscripts:

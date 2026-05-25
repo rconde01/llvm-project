@@ -190,9 +190,18 @@ class IRRaw:
     text: str
 
 
+@dataclass(frozen=True, slots=True)
+class IRLambda:
+    """A statement function lowered to a generic C++ lambda:
+    ``[&](auto p, ...) { return <body>; }``."""
+
+    params: tuple[str, ...]
+    body: "IRExpr"
+
+
 IRExpr = Union[
     IRLiteral, IRName, IRBinaryOp, IRUnaryOp, IRFunctionCall, IRMember,
-    IRCast, IRSection, IRArrayConstructor, IRImpliedDo, IRRaw
+    IRCast, IRSection, IRArrayConstructor, IRImpliedDo, IRRaw, IRLambda
 ]
 
 

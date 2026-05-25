@@ -19,6 +19,7 @@ from flang_ast import Comment
 from .ir import (
     IRAllocate,
     IRArrayConstructor,
+    IRLambda,
     IRAssignment,
     IRBinaryOp,
     IRBlock,
@@ -746,6 +747,9 @@ def _render_expr(expr: IRExpr) -> str:
     if isinstance(expr, IRArrayConstructor):
         elems = ", ".join(_render_expr(e) for e in expr.elements)
         return f"fortran::array_of({{{elems}}})"
+    if isinstance(expr, IRLambda):
+        params = ", ".join(f"auto {p}" for p in expr.params)
+        return f"[&]({params}) {{ return {_render_expr(expr.body)}; }}"
     if isinstance(expr, IRSection):
         return _render_section(expr)
     if isinstance(expr, IRRaw):

@@ -66,6 +66,7 @@ from .ir import (
     IRGoto,
     IRImpliedDo,
     IRLabel,
+    IRLambda,
     IRMember,
     IRModule,
     IRPointerAssign,
@@ -601,6 +602,8 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     for loc in sub.locals:
         if loc.type.is_array or loc.type.is_pointer:
             continue
+        if isinstance(loc.initializer, IRLambda):
+            continue  # statement function: keep the deduced ``auto`` type
         rt = resolved.get(loc.name)
         if rt is not None and not rt.is_array:
             loc.type = rt
@@ -609,10 +612,10 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     # which locals are arrays).
     _apply_implicit_typing(node, sub, resolved)
     # DATA initializations run after implicit typing so array-vs-scalar is
-    # known, and before the executable body.
-    if spec_part is not None:
-        data_inits = _lower_data_statements(spec_part, sub.locals)
-        sub.body = data_inits + sub.body
+    # known, and before the executable body.  Collected unit-wide because
+    # F77 allows DATA among executable statements, not just declarations.
+    data_inits = _lower_data_statements(node, sub.locals)
+    sub.body = data_inits + sub.body
     _resolve_allocations(sub)
     _resolve_pointers(sub)
     _expand_array_assignments(sub)
@@ -673,15 +676,21 @@ def _scalar_type_from_fortran(spelling: str) -> IRType | None:
     return None
 
 
-def _unit_names(node: Node) -> Iterable[Node]:
-    """Yield the Name nodes belonging to ``node`` itself, *not* descending
-    into nested (CONTAINS) subprograms — their locals belong to them."""
+def _unit_descendants(node: Node, kind: str) -> Iterable[Node]:
+    """Yield descendants of ``node`` of the given kind, *not* descending
+    into nested (CONTAINS) subprograms — they belong to those units."""
     for child in node.children:
         if child.kind in ("InternalSubprogramPart", "ModuleSubprogramPart"):
             continue
-        if child.kind == "Name":
+        if child.kind == kind:
             yield child
-        yield from _unit_names(child)
+        yield from _unit_descendants(child, kind)
+
+
+def _unit_names(node: Node) -> Iterable[Node]:
+    """Yield the Name nodes belonging to ``node`` itself (see
+    _unit_descendants)."""
+    return _unit_descendants(node, "Name")
 
 
 def _resolved_types(node: Node) -> dict[str, IRType]:
@@ -718,6 +727,10 @@ def _apply_implicit_typing(
     known = {loc.name for loc in sub.locals} | dummy
     known.add(sub.name)
     known.add(sub.name + "_result")
+    # Statement-function names and their dummy args are not unit locals.
+    for sf in _unit_descendants(node, "StmtFunctionStmt"):
+        for nm in (c for c in sf.children if c.kind == "Name" and c.fortran):
+            known.add(_safe_name(nm.fortran))
 
     # Local object-entity variables of this unit, from symbol facts: their
     # resolved type and (constant) array shape.
@@ -786,7 +799,7 @@ def _array_type_from_shape(
 
 
 def _lower_data_statements(
-    spec_part: Node, locals_: list[IRLocal]
+    node: Node, locals_: list[IRLocal]
 ) -> list[IRStatement]:
     """Turn ``data`` statements into initializing assignments.
 
@@ -794,10 +807,14 @@ def _lower_data_statements(
     ``data n, x /5, 3.14/`` becomes ``n = 5; x = 3.14;``.  Values are
     distributed across objects left-to-right; an array object consumes
     the remaining values (correct when it's the last/only object).
+
+    Scanned unit-wide (not just the specification part) since F77 permits
+    DATA among executable statements; those are dropped where they appear
+    (see _lower_action_statement) and collected here instead.
     """
     arrays = {loc.name for loc in locals_ if loc.type.is_array}
     out: list[IRStatement] = []
-    for ds in spec_part.find_all("DataStmt"):
+    for ds in _unit_descendants(node, "DataStmt"):
         for dset in ds.children_of_kind("DataStmtSet"):
             objs = dset.children_of_kind("DataStmtObject")
             values: list[IRExpr] = []
@@ -921,7 +938,36 @@ def _lower_specification(spec_part: Node) -> list[IRLocal]:
     # only the constexpr form.
     params = _lower_parameter_statements(spec_part)
     param_names = {p.name for p in params}
-    return params + [loc for loc in out if loc.name not in param_names]
+    decls = [loc for loc in out if loc.name not in param_names]
+    # Statement functions become generic lambdas, declared last so they can
+    # capture the locals they reference.
+    return params + decls + _lower_statement_functions(spec_part)
+
+
+def _lower_statement_functions(spec_part: Node) -> list[IRLocal]:
+    """``f(x, y) = x*x + y`` -> ``auto f = [&](auto x, auto y){ return
+    x*x + y; };`` (a generic lambda capturing host locals by reference)."""
+    out: list[IRLocal] = []
+    for sf in spec_part.find_all("StmtFunctionStmt"):
+        names = [c for c in sf.children if c.kind == "Name"]
+        if not names or not names[0].fortran:
+            continue
+        fname = _safe_name(names[0].fortran)
+        params = tuple(
+            _safe_name(n.fortran) for n in names[1:] if n.fortran
+        )
+        scalar = sf.first_child("Scalar")
+        expr = scalar.find_first("Expr") if scalar is not None else None
+        if expr is None:
+            continue
+        out.append(
+            IRLocal(
+                name=fname,
+                type=IRType(cpp="auto", fortran="statement function"),
+                initializer=IRLambda(params=params, body=_lower_expression(expr)),
+            )
+        )
+    return out
 
 
 def _lower_parameter_statements(spec_part: Node) -> list[IRLocal]:
@@ -1360,9 +1406,13 @@ def _lower_action_statement(stmt: Node) -> IRStatement | None:
     """A ``Statement`` wrapper around an ``ActionStmt``."""
     leading = list(stmt.leading_comments)
     trailing = list(stmt.trailing_comments)
-    # A FORMAT statement is non-executable: its spec is resolved by label
-    # where a WRITE/READ/PRINT references it, so drop it here.
-    if stmt.find_first("FormatStmt") is not None:
+    # FORMAT and DATA are non-executable: FORMAT is resolved by label
+    # where referenced, and DATA is collected unit-wide and prepended as
+    # initializers — so drop both where they appear.
+    if (
+        stmt.find_first("FormatStmt") is not None
+        or stmt.find_first("DataStmt") is not None
+    ):
         return IRComment(comments=[])
     action = stmt.find_first("ActionStmt")
     if action is None:
