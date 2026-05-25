@@ -179,6 +179,15 @@ public:
     init_storage();
   }
 
+  /// Construct with explicit lower bounds, extents, and a scalar broadcast
+  /// to every element — Fortran ``real :: a(n) = 0.0``.  (Only this
+  /// three-argument form is provided; a two-argument ``(extents, fill)``
+  /// would be ambiguous with ``(lower, extents)``.)
+  Array(const lower_array &lower, const extent_array &extents, const T &fill)
+      : Array(lower, extents) {
+    std::fill_n(storage_.get(), size(), fill);
+  }
+
   // Move-only.  Copies are explicit via ``clone()`` so the cost is visible
   // at every call site (R1 / D1).  We define move explicitly (rather
   // than ``= default``) so the moved-from array is left in a fully

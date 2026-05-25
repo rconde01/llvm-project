@@ -409,8 +409,12 @@ def _lower_derived_type_def(node: Node) -> "IRDerivedType | None":
         for decl in comp.find_all("ComponentDecl"):
             name = decl.first_child("Name")
             if name is not None and name.fortran:
-                # A component may carry its own ArraySpec (component array).
-                arr = decl.first_child("ArraySpec")
+                # A component may carry its own array spec (component
+                # array).  Its shape node is a ``ComponentArraySpec``
+                # rather than the ``ArraySpec`` used for ordinary locals.
+                arr = decl.first_child("ArraySpec") or decl.first_child(
+                    "ComponentArraySpec"
+                )
                 field_type = (
                     _make_array_type(comp_type, arr) if arr is not None
                     else comp_type
@@ -2755,21 +2759,41 @@ def _lower_structure_component(node: Node) -> IRExpr:
     return IRMember(base=base_expr, field=field)
 
 
+def _access_path(expr: IRExpr | None) -> str | None:
+    """Render a Name / nested StructureComponent reference as a dotted
+    C++ access path (``o1`` -> ``"o1"``, ``o1%cf`` -> ``"o1.cf"``), for
+    use as an array-indexing base.  Returns ``None`` for bases too complex
+    to spell as a simple path (e.g. ``a(i)%c``)."""
+    if isinstance(expr, IRName):
+        return expr.name
+    if isinstance(expr, IRMember):
+        base = _access_path(expr.base)
+        return f"{base}.{expr.field}" if base is not None else None
+    return None
+
+
 def _lower_array_element(node: Node) -> IRExpr:
     """Translate ``a(i, j, k)`` to a call on the C++ Array object.
 
     fortran::Array overloads ``operator()`` with exactly the same
     arity / 1-based indexing as Fortran, so the translation is one
     IRFunctionCall whose callee is the array name and whose args are
-    the lowered subscripts.
+    the lowered subscripts.  The indexed entity may be a derived-type
+    component (``o1%beta(i, j)``), so the callee is the full access path
+    of the inner DataRef rather than just its leading name.
     """
-    # First child is an inner DataRef that resolves to the array name.
+    # First child is an inner DataRef that resolves to the indexed entity
+    # (a plain array name or a derived-type component).
     array_name = ""
     data_ref = node.first_child("DataRef")
     if data_ref is not None:
-        name = data_ref.find_first("Name")
-        if name is not None and name.fortran:
-            array_name = _safe_name(name.fortran)
+        path = _access_path(_lower_expression(data_ref))
+        if path is not None:
+            array_name = path
+        else:
+            name = data_ref.find_first("Name")
+            if name is not None and name.fortran:
+                array_name = _safe_name(name.fortran)
     raw_subs: list[IRExpr | IRTriplet] = []
     has_triplet = False
     for sub in node.children_of_kind("SectionSubscript"):

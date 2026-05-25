@@ -345,6 +345,30 @@ def _emit_local(
             }[storage]
     else:
         prefix = ""
+    if (
+        loc.type.is_array
+        and isinstance(loc.initializer, IRLiteral)
+        and loc.type.array_extent_exprs
+    ):
+        # Whole-array scalar initializer (Fortran ``real :: a(n) = 0.0``):
+        # build the array with its shape and broadcast the scalar to every
+        # element.  A non-scalar initializer (array constructor) keeps the
+        # plain ``= ...`` form below.
+        fill = _render_expr(loc.initializer)
+        extents = ", ".join(loc.type.array_extent_exprs)
+        # Always use the explicit-lower-bound form so the call resolves to
+        # ``Array(lower, extents, fill)`` (the only fill constructor);
+        # default the lower bounds to 1 when none were declared.
+        if loc.type.array_lower_bound_exprs:
+            lowers = ", ".join(loc.type.array_lower_bound_exprs)
+        else:
+            lowers = ", ".join(["1"] * len(loc.type.array_extent_exprs))
+        out.write(
+            f"{pad}{prefix}{loc.type.cpp} {loc.name}"
+            f"{{{{{lowers}}}, {{{extents}}}, {fill}}};"
+        )
+        _emit_trailing(out, loc.trailing_comments)
+        return
     if loc.type.is_array and loc.initializer is None:
         if not loc.type.array_extent_exprs:
             # Deferred-shape (allocatable) array: default-construct
