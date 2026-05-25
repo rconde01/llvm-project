@@ -239,6 +239,7 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
         tu.common_structs.append(struct)
 
     for sub in tu.subprograms:
+        param_names = {p.name for p in sub.parameters}
         for block_name in {u.block_name for u in sub.common_uses}:
             struct = struct_for_block[block_name]
             member_names = {f.name for f in struct.fields}
@@ -246,12 +247,17 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
             sub.locals = [
                 loc for loc in sub.locals if loc.name not in member_names
             ]
+            # A member whose name is also a dummy argument is shadowed by
+            # that argument in this routine (Fortran can't reference the
+            # common entity by that name here), so don't bind it.
             _attach_state(
                 sub,
                 struct_type=struct.cpp_type,
                 param_name=_common_param_name(block_name),
                 owned_by="__common_" + block_name,
-                bound_fields=[f.name for f in struct.fields],
+                bound_fields=[
+                    f.name for f in struct.fields if f.name not in param_names
+                ],
             )
 
 

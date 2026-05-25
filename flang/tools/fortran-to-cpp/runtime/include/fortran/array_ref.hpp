@@ -37,6 +37,7 @@
 #include <array>
 #include <cassert>
 #include <cstddef>
+#include <format>
 #include <istream>
 #include <ostream>
 #include <tuple>
@@ -423,5 +424,30 @@ ArrayRef<T, R> seq_assoc(const ArrayRef<T, 1> &flat,
 }
 
 } // namespace fortran
+
+// std::format support: a whole array formats its elements (Fortran
+// element / column-major order) back-to-back, each with the element
+// format spec — matching ``write(u,'(2i4)') name`` style output.
+namespace fortran::detail {
+template <typename Arr, typename T>
+struct array_formatter : std::formatter<T, char> {
+  template <typename FmtContext>
+  auto format(const Arr &a, FmtContext &ctx) const {
+    for (index_t i = 0; i < a.size(); ++i) {
+      ctx.advance_to(std::formatter<T, char>::format(a.linear_at(i), ctx));
+    }
+    return ctx.out();
+  }
+};
+} // namespace fortran::detail
+
+template <typename T, std::size_t R>
+struct std::formatter<fortran::Array<T, R>, char>
+    : fortran::detail::array_formatter<fortran::Array<T, R>, T> {};
+
+template <typename T, std::size_t R>
+struct std::formatter<fortran::ArrayRef<T, R>, char>
+    : fortran::detail::array_formatter<fortran::ArrayRef<T, R>,
+                                       std::remove_cv_t<T>> {};
 
 #endif // FORTRAN_RT_ARRAY_REF_HPP
