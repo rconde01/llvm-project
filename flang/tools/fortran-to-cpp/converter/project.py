@@ -24,40 +24,83 @@ from typing import Iterable
 from flang_ast import annotate_tree, parse_fortran_file
 from flang_ast.nodes import Node
 
-from .emit import emit_translation_unit
+from .emit import emit_shared_header, emit_translation_unit
+from .ir import IRTranslationUnit
 from .lowering import lower_program
 from .state_plumbing import plumb_state
 
+#: Name of the generated header that carries the project's shared structs
+#: (modules, derived types, common blocks) and all subprogram prototypes.
+SHARED_HEADER_NAME = "fortran_modules.hpp"
+_SHARED_HEADER_GUARD = "FORTRAN_TO_CPP_MODULES_HPP"
+
 
 def convert_files(
-    sources: Iterable[str | Path], *, flang: str | None = None
+    sources: Iterable[str | Path],
+    *,
+    flang: str | None = None,
+    header_name: str = SHARED_HEADER_NAME,
 ) -> dict[Path, str]:
     """Translate several Fortran files, honoring inter-module ``USE`` deps.
 
-    Returns a mapping from each input path to its generated C++ text.
-    Files are parsed in dependency order through a shared module
-    directory so that a file may ``USE`` modules defined in another.
+    Returns a mapping from output path to generated text: one ``.cpp`` per
+    source plus a shared header (``header_name``) that defines the project's
+    module / derived-type / common-block structs and every subprogram
+    prototype.  Each ``.cpp`` ``#include``\\s that header, so cross-file
+    references to module data and procedures resolve to one definition.
+
+    Files are parsed in dependency order through a shared module directory
+    (one file may ``USE`` a module defined in another), then state-plumbed
+    as a *single* program so that cross-file call signatures agree.
     """
     paths = [Path(s) for s in sources]
     order = _dependency_order(paths, flang=flang)
-    results: dict[Path, str] = {}
+
+    per_file: dict[Path, IRTranslationUnit] = {}
     with tempfile.TemporaryDirectory(prefix="f2cpp-mods-") as moddir:
         for src in order:
             extra = ["-I", moddir]
             if _needs_cpp(src):
                 extra.append("-cpp")
             root = parse_fortran_file(
-                src,
-                flang=flang,
-                sema=True,
-                extra_args=extra,
-                module_dir=moddir,
+                src, flang=flang, sema=True, extra_args=extra, module_dir=moddir
             )
             annotate_tree(root)
-            tu = lower_program(root, source_file=str(src))
-            plumb_state(tu)
-            results[src] = emit_translation_unit(tu)
+            per_file[src] = lower_program(root, source_file=str(src))
+
+    # Plumb persistent/scratch state across the *whole* program so that a
+    # routine in one file and its callers in another agree on the state
+    # parameters threaded between them.
+    combined = _combine(per_file.values())
+    plumb_state(combined)
+
+    results: dict[Path, str] = {
+        Path(header_name): emit_shared_header(combined, guard=_SHARED_HEADER_GUARD)
+    }
+    for src in order:
+        results[src] = emit_translation_unit(
+            per_file[src], shared_header=header_name
+        )
     return results
+
+
+def _combine(tus: Iterable[IRTranslationUnit]) -> IRTranslationUnit:
+    """A single translation unit referencing every file's subprograms and
+    the deduplicated set of shared structs, for whole-program plumbing."""
+    combined = IRTranslationUnit()
+    seen_mod: set[str] = set()
+    seen_dt: set[str] = set()
+    for tu in tus:
+        combined.subprograms.extend(tu.subprograms)
+        for m in tu.modules:
+            if m.cpp_type not in seen_mod:
+                seen_mod.add(m.cpp_type)
+                combined.modules.append(m)
+        for dt in tu.derived_types:
+            if dt.cpp_type not in seen_dt:
+                seen_dt.add(dt.cpp_type)
+                combined.derived_types.append(dt)
+    return combined
 
 
 def _needs_cpp(path: Path) -> bool:

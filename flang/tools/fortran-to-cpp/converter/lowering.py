@@ -248,10 +248,19 @@ def _build_signatures(root: Node) -> dict[str, list[str]]:
 
 
 def _collect_units(
-    node: Node, tu: IRTranslationUnit, *, parent_module: str | None
+    node: Node,
+    tu: IRTranslationUnit,
+    *,
+    parent_module: str | None,
+    inherited_uses: tuple[str, ...] = (),
 ) -> None:
     """Recursively collect modules and subprograms, tracking the
-    enclosing module so module procedures know their host."""
+    enclosing module so module procedures know their host.
+
+    ``inherited_uses`` are the modules ``USE``d by the enclosing module;
+    its contained procedures host-associate those names, so they are
+    folded into each procedure's ``used_modules`` (e.g. a module ``USE``s
+    a constants module, and its procedures reference those constants)."""
     for child in node.children:
         kind = child.kind
         if kind == "Module":
@@ -260,31 +269,52 @@ def _collect_units(
             # Internal procedures (the program's CONTAINS section) become
             # free functions; collect them first so a callee is emitted
             # before its host caller.
-            _collect_internal_subprograms(child, tu, parent_module)
+            _collect_internal_subprograms(child, tu, parent_module, inherited_uses)
             tu.subprograms.append(_lower_main_program(child))
         elif kind == "FunctionSubprogram":
-            _collect_internal_subprograms(child, tu, parent_module)
+            _collect_internal_subprograms(child, tu, parent_module, inherited_uses)
             sub = _lower_function(child)
             sub.parent_module = parent_module
+            _add_inherited_uses(sub, inherited_uses)
             tu.subprograms.append(sub)
         elif kind == "SubroutineSubprogram":
-            _collect_internal_subprograms(child, tu, parent_module)
+            _collect_internal_subprograms(child, tu, parent_module, inherited_uses)
             sub = _lower_subroutine(child)
             sub.parent_module = parent_module
+            _add_inherited_uses(sub, inherited_uses)
             tu.subprograms.append(sub)
         else:
             # Descend through containers (Program, ProgramUnit,
             # ModuleSubprogramPart, ModuleSubprogram, ...).
-            _collect_units(child, tu, parent_module=parent_module)
+            _collect_units(
+                child,
+                tu,
+                parent_module=parent_module,
+                inherited_uses=inherited_uses,
+            )
+
+
+def _add_inherited_uses(sub: "IRSubprogram", inherited_uses: tuple[str, ...]) -> None:
+    for mod in inherited_uses:
+        if mod not in sub.used_modules:
+            sub.used_modules.append(mod)
 
 
 def _collect_internal_subprograms(
-    host: Node, tu: IRTranslationUnit, parent_module: str | None
+    host: Node,
+    tu: IRTranslationUnit,
+    parent_module: str | None,
+    inherited_uses: tuple[str, ...] = (),
 ) -> None:
     """Collect a host unit's ``InternalSubprogramPart`` procedures."""
     for child in host.children:
         if child.kind == "InternalSubprogramPart":
-            _collect_units(child, tu, parent_module=parent_module)
+            _collect_units(
+                child,
+                tu,
+                parent_module=parent_module,
+                inherited_uses=inherited_uses,
+            )
 
 
 def _collect_module(mod_node: Node, tu: IRTranslationUnit) -> None:
@@ -304,16 +334,23 @@ def _collect_module(mod_node: Node, tu: IRTranslationUnit) -> None:
         fortran_name=_safe_name(name),
     )
     # Module-level variable declarations live in the module's direct
-    # SpecificationPart.
+    # SpecificationPart; so do its own ``use`` statements.
+    module_uses: tuple[str, ...] = ()
     for child in mod_node.children:
         if child.kind == "SpecificationPart":
             module.variables = _lower_specification(child)
+            module_uses = tuple(_lower_use_statements(child))
     tu.modules.append(module)
-    # Module procedures (in the CONTAINS section) are collected with
-    # this module as their host.
+    # Module procedures (in the CONTAINS section) are collected with this
+    # module as their host and inherit the module's ``use`` imports.
     for child in mod_node.children:
         if child.kind == "ModuleSubprogramPart":
-            _collect_units(child, tu, parent_module=module.fortran_name)
+            _collect_units(
+                child,
+                tu,
+                parent_module=module.fortran_name,
+                inherited_uses=module_uses,
+            )
 
 
 def _lower_derived_type_def(node: Node) -> "IRDerivedType | None":
@@ -575,9 +612,13 @@ def _extract_subprogram_name(node: Node, header_kind: str) -> str | None:
             continue
         for inner in stmt.walk():
             if inner.kind == header_kind:
-                for n in inner.walk():
-                    if n.kind == "Name" and n.fortran:
-                        return n.fortran
+                # The name is the first *direct* Name child.  A type or
+                # attribute prefix (e.g. ``real(kind=rp) function foo``)
+                # contains its own Name nodes — the kind — so a deep walk
+                # would wrongly return ``rp``; iterate direct children only.
+                for child in inner.children:
+                    if child.kind == "Name" and child.fortran:
+                        return child.fortran
                 return None
     return None
 

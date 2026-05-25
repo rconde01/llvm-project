@@ -33,6 +33,7 @@ from __future__ import annotations
 from .ir import (
     IRCall,
     IRExpr,
+    IRFunctionCall,
     IRLocal,
     IRName,
     IRPrint,
@@ -302,9 +303,9 @@ def _recursive_routines(tu: IRTranslationUnit) -> set[str]:
     names = {s.name for s in tu.subprograms}
     adj: dict[str, set[str]] = {s.name: set() for s in tu.subprograms}
     for s in tu.subprograms:
-        for call in _all_calls(s.body):
-            if call.callee in names:
-                adj[s.name].add(call.callee)
+        for callee in _callee_names(s.body):
+            if callee in names:
+                adj[s.name].add(callee)
     recursive: set[str] = set()
     for start in adj:
         seen: set[str] = set()
@@ -371,8 +372,8 @@ def _propagate_state_parameters(tu: IRTranslationUnit) -> None:
         for caller in tu.subprograms:
             if caller.kind == "main":
                 continue  # main owns instances locally (handled below)
-            for stmt in _all_calls(caller.body):
-                callee = by_name.get(stmt.callee)
+            for callee_name in _callee_names(caller.body):
+                callee = by_name.get(callee_name)
                 if callee is None:
                     continue
                 for sp in callee.state_params:
@@ -414,21 +415,27 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
                 caller_state_names.setdefault(loc.type.cpp, loc.name)
         local_state_instances: dict[str, str] = {}
 
-        def rewrite_call(stmt: IRStatement) -> IRStatement:
-            if not isinstance(stmt, IRCall):
-                return stmt
-            callee = by_name.get(stmt.callee)
+        def state_args(callee_name: str) -> list[IRExpr] | None:
+            """The state arguments to prepend at a call to ``callee_name``,
+            or ``None`` if it takes none."""
+            callee = by_name.get(callee_name)
             if callee is None or not callee.state_params:
-                return stmt
+                return None
             extra: list[IRExpr] = []
             for sp in callee.state_params:
                 if sp.struct_type in caller_state_names:
                     nm = caller_state_names[sp.struct_type]
                 else:
-                    nm = local_state_instances.setdefault(
-                        sp.struct_type, sp.name
-                    )
+                    nm = local_state_instances.setdefault(sp.struct_type, sp.name)
                 extra.append(IRName(name=nm, fortran=nm))
+            return extra
+
+        def rewrite_call(stmt: IRStatement) -> IRStatement:
+            if not isinstance(stmt, IRCall):
+                return stmt
+            extra = state_args(stmt.callee)
+            if extra is None:
+                return stmt
             return IRCall(
                 callee=stmt.callee,
                 args=extra + list(stmt.args),
@@ -436,7 +443,20 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
                 trailing_comments=stmt.trailing_comments,
             )
 
-        new_body = [map_statement(s, on_stmt=rewrite_call) for s in caller.body]
+        def rewrite_fcall(expr: IRExpr) -> IRExpr:
+            if not isinstance(expr, IRFunctionCall):
+                return expr
+            extra = state_args(expr.callee)
+            if extra is None:
+                return expr
+            return IRFunctionCall(
+                callee=expr.callee, args=tuple(extra) + tuple(expr.args)
+            )
+
+        new_body = [
+            map_statement(s, on_stmt=rewrite_call, on_expr=rewrite_fcall)
+            for s in caller.body
+        ]
         if local_state_instances:
             instances = [
                 IRLocal(
@@ -450,14 +470,21 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
         caller.body = new_body
 
 
-def _all_calls(body: list[IRStatement]) -> list[IRCall]:
-    calls: list[IRCall] = []
+def _callee_names(body: list[IRStatement]) -> list[str]:
+    """Every routine called from ``body`` — both subroutine ``CALL``
+    statements and function-call expressions — in encounter order."""
+    names: list[str] = []
 
-    def collect(stmt: IRStatement) -> IRStatement:
+    def on_stmt(stmt: IRStatement) -> IRStatement:
         if isinstance(stmt, IRCall):
-            calls.append(stmt)
+            names.append(stmt.callee)
         return stmt
 
+    def on_expr(expr: IRExpr) -> IRExpr:
+        if isinstance(expr, IRFunctionCall):
+            names.append(expr.callee)
+        return expr
+
     for stmt in body:
-        map_statement(stmt, on_stmt=collect)
-    return calls
+        map_statement(stmt, on_stmt=on_stmt, on_expr=on_expr)
+    return names

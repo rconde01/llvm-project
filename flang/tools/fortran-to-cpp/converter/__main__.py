@@ -78,13 +78,13 @@ def _convert_project(args: argparse.Namespace) -> int:
     results = convert_files(args.source, flang=args.flang)
     if args.out_dir:
         args.out_dir.mkdir(parents=True, exist_ok=True)
-        for src, cpp in results.items():
-            (args.out_dir / (Path(src).stem + ".cpp")).write_text(
-                cpp, encoding="utf-8"
-            )
+        for src, text in results.items():
+            # The shared header keeps its name; sources become <stem>.cpp.
+            out_name = src.name if src.suffix in (".hpp", ".h") else src.stem + ".cpp"
+            (args.out_dir / out_name).write_text(text, encoding="utf-8")
     else:
-        for src, cpp in results.items():
-            sys.stdout.write(f"// ===== {src} =====\n{cpp}\n")
+        for src, text in results.items():
+            sys.stdout.write(f"// ===== {src} =====\n{text}\n")
     return 0
 
 

@@ -14,8 +14,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import subprocess
+
 from converter import convert_files
-from converter.project import _dependency_order
+from converter.project import SHARED_HEADER_NAME, _dependency_order
+
+
+def _have_cxx() -> bool:
+    return any(shutil.which(n) for n in ("c++", "g++", "clang++"))
+
+
+RUNTIME_INCLUDE = Path(__file__).resolve().parent.parent / "runtime" / "include"
 
 
 def _have_flang() -> bool:
@@ -83,10 +92,61 @@ class ProjectTests(unittest.TestCase):
         results = convert_files(
             [self.circle, self.consts, self.main], flang=self.flang
         )
-        self.assertEqual(len(results), 3)
+        # Three sources plus the shared header.
+        self.assertEqual(len(results), 4)
+        self.assertIn(Path(SHARED_HEADER_NAME), results)
         circle_cpp = results[self.circle]
         self.assertIn("area", circle_cpp)
         self.assertNotIn("TODO", circle_cpp)
+        # The shared header carries the used module's struct; cross-file
+        # module data (pi) is threaded into the routine that references it.
+        self.assertIn("GeoConstantsModule", results[Path(SHARED_HEADER_NAME)])
+        self.assertIn("GeoConstantsModule", circle_cpp)
+
+
+@unittest.skipUnless(
+    _have_flang() and _have_cxx(), "need flang and a C++20 compiler"
+)
+class ProjectCompileTests(unittest.TestCase):
+    def test_project_compiles_and_runs(self) -> None:
+        flang = os.environ.get("FLANG")
+        with tempfile.TemporaryDirectory() as d:
+            dpath = Path(d)
+            (dpath / "geo_constants.f90").write_text(CONSTANTS)
+            (dpath / "circle.f90").write_text(USER)
+            (dpath / "main.f90").write_text(MAIN)
+            sources = [
+                dpath / "main.f90",
+                dpath / "circle.f90",
+                dpath / "geo_constants.f90",
+            ]
+            out = dpath / "out"
+            out.mkdir()
+            results = convert_files(sources, flang=flang)
+            cpp_files = []
+            for key, text in results.items():
+                name = key.name if key.suffix in (".hpp", ".h") else key.stem + ".cpp"
+                (out / name).write_text(text)
+                if name.endswith(".cpp"):
+                    cpp_files.append(str(out / name))
+            cxx = (
+                shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+            )
+            assert cxx is not None
+            exe = out / "prog"
+            comp = subprocess.run(
+                [cxx, "-std=c++20", "-I", str(RUNTIME_INCLUDE), "-I", str(out),
+                 *cpp_files, "-o", str(exe)],
+                capture_output=True, text=True, check=False,
+            )
+            if comp.returncode != 0:
+                self.fail(f"compile failed:\n{comp.stderr}")
+            run = subprocess.run(
+                [str(exe)], capture_output=True, text=True, check=False
+            )
+            self.assertEqual(run.returncode, 0, msg=run.stderr)
+            # pi * 2 * 2 == 12.566...
+            self.assertTrue(run.stdout.strip().startswith("12.56"), run.stdout)
 
 
 if __name__ == "__main__":
