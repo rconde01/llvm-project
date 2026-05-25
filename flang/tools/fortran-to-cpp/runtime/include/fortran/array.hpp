@@ -295,6 +295,12 @@ public:
   T *data() noexcept { return storage_.get(); }
   const T *data() const noexcept { return storage_.get(); }
 
+  /// Element at 0-based column-major logical position ``k``.  Storage is
+  /// contiguous column-major, so this is just ``data()[k]`` — provided so
+  /// the elementwise operators can treat Array and ArrayRef uniformly.
+  T &linear_at(index_t k) noexcept { return storage_[k]; }
+  const T &linear_at(index_t k) const noexcept { return storage_[k]; }
+
   // ---- Whole-array operations ----------------------------------------
 
   /// Set every element to ``value``.  Equivalent to ``a = value`` in

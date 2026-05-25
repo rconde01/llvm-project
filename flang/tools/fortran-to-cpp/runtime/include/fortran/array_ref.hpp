@@ -115,6 +115,19 @@ public:
 
   T *data() const noexcept { return data_; }
 
+  /// Element at 0-based column-major logical position ``k``, honoring this
+  /// view's (possibly non-contiguous) strides.  Lets the elementwise
+  /// operators treat Array and ArrayRef uniformly even for sections.
+  T &linear_at(index_t k) const noexcept {
+    index_t off = 0;
+    index_t rem = k;
+    for (std::size_t d = 0; d < Rank; ++d) {
+      off += (rem % extents_[d]) * strides_[d];
+      rem /= extents_[d];
+    }
+    return data_[off];
+  }
+
   /// Rank-1 section view ``a(lo:hi:stride)`` as a new ArrayRef whose
   /// elements are 1-based.  Only valid on a rank-1 view.
   ArrayRef<T, 1> section(index_t lo, index_t hi, index_t stride = 1) const
