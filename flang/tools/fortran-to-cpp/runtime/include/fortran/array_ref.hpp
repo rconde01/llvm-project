@@ -119,6 +119,11 @@ public:
   index_t size() const noexcept { return detail::total_size(extents_); }
   bool empty() const noexcept { return data_ == nullptr || size() == 0; }
 
+  /// For an OPTIONAL array dummy, ``PRESENT(a)`` lowers to
+  /// ``a.has_value()``: an absent optional array is passed as a null
+  /// (default-constructed) view.
+  bool has_value() const noexcept { return data_ != nullptr; }
+
   const lower_array &lower_bounds() const noexcept { return lower_; }
   const extent_array &extents() const noexcept { return extents_; }
   const extent_array &strides() const noexcept { return strides_; }

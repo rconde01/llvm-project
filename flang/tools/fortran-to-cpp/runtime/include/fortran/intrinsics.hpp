@@ -48,7 +48,7 @@ namespace fortran {
 #define FORTRAN_RT_ELEMENTAL(NAME, FN)                                         \
   template <typename T>                                                        \
     requires std::is_arithmetic_v<T>                                           \
-  auto NAME(T x) {                                                             \
+  constexpr auto NAME(T x) {                                                   \
     return FN(x);                                                              \
   }                                                                            \
   template <detail::ArrayLike A>                                               \
