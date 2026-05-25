@@ -122,8 +122,9 @@ def _safe_name(fortran: str | None) -> str:
 # Maps a (raw lower-case) callee name to its ordered, safe-named dummy
 # argument names.  Built per translation unit and consulted when a call
 # uses keyword arguments, so ``f(b=2, a=1)`` can be reordered to the
-# positional ``f(1, 2)`` the C++ signature expects.
-_SIGNATURES: dict[str, list[str]] = {}
+# positional ``f(1, 2)`` the C++ signature expects.  Each entry is the
+# ordered list of ``(safe_dummy_name, is_optional)`` pairs.
+_SIGNATURES: dict[str, list[tuple[str, bool]]] = {}
 
 # Per-unit map from a FORMAT statement's label to its format spec string
 # (e.g. ``100 format(i3)`` -> {100: "(i3)"}), so ``write(u, 100)`` can be
@@ -231,20 +232,53 @@ def _is_logical_expr(expr: IRExpr, logical_names: set[str]) -> bool:
     return False
 
 
-def _build_signatures(root: Node) -> dict[str, list[str]]:
-    """Map every subprogram's (raw lower-case) name to its ordered,
-    safe-named dummy-argument names, for keyword-argument reordering."""
-    sigs: dict[str, list[str]] = {}
+def _build_signatures(root: Node) -> dict[str, list[tuple[str, bool]]]:
+    """Map every subprogram's (raw lower-case) name to its ordered dummy
+    arguments as ``(safe_name, is_optional)`` pairs, for keyword-argument
+    reordering and omitted-optional filling."""
+    sigs: dict[str, list[tuple[str, bool]]] = {}
     for node in root.walk():
         if node.kind == "SubroutineSubprogram":
             name = _extract_subprogram_name(node, "SubroutineStmt")
             if name:
-                sigs[name.lower()] = _extract_subroutine_dummy_args(node)
+                sigs[name.lower()] = _with_optionality(
+                    node, _extract_subroutine_dummy_args(node)
+                )
         elif node.kind == "FunctionSubprogram":
             name = _extract_subprogram_name(node, "FunctionStmt")
             if name:
-                sigs[name.lower()] = _extract_function_dummy_args(node)
+                sigs[name.lower()] = _with_optionality(
+                    node, _extract_function_dummy_args(node)
+                )
     return sigs
+
+
+def _with_optionality(
+    subprog: Node, names: list[str]
+) -> list[tuple[str, bool]]:
+    optional = _optional_dummy_names(subprog)
+    return [(n, n in optional) for n in names]
+
+
+def _optional_dummy_names(subprog: Node) -> set[str]:
+    """Safe-names of the dummy arguments declared ``OPTIONAL``."""
+    names: set[str] = set()
+    spec = subprog.find_first("SpecificationPart")
+    if spec is None:
+        return names
+    for decl in spec.find_all("TypeDeclarationStmt"):
+        has_optional = any(
+            child.kind == "Optional"
+            for attr in decl.find_all("AttrSpec")
+            for child in attr.children
+        )
+        if not has_optional:
+            continue
+        for ent in decl.find_all("EntityDecl"):
+            nm = ent.find_first("Name")
+            if nm is not None and nm.fortran:
+                names.add(_safe_name(nm.fortran))
+    return names
 
 
 def _collect_units(
@@ -3068,14 +3102,20 @@ def _resolve_call_args(callee: str, leading: list[IRExpr], call: Node) -> list[I
 
 
 def _reorder_keyword_args(
-    pairs: list[tuple[str | None, IRExpr]], dummies: list[str]
+    pairs: list[tuple[str | None, IRExpr]], dummies: list[tuple[str, bool]]
 ) -> list[IRExpr]:
     """Reorder ``(keyword, expr)`` pairs into positional order using the
-    callee's ordered dummy names.  Positional args fill slots left to
-    right; keyword args drop into their named slot.  With no keywords (or
-    an unknown callee) the original positional order is preserved."""
+    callee's ordered ``(dummy_name, is_optional)`` list.  Positional args
+    fill slots left to right; keyword args drop into their named slot.
+
+    A gap left by an omitted OPTIONAL argument is filled with
+    ``std::nullopt`` so the remaining positional arguments stay aligned;
+    a *trailing* run of omitted optionals is dropped entirely (the C++
+    default argument supplies ``std::nullopt``).  With no keywords (or an
+    unknown callee) the original positional order is preserved."""
     if not any(kw is not None for kw, _ in pairs) or not dummies:
         return [expr for _, expr in pairs]
+    names = [n for n, _ in dummies]
     slots: list[IRExpr | None] = [None] * len(dummies)
     extra: list[IRExpr] = []
     pos = 0
@@ -3086,11 +3126,23 @@ def _reorder_keyword_args(
             else:
                 extra.append(expr)
             pos += 1
-        elif kw in dummies:
-            slots[dummies.index(kw)] = expr
+        elif kw in names:
+            slots[names.index(kw)] = expr
         else:
             extra.append(expr)
-    return [expr for expr in slots if expr is not None] + extra
+    # Drop the trailing run of unfilled optional slots (C++ defaults them).
+    last = len(slots)
+    while last > 0 and slots[last - 1] is None and dummies[last - 1][1]:
+        last -= 1
+    result: list[IRExpr] = []
+    for i in range(last):
+        if slots[i] is not None:
+            result.append(slots[i])  # type: ignore[arg-type]
+        elif dummies[i][1]:
+            result.append(IRRaw("std::nullopt"))
+        # An unfilled non-optional slot can't happen for valid Fortran;
+        # skip it rather than emit a bogus argument.
+    return result + extra
 
 
 # Map Expr operator subclasses to the C++ operator we want to emit.

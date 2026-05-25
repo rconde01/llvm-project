@@ -194,6 +194,16 @@ public:
   }
   ~Array() = default;
 
+  /// Broadcast a scalar to every element (Fortran ``a = 0.0`` on a whole
+  /// array).  In place — no allocation or temporary.  Whole-array
+  /// assignments with a plain ``Name`` target are expanded into explicit
+  /// loops by the converter; this covers the remaining target contexts
+  /// (derived-type components, etc.) uniformly.
+  Array &operator=(const T &scalar) {
+    std::fill_n(storage_.get(), size(), scalar);
+    return *this;
+  }
+
   /// Swap with another array of the same type.  Used by the move ops.
   void swap(Array &other) noexcept {
     using std::swap;

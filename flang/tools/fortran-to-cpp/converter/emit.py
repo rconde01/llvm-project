@@ -231,9 +231,21 @@ def _signature(sub: IRSubprogram, *, with_defaults: bool = True) -> str:
         ret = "void"
     # State parameters first (D2.b — granular per-routine state), then the
     # user-visible Fortran dummy args.  Default arguments live on the
-    # prototype only (a C++ default may be specified once).
+    # prototype only (a C++ default may be specified once) and only on the
+    # trailing run of OPTIONAL params — C++ forbids a defaulted parameter
+    # before a non-defaulted one (Fortran allows optionals anywhere).
     parts = [f"{sp.struct_type}& {sp.name}" for sp in sub.state_params]
-    parts.extend(p.cpp_param_decl(with_default=with_defaults) for p in sub.parameters)
+    params = sub.parameters
+    default_from = len(params)
+    for i in range(len(params) - 1, -1, -1):
+        if params[i].optional and not params[i].type.is_array:
+            default_from = i
+        else:
+            break
+    for i, p in enumerate(params):
+        parts.append(
+            p.cpp_param_decl(with_default=with_defaults and i >= default_from)
+        )
     return f"{ret} {sub.name}({', '.join(parts)})"
 
 

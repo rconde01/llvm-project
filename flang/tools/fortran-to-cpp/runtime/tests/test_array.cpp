@@ -367,4 +367,21 @@ TEST(rank2_section_writes_through_to_parent) {
   CHECK_EQ(a(2, 2), 999);
 }
 
+TEST(scalar_broadcast_assignment_fills_all_elements) {
+  fortran::Array<float, 1> a{{3}};
+  a = 7.5f; // Fortran ``a = 7.5`` on a whole array.
+  CHECK_EQ(a(1), 7.5f);
+  CHECK_EQ(a(2), 7.5f);
+  CHECK_EQ(a(3), 7.5f);
+}
+
+TEST(scalar_broadcast_assignment_rank2) {
+  fortran::Array<int, 2> m{{2, 2}};
+  m = 0;
+  m(1, 2) = 5;
+  CHECK_EQ(m(1, 1), 0);
+  CHECK_EQ(m(2, 2), 0);
+  CHECK_EQ(m(1, 2), 5);
+}
+
 FORTRAN_RT_TEST_MAIN()
