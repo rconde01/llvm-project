@@ -323,15 +323,22 @@ public:
   /// Rank-1 section view ``a(lo:hi:stride)``.  Convenience that
   /// forwards to ArrayRef::section (defined in array_ref.hpp).
   ArrayRef<T, 1> section(index_t lo, index_t hi, index_t stride = 1) noexcept;
+  ArrayRef<const T, 1> section(index_t lo, index_t hi,
+                               index_t stride = 1) const noexcept;
 
   /// General multi-dimensional section ``a(s1, s2, ...)``; each subscript
   /// is a ``Slice`` (kept dimension) or an integer index (dropped).
   /// Constrained to at least one ``Slice`` so the rank-1 ``section(lo,
   /// hi, stride)`` overload still wins for plain integer arguments.
-  /// Forwards to ArrayRef::section (defined in array_ref.hpp).
+  /// Forwards to ArrayRef::section (defined in array_ref.hpp).  The
+  /// ``const`` overloads keep sections of a ``const`` array (e.g. a
+  /// module PARAMETER) read-only.
   template <typename... Subs>
     requires(... || detail::is_slice_v<Subs>)
   auto section(Subs... subs) noexcept;
+  template <typename... Subs>
+    requires(... || detail::is_slice_v<Subs>)
+  auto section(Subs... subs) const noexcept;
 
 private:
   void init_storage() {

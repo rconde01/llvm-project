@@ -246,6 +246,20 @@ auto Array<T, Rank>::section(Subs... subs) noexcept {
   return ArrayRef<T, Rank>(*this).section(subs...);
 }
 
+template <typename T, std::size_t Rank>
+ArrayRef<const T, 1> Array<T, Rank>::section(index_t lo, index_t hi,
+                                             index_t stride) const noexcept {
+  static_assert(Rank == 1, "section(lo,hi,stride) is rank-1 only");
+  return ArrayRef<const T, Rank>(*this).section(lo, hi, stride);
+}
+
+template <typename T, std::size_t Rank>
+template <typename... Subs>
+  requires(... || detail::is_slice_v<Subs>)
+auto Array<T, Rank>::section(Subs... subs) const noexcept {
+  return ArrayRef<const T, Rank>(*this).section(subs...);
+}
+
 // ---- List-directed array output -------------------------------------------
 
 namespace detail {

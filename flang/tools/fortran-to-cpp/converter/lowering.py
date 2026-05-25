@@ -637,8 +637,24 @@ def _lift_function_return(
         0,
         IRLocal(name=result_name, type=return_type),
     )
+
+    def fix_return(stmt: IRStatement) -> IRStatement:
+        # A bare ``RETURN`` inside a function exits with the result
+        # variable's current value; emit ``return <name>_result;``.
+        if isinstance(stmt, IRReturn) and stmt.value is None:
+            return IRReturn(
+                value=IRName(name=result_name, fortran=result_name),
+                leading_comments=stmt.leading_comments,
+                trailing_comments=stmt.trailing_comments,
+            )
+        return stmt
+
     sub.body = [
-        map_statement(s, on_expr=lambda e: rename_var(e, sub.name, result_name))
+        map_statement(
+            s,
+            on_expr=lambda e: rename_var(e, sub.name, result_name),
+            on_stmt=fix_return,
+        )
         for s in sub.body
     ]
 
@@ -1105,6 +1121,11 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
                 is_optional = True
             elif child.kind == "Pointer":
                 is_pointer = True
+            elif child.kind == "External":
+                # ``real, external :: f`` declares that ``f`` is a
+                # function, not a variable — it's called via its
+                # prototype, so emit no local (a local would shadow it).
+                return []
             # ``Target`` needs no C++ analogue (any object is addressable).
             elif child.kind == "IntentSpec":
                 intent = _extract_intent(child)
