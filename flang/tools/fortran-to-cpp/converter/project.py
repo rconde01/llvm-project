@@ -26,7 +26,7 @@ from flang_ast.nodes import Node
 
 from .emit import emit_shared_header, emit_translation_unit
 from .ir import IRTranslationUnit
-from .lowering import lower_program
+from .lowering import _reshape_sequence_associated_args, lower_program
 from .state_plumbing import plumb_state
 
 #: Name of the generated header that carries the project's shared structs
@@ -72,6 +72,10 @@ def convert_files(
     # routine in one file and its callers in another agree on the state
     # parameters threaded between them.
     combined = _combine(per_file.values())
+    # Sequence-association reshaping needs the whole program: a rank-1
+    # actual may be passed to a higher-rank dummy declared in another
+    # file.  (Idempotent w.r.t. the per-file pass run during lowering.)
+    _reshape_sequence_associated_args(combined)
     plumb_state(combined)
 
     results: dict[Path, str] = {

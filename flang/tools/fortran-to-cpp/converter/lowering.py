@@ -179,8 +179,79 @@ def lower_program(
                 tu.derived_types.append(dt)
     _collect_units(root, tu, parent_module=None)
     _resolve_component_allocations(tu)
+    _reshape_sequence_associated_args(tu)
     _apply_logical_print_format(tu)
     return tu
+
+
+def _expr_rank(expr: IRExpr) -> int | None:
+    """The array rank of an expression where it can be told cheaply: a
+    section's rank is its number of triplet subscripts.  Returns ``None``
+    when unknown (so callers leave the argument untouched)."""
+    if isinstance(expr, IRSection):
+        return sum(1 for s in expr.subscripts if isinstance(s, IRTriplet))
+    return None
+
+
+def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
+    """Fortran sequence association: a contiguous rank-1 actual passed to
+    a higher-rank, explicit-shape dummy.  Wrap such an actual in
+    ``fortran::seq_assoc<R>(..., {lowers}, {extents})`` using the dummy's
+    declared shape, so the call type-checks.  Runs before state plumbing
+    so call arguments still line up with the callee's Fortran dummies."""
+    params_by_name = {s.name: s.parameters for s in tu.subprograms}
+
+    def reshape(callee: str, args: list[IRExpr]) -> list[IRExpr]:
+        params = params_by_name.get(callee)
+        if not params:
+            return args
+        out = list(args)
+        for i, p in enumerate(params):
+            if i >= len(out):
+                break
+            if (
+                p.type.is_array
+                and p.type.array_rank >= 2
+                and p.type.array_extent_exprs
+                and _expr_rank(out[i]) == 1
+            ):
+                rank = p.type.array_rank
+                lowers = p.type.array_lower_bound_exprs or ["1"] * rank
+                extents = list(p.type.array_extent_exprs)
+                out[i] = IRFunctionCall(
+                    callee=f"fortran::seq_assoc<{rank}>",
+                    args=(
+                        out[i],
+                        IRRaw("{" + ", ".join(lowers) + "}"),
+                        IRRaw("{" + ", ".join(extents) + "}"),
+                    ),
+                )
+        return out
+
+    def fix_stmt(stmt: IRStatement) -> IRStatement:
+        if isinstance(stmt, IRCall):
+            return IRCall(
+                callee=stmt.callee,
+                args=reshape(stmt.callee, list(stmt.args)),
+                leading_comments=stmt.leading_comments,
+                trailing_comments=stmt.trailing_comments,
+            )
+        return stmt
+
+    def fix_expr(expr: IRExpr) -> IRExpr:
+        if isinstance(expr, IRFunctionCall):
+            return IRFunctionCall(
+                callee=expr.callee, args=tuple(reshape(expr.callee, list(expr.args)))
+            )
+        return expr
+
+    for sub in tu.subprograms:
+        sub.body = [
+            map_statement(
+                s, on_stmt=fix_stmt, on_expr=lambda e: map_expr(e, fix_expr)
+            )
+            for s in sub.body
+        ]
 
 
 def _resolve_component_allocations(tu: IRTranslationUnit) -> None:

@@ -384,6 +384,18 @@ bool associated(const ArrayRef<T, R> &p) noexcept {
   return p.data() != nullptr;
 }
 
+/// Fortran sequence association: view a contiguous rank-1 actual as a
+/// higher-rank, explicit-shape dummy.  Fortran lets a contiguous array
+/// (or array section) be passed to a dummy of a different rank; the
+/// storage is reinterpreted column-major with the dummy's bounds.  Used
+/// at call sites where the actual's rank is below the dummy's.
+template <std::size_t R, typename T>
+ArrayRef<T, R> seq_assoc(const ArrayRef<T, 1> &flat,
+                         const std::array<index_t, R> &lower,
+                         const std::array<index_t, R> &extents) {
+  return ArrayRef<T, R>(flat.data(), lower, extents);
+}
+
 } // namespace fortran
 
 #endif // FORTRAN_RT_ARRAY_REF_HPP

@@ -32,6 +32,8 @@
 #ifndef FORTRAN_RT_IO_HPP
 #define FORTRAN_RT_IO_HPP
 
+#include "array_ref.hpp" // index_t + array-like views for formatted array I/O
+
 #include <cmath>
 #include <cctype>
 #include <cstddef>
@@ -262,6 +264,64 @@ inline std::string fmt_int_force_sign(long long value, int w) {
 inline std::string fmt_int_no_sign(long long value, int w) {
   // SS: never show '+', and never show ' ' either; only '-' for negatives.
   return std::format("{0:{1}d}", value, w);
+}
+
+// ---------------------------------------------------------------------------
+// Formatted output of a whole array / section: one edit descriptor repeats
+// over every element, e.g. ``write(u, '(9e13.4)') a(1:9)``.  Each ``fmt_X``
+// gains an array overload that maps the scalar formatter over the elements
+// (column-major) and concatenates the fixed-width fields.
+// ---------------------------------------------------------------------------
+
+namespace detail {
+template <typename A>
+concept FormatArray = requires(const A &a, index_t k) {
+  a.size();
+  a.linear_at(k);
+};
+} // namespace detail
+
+template <detail::FormatArray A>
+std::string fmt_E(const A &a, int w, int d, std::optional<int> e = std::nullopt) {
+  std::string out;
+  for (index_t i = 0; i < a.size(); ++i)
+    out += fmt_E(static_cast<double>(a.linear_at(i)), w, d, e);
+  return out;
+}
+template <detail::FormatArray A>
+std::string fmt_G(const A &a, int w, int d, std::optional<int> e = std::nullopt) {
+  std::string out;
+  for (index_t i = 0; i < a.size(); ++i)
+    out += fmt_G(static_cast<double>(a.linear_at(i)), w, d, e);
+  return out;
+}
+template <detail::FormatArray A>
+std::string fmt_E_with_scale(const A &a, int scale, int w, int d) {
+  std::string out;
+  for (index_t i = 0; i < a.size(); ++i)
+    out += fmt_E_with_scale(static_cast<double>(a.linear_at(i)), scale, w, d);
+  return out;
+}
+template <detail::FormatArray A>
+std::string fmt_F_with_scale(const A &a, int scale, int w, int d) {
+  std::string out;
+  for (index_t i = 0; i < a.size(); ++i)
+    out += fmt_F_with_scale(static_cast<double>(a.linear_at(i)), scale, w, d);
+  return out;
+}
+template <detail::FormatArray A>
+std::string fmt_int_force_sign(const A &a, int w) {
+  std::string out;
+  for (index_t i = 0; i < a.size(); ++i)
+    out += fmt_int_force_sign(static_cast<long long>(a.linear_at(i)), w);
+  return out;
+}
+template <detail::FormatArray A>
+std::string fmt_int_no_sign(const A &a, int w) {
+  std::string out;
+  for (index_t i = 0; i < a.size(); ++i)
+    out += fmt_int_no_sign(static_cast<long long>(a.linear_at(i)), w);
+  return out;
 }
 
 } // namespace fortran::io
