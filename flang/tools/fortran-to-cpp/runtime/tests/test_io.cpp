@@ -103,4 +103,32 @@ TEST(no_sign_format_matches_default_d) {
   CHECK_EQ(fortran::io::fmt_int_no_sign(-3, 5), "   -3"sv);
 }
 
+TEST(units_preconnected_streams) {
+  fortran::io::Units u;
+  CHECK_EQ(&u.out(6), &std::cout);
+  CHECK_EQ(&u.out(0), &std::cerr);
+  CHECK_EQ(&u.in(5), &std::cin);
+}
+
+TEST(units_file_round_trip) {
+  const std::string path{"fc_units_test.dat"};
+  {
+    fortran::io::Units u;
+    u.open(10, path, "replace");
+    u.out(10) << 7 << ' ' << 2.5 << '\n';
+    u.close(10);
+  }
+  {
+    fortran::io::Units u;
+    u.open(11, path, "old");
+    int k = 0;
+    double x = 0.0;
+    u.in(11) >> k >> x;
+    u.close(11);
+    CHECK_EQ(k, 7);
+    CHECK(x > 2.49 && x < 2.51);
+  }
+  std::remove(path.c_str());
+}
+
 FORTRAN_RT_TEST_MAIN()

@@ -35,7 +35,9 @@ from .ir import (
     IRExpr,
     IRLocal,
     IRName,
+    IRPrint,
     IRRaw,
+    IRRead,
     IRStateBinding,
     IRStateParam,
     IRStateStruct,
@@ -58,6 +60,7 @@ def plumb_state(tu: IRTranslationUnit) -> None:
     _build_common_structs(tu)
     _build_save_structs(tu)
     _build_workspaces(tu)
+    _build_unit_state(tu)
     _propagate_state_parameters(tu)
     _rewrite_call_sites(tu)
 
@@ -316,6 +319,43 @@ def _recursive_routines(tu: IRTranslationUnit) -> set[str]:
             seen.add(n)
             stack.extend(adj.get(n, ()))
     return recursive
+
+
+# ---------------------------------------------------------------------------
+# Connected file units (OPEN/CLOSE and unit-directed I/O)
+# ---------------------------------------------------------------------------
+
+_UNITS_TYPE = "fortran::io::Units"
+_UNITS_PARAM = "_units"
+
+
+def _build_unit_state(tu: IRTranslationUnit) -> None:
+    """Thread a ``fortran::io::Units`` table into routines that OPEN/CLOSE
+    a unit or do unit-directed (file / variable-unit) I/O."""
+    for sub in tu.subprograms:
+        if _uses_units(sub.body):
+            _attach_state(
+                sub,
+                struct_type=_UNITS_TYPE,
+                param_name=_UNITS_PARAM,
+                owned_by="__units",
+                bound_fields=[],
+            )
+
+
+def _uses_units(body: list[IRStatement]) -> bool:
+    found = [False]
+
+    def check(stmt: IRStatement) -> IRStatement:
+        if isinstance(stmt, IRCall) and stmt.callee.startswith(_UNITS_PARAM + "."):
+            found[0] = True
+        elif isinstance(stmt, (IRPrint, IRRead)) and _UNITS_PARAM in stmt.stream:
+            found[0] = True
+        return stmt
+
+    for stmt in body:
+        map_statement(stmt, on_stmt=check)
+    return found[0]
 
 
 # ---------------------------------------------------------------------------

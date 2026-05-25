@@ -563,7 +563,7 @@ class IRParameter:
     """True for OPTIONAL dummy args; emitted as ``std::optional<T>`` with
     a ``= std::nullopt`` default (intent(in) scalars)."""
 
-    def cpp_param_decl(self) -> str:
+    def cpp_param_decl(self, *, with_default: bool = True) -> str:
         """C++ parameter declaration string.
 
         Scalars use a reference (``T&`` or ``const T&`` per intent).
@@ -571,11 +571,16 @@ class IRParameter:
         small, non-owning view, so the caller's owning ``Array``
         converts implicitly and the function body can take slices
         without making the caller's storage assumption explicit.
+
+        ``with_default=False`` omits the ``= std::nullopt`` default — a
+        C++ default argument may appear only once, so the prototype keeps
+        it and the definition drops it.
         """
         if self.optional and not self.type.is_array:
             # intent(in) optional scalar -> std::optional with a default,
             # so trailing optional args can be omitted at the call site.
-            return f"std::optional<{self.type.cpp}> {self.name} = std::nullopt"
+            default = " = std::nullopt" if with_default else ""
+            return f"std::optional<{self.type.cpp}> {self.name}{default}"
         if self.type.is_array:
             const_q = "const " if self.intent == "in" else ""
             return (

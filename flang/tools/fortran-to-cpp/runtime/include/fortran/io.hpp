@@ -33,14 +33,90 @@
 #define FORTRAN_RT_IO_HPP
 
 #include <cmath>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <fstream>
+#include <iostream>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 
 namespace fortran::io {
+
+// ---------------------------------------------------------------------------
+// Connected file units.
+//
+// Fortran file units are global per-image state; per decision D2.b the
+// converter threads a ``Units`` table through the call graph as ordinary
+// caller-owned state (no globals), so independent program instances and
+// threads stay isolated.  Preconnected units map to the standard streams
+// (5 = stdin, 6 = stdout, 0 = stderr); OPEN'd units are backed by an
+// ``std::fstream``.
+// ---------------------------------------------------------------------------
+class Units {
+public:
+  void open(int unit, std::string_view file,
+            std::string_view status = "unknown") {
+    std::ios_base::openmode mode{};
+    // STATUS: OLD -> read an existing file; NEW/REPLACE -> truncate;
+    // otherwise read+write, creating if needed.
+    if (iequals(status, "old")) {
+      mode = std::ios::in;
+    } else if (iequals(status, "new") || iequals(status, "replace")) {
+      mode = std::ios::out | std::ios::trunc;
+    } else {
+      mode = std::ios::in | std::ios::out;
+    }
+    auto fs{std::make_unique<std::fstream>(std::string{file}, mode)};
+    if (!fs->is_open() && (mode & std::ios::in) && !(mode & std::ios::out)) {
+      // Fall back to creating the file for read/write.
+      fs = std::make_unique<std::fstream>(
+          std::string{file}, std::ios::in | std::ios::out | std::ios::trunc);
+    }
+    files_[unit] = std::move(fs);
+  }
+
+  void close(int unit) { files_.erase(unit); }
+
+  std::ostream &out(int unit) {
+    if (unit == 6) {
+      return std::cout;
+    }
+    if (unit == 0) {
+      return std::cerr;
+    }
+    auto it{files_.find(unit)};
+    return it != files_.end() ? *it->second : std::cout;
+  }
+
+  std::istream &in(int unit) {
+    if (unit == 5) {
+      return std::cin;
+    }
+    auto it{files_.find(unit)};
+    return it != files_.end() ? *it->second : std::cin;
+  }
+
+private:
+  static bool iequals(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) {
+      return false;
+    }
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      if (std::tolower(static_cast<unsigned char>(a[i])) !=
+          std::tolower(static_cast<unsigned char>(b[i]))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  std::map<int, std::unique_ptr<std::fstream>> files_;
+};
 
 // ---------------------------------------------------------------------------
 // G edit descriptor — "general" numeric format.

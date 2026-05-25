@@ -74,6 +74,7 @@ def emit_translation_unit(tu: IRTranslationUnit) -> str:
     _emit_derived_types(out, tu)
     _emit_module_structs(out, tu)
     _emit_state_structs(out, tu)
+    _emit_prototypes(out, tu)
     for sub in tu.subprograms:
         out.write("\n")
         _emit_subprogram(out, sub)
@@ -181,22 +182,35 @@ def _emit_cpp_main(out: StringIO, tu: IRTranslationUnit) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _signature(sub: IRSubprogram, *, with_defaults: bool = True) -> str:
+    if sub.kind == "function" and sub.return_type is not None:
+        ret = sub.return_type.cpp
+    else:
+        ret = "void"
+    # State parameters first (D2.b — granular per-routine state), then the
+    # user-visible Fortran dummy args.  Default arguments live on the
+    # prototype only (a C++ default may be specified once).
+    parts = [f"{sp.struct_type}& {sp.name}" for sp in sub.state_params]
+    parts.extend(p.cpp_param_decl(with_default=with_defaults) for p in sub.parameters)
+    return f"{ret} {sub.name}({', '.join(parts)})"
+
+
+def _emit_prototypes(out: StringIO, tu: IRTranslationUnit) -> None:
+    """Forward-declare every subprogram so definitions can appear in any
+    order (and mutually recursive routines work)."""
+    subs = [s for s in tu.subprograms if s.kind != "main"]
+    if not subs:
+        return
+    out.write("\n// ---- Forward declarations ----\n")
+    for sub in subs:
+        out.write(f"{_signature(sub)};\n")
+
+
 def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
     _emit_comment_block(out, sub.leading_comments, indent=0)
-    # Signature
-    if sub.kind == "main":
-        out.write(f"void {sub.name}(")
-    elif sub.kind == "function":
-        ret = sub.return_type.cpp if sub.return_type else "void"
-        out.write(f"{ret} {sub.name}(")
-    else:  # subroutine
-        out.write(f"void {sub.name}(")
-    # State parameters first (D2.b — granular per-routine state),
-    # then the user-visible Fortran dummy args.
-    parts = [f"{sp.struct_type}& {sp.name}" for sp in sub.state_params]
-    parts.extend(p.cpp_param_decl() for p in sub.parameters)
-    out.write(", ".join(parts))
-    out.write(") {\n")
+    # The prototype carries default arguments; the definition omits them.
+    out.write(_signature(sub, with_defaults=False))
+    out.write(" {\n")
 
     # Local variable declarations (state-instance locals come first so
     # the bindings below can refer to them).

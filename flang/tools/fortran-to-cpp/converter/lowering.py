@@ -1444,6 +1444,10 @@ def _lower_action_inner(inner: Node) -> IRStatement | None:
             return _lower_write(inner)
         case "ReadStmt":
             return _lower_read(inner)
+        case "OpenStmt":
+            return _lower_open(inner)
+        case "CloseStmt":
+            return _lower_close(inner)
         case "StopStmt":
             return _lower_stop(inner)
         case "AllocateStmt":
@@ -2054,6 +2058,40 @@ def _lower_read(node: Node) -> IRRead:
     return IRRead(items=items, stream=stream, internal_unit=internal)
 
 
+def _lower_open(node: Node) -> IRStatement:
+    """``open(unit=u, file=f, status=s)`` -> ``_units.open(u, f, s)``."""
+    unit: IRExpr | None = None
+    file: IRExpr | None = None
+    status: IRExpr | None = None
+    for cs in node.children_of_kind("ConnectSpec"):
+        if cs.first_child("FileUnitNumber") is not None:
+            e = cs.find_first("Expr")
+            if e is not None:
+                unit = _lower_expression(e)
+        elif cs.first_child("StatusExpr") is not None:
+            e = cs.find_first("Expr")
+            if e is not None:
+                status = _lower_expression(e)
+        elif cs.first_child("Scalar") is not None:
+            e = cs.find_first("Expr")
+            if e is not None:
+                file = _lower_expression(e)
+    args: list[IRExpr] = [unit if unit is not None else IRRaw("0")]
+    if file is not None or status is not None:
+        args.append(file if file is not None else IRRaw('""sv'))
+    if status is not None:
+        args.append(status)
+    return IRCall(callee="_units.open", args=args)
+
+
+def _lower_close(node: Node) -> IRStatement:
+    """``close(u)`` -> ``_units.close(u)``."""
+    fun = node.find_first("FileUnitNumber")
+    e = fun.find_first("Expr") if fun is not None else None
+    unit = _lower_expression(e) if e is not None else IRRaw("0")
+    return IRCall(callee="_units.close", args=[unit])
+
+
 def _internal_file_unit(io_unit: Node | None) -> IRExpr | None:
     """If the I/O unit is a character variable (an *internal file*),
     return its lowered lvalue expression; otherwise ``None``.
@@ -2070,15 +2108,31 @@ def _internal_file_unit(io_unit: Node | None) -> IRExpr | None:
     return _lower_expression(var)
 
 
+def _unit_text(io_unit: Node | None) -> str | None:
+    """A simple I/O unit rendered as C++ text — an integer literal or a
+    bare variable name — or ``None`` for ``*`` / an internal file / a
+    unit expression too complex to render here."""
+    if io_unit is None or io_unit.first_child("Star") is not None:
+        return None
+    if io_unit.first_child("Variable") is not None:
+        return None  # internal file (character variable)
+    lit = io_unit.find_first("IntLiteralConstant")
+    if lit is not None and lit.fortran:
+        return lit.fortran.split("_")[0]
+    # A bare scalar variable used as the unit (``write(lun, ...)``).
+    if io_unit.find_first("Add") is None and io_unit.find_first("Multiply") is None:
+        nm = io_unit.find_first("Name")
+        if nm is not None and nm.fortran:
+            return _safe_name(nm.fortran)
+    return None
+
+
 def _input_stream_for_unit(io_unit: Node | None) -> str:
-    if io_unit is None:
+    u = _unit_text(io_unit)
+    if u is None or u == "5":
         return "std::cin"
-    if io_unit.first_child("Star") is not None:
-        return "std::cin"
-    for lit in io_unit.find_all("IntLiteralConstant"):
-        if lit.fortran and lit.fortran.split("_")[0] == "5":
-            return "std::cin"
-    return "std::cin"
+    # A connected file unit (or a variable unit) reads via the units table.
+    return f"_units.in({u})"
 
 
 def _lower_allocate(node: Node) -> IRStatement:
@@ -2222,19 +2276,13 @@ def _lower_stop(node: Node) -> IRStop:
 
 
 def _stream_for_unit(io_unit: Node | None) -> str:
-    if io_unit is None:
+    u = _unit_text(io_unit)
+    if u is None or u in ("5", "6"):
         return "std::cout"
-    if io_unit.first_child("Star") is not None:
-        return "std::cout"
-    # A literal unit number: map the conventional ones.
-    for lit in io_unit.find_all("IntLiteralConstant"):
-        if lit.fortran:
-            num = lit.fortran.split("_")[0]
-            if num == "0":
-                return "std::cerr"
-            if num in ("5", "6"):
-                return "std::cout"
-    return "std::cout"
+    if u == "0":
+        return "std::cerr"
+    # A connected file unit (or a variable unit) writes via the units table.
+    return f"_units.out({u})"
 
 
 def _extract_format(node: Node) -> str | None:
