@@ -124,6 +124,39 @@ def _safe_name(fortran: str | None) -> str:
 # positional ``f(1, 2)`` the C++ signature expects.
 _SIGNATURES: dict[str, list[str]] = {}
 
+# Per-unit map from a FORMAT statement's label to its format spec string
+# (e.g. ``100 format(i3)`` -> {100: "(i3)"}), so ``write(u, 100)`` can be
+# resolved to the same format the inline ``write(u, '(i3)')`` form uses.
+_FORMAT_LABELS: dict[int, str] = {}
+
+
+def _build_format_labels(node: Node) -> dict[int, str]:
+    out: dict[int, str] = {}
+
+    def rec(n: Node) -> None:
+        for c in n.children:
+            if c.kind in ("InternalSubprogramPart", "ModuleSubprogramPart"):
+                continue  # nested units have their own labels
+            if (
+                c.kind == "Statement"
+                and c.label is not None
+                and c.find_first("FormatStmt") is not None
+                and c.source is not None
+            ):
+                spec = _format_spec_from_source(c.source.text)
+                if spec is not None:
+                    out[c.label] = spec
+            rec(c)
+
+    rec(node)
+    return out
+
+
+def _format_spec_from_source(src: str) -> str | None:
+    """Pull ``(...)`` out of a ``<label> format(...)`` statement source."""
+    m = re.match(r"\s*\d+\s*format\s*(\(.*\))\s*$", src, re.IGNORECASE | re.DOTALL)
+    return m.group(1) if m is not None else None
+
 
 def lower_program(
     root: Node, *, source_file: str | None = None
@@ -550,6 +583,8 @@ def _extract_subprogram_name(node: Node, header_kind: str) -> str | None:
 
 def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     """Walk the SpecificationPart (declarations) and ExecutionPart (body)."""
+    global _FORMAT_LABELS
+    _FORMAT_LABELS = _build_format_labels(node)
     spec_part: Node | None = None
     for child in node.children:
         if child.kind == "SpecificationPart":
@@ -1161,6 +1196,10 @@ def _leading_label(construct: Node) -> int | None:
     if target is None:
         return None
     if target.kind == "Statement":
+        # A FORMAT statement's label is a format reference, not a branch
+        # target, so it must not become a structuring IRLabel.
+        if target.find_first("FormatStmt") is not None:
+            return None
         return target.label
     first_stmt = target.first_child("Statement")
     return first_stmt.label if first_stmt is not None else None
@@ -1283,6 +1322,10 @@ def _lower_action_statement(stmt: Node) -> IRStatement | None:
     """A ``Statement`` wrapper around an ``ActionStmt``."""
     leading = list(stmt.leading_comments)
     trailing = list(stmt.trailing_comments)
+    # A FORMAT statement is non-executable: its spec is resolved by label
+    # where a WRITE/READ/PRINT references it, so drop it here.
+    if stmt.find_first("FormatStmt") is not None:
+        return IRComment(comments=[])
     action = stmt.find_first("ActionStmt")
     if action is None:
         return _unsupported(stmt, kind="Statement")
@@ -2114,7 +2157,14 @@ def _extract_format(node: Node) -> str | None:
         return None
     if fmt.first_child("Star") is not None:
         return None
-    # The format is usually a character literal; pull its body.
+    # A label reference (``write(u, 100)``) -> the FORMAT statement's spec.
+    label = fmt.first_child("uint64_t")
+    if label is not None and label.fortran:
+        try:
+            return _FORMAT_LABELS.get(int(label.fortran))
+        except ValueError:
+            pass
+    # Otherwise an inline character literal; pull its body.
     for s in fmt.walk():
         if s.kind == "string" and s.fortran is not None:
             return s.fortran
