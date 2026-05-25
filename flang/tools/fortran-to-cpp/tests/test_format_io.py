@@ -80,9 +80,30 @@ class FormatParserTests(unittest.TestCase):
             ],
         )
 
-    def test_nested_group_raises(self) -> None:
-        with self.assertRaises(FormatParseError):
-            render_format("(2(I3, F5.1))", ["a", "b"])
+    def test_repeated_group_expands(self) -> None:
+        # ``2(I3, F5.1)`` repeats the inner group for two (a,b) and (c,d).
+        self.assertEqual(
+            render_format("(2(I3, F5.1))", ["a", "b", "c", "d"]),
+            [
+                'std::format("{:3d}", a)',
+                'std::format("{:5.1f}", b)',
+                'std::format("{:3d}", c)',
+                'std::format("{:5.1f}", d)',
+            ],
+        )
+
+    def test_p_scale_factor(self) -> None:
+        # ``1PE12.2`` applies a scale factor via the runtime helper.
+        self.assertEqual(
+            render_format("(1PE12.2)", ["x"]),
+            ["fortran::io::fmt_E_with_scale(x, 1, 12, 2)"],
+        )
+
+    def test_slash_is_newline(self) -> None:
+        self.assertEqual(
+            render_format("(I3/I3)", ["a", "b"]),
+            ['std::format("{:3d}", a)', "'\\n'", 'std::format("{:3d}", b)'],
+        )
 
 
 IO_F90 = """\
