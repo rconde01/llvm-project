@@ -3259,7 +3259,21 @@ _INTRINSIC_MAP: dict[str, str] = {
     "amod": "fortran::mod", "dmod": "fortran::mod",  # real/double specifics
     "modulo": "fortran::modulo",  # remainder with sign of divisor
     "merge": "fortran::merge",
-    "sign": "std::copysign",
+    "sign": "std::copysign", "dsign": "std::copysign",
+    # FORTRAN 77 type-specific intrinsic spellings -> the generic forms.
+    "alog": "fortran::log", "dlog": "fortran::log",
+    "alog10": "fortran::log10", "dlog10": "fortran::log10",
+    "dsqrt": "fortran::sqrt", "dexp": "fortran::exp",
+    "dabs": "fortran::abs", "iabs": "fortran::abs",
+    "dsin": "fortran::sin", "dcos": "fortran::cos", "dtan": "fortran::tan",
+    "dasin": "fortran::asin", "dacos": "fortran::acos", "datan": "fortran::atan",
+    "datan2": "std::atan2", "dsinh": "fortran::sinh",
+    "dcosh": "fortran::cosh", "dtanh": "fortran::tanh",
+    "amax1": "std::max", "dmax1": "std::max", "max0": "std::max",
+    "amax0": "std::max",
+    "amin1": "std::min", "dmin1": "std::min", "min0": "std::min",
+    "amin0": "std::min",
+    "dnint": "fortran::anint", "idnint": "fortran::nint",
     # Array intrinsics -> fortran:: runtime helpers (intrinsics.hpp).
     "size": "fortran::size", "lbound": "fortran::lbound",
     "ubound": "fortran::ubound", "sum": "fortran::sum",
@@ -3337,7 +3351,7 @@ def _lower_conversion_intrinsic(
         return None
     operand = args[0]
     kind = _literal_int_value(args[1]) if len(args) > 1 else None
-    if callee == "int":
+    if callee in ("int", "ifix", "idint"):  # ifix/idint: F77 real/double -> int
         return IRCast(cpp_type=_INT_KIND_CPP.get(kind, "std::int32_t"),
                       operand=operand)
     if callee in ("real", "float"):
