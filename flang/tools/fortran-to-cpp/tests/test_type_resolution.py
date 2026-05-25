@@ -46,9 +46,9 @@ DP_F = """\
 """
 
 
-def _convert(src: str) -> str:
+def _convert(src: str, suffix: str = ".f") -> str:
     with tempfile.NamedTemporaryFile(
-        "w", suffix=".f", delete=False, encoding="utf-8"
+        "w", suffix=suffix, delete=False, encoding="utf-8"
     ) as f:
         f.write(src)
         tmp = Path(f.name)
@@ -56,6 +56,10 @@ def _convert(src: str) -> str:
         return convert_file(tmp)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _convert_f90(src: str) -> str:
+    return _convert(src, ".f90")
 
 
 @unittest.skipUnless(_have_flang(), "flang binary not available")
@@ -75,6 +79,45 @@ class TypeResolutionEmitTests(unittest.TestCase):
         cpp = _convert(DP_F)
         # integer*8 -> 64-bit, resolved from the symbol table.
         self.assertIn("std::int64_t big{};", cpp)
+
+
+CLASSIFY_F90 = """\
+module m
+  integer :: gcount
+contains
+  subroutine bump()
+    gcount = gcount + 1
+  end subroutine
+end module
+program p
+  use m
+  real :: a(5)
+  integer :: i
+  i = 2
+  a(i) = sqrt(real(i))
+  call bump()
+  print *, a(i), gcount
+end program
+"""
+
+
+@unittest.skipUnless(_have_flang(), "flang binary not available")
+class ClassificationTests(unittest.TestCase):
+    """Symbol facts replace the variable-vs-procedure / module-var
+    heuristics: procedures and module/host state are not mis-declared as
+    local variables."""
+
+    def test_procedures_not_declared_as_locals(self) -> None:
+        cpp = _convert_f90(CLASSIFY_F90)
+        # sqrt / real / bump are procedures, not variables.
+        self.assertNotIn("sqrt{", cpp)
+        self.assertNotIn("float real", cpp)
+
+    def test_module_var_not_a_program_local(self) -> None:
+        cpp = _convert_f90(CLASSIFY_F90)
+        # gcount is module state (threaded), never a local of the program.
+        prog = cpp[cpp.index("void p("):] if "void p(" in cpp else cpp
+        self.assertNotIn("std::int32_t gcount{};", prog)
 
 
 @unittest.skipUnless(

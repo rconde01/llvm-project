@@ -164,6 +164,17 @@ class Node:
     rank: int | None = None
     """Rank of a ``Name``'s symbol (0 for scalars), when resolved."""
 
+    is_object: bool = False
+    """True when a ``Name`` resolves to an object entity (a variable)."""
+
+    is_proc: bool = False
+    """True when a ``Name`` resolves to a procedure (subprogram, dummy
+    procedure, external, or intrinsic) — i.e. ``name(...)`` is a call."""
+
+    assoc: str | None = None
+    """``"use"`` / ``"host"`` when a ``Name`` is module/host-associated
+    state rather than a local of the enclosing unit; ``None`` otherwise."""
+
     children: list[Node] = field(default_factory=list)
     """Direct sub-nodes, in source order."""
 
@@ -213,6 +224,9 @@ class Node:
             label=_opt_int(raw.get("label")),
             sym_type=_opt_str(raw.get("type")),
             rank=_opt_int(raw.get("rank")),
+            is_object=raw.get("object") is True,
+            is_proc=raw.get("proc") is True,
+            assoc=_opt_str(raw.get("assoc")),
             children=children,
             leading_comments=leading,
             trailing_comments=trailing,
@@ -231,6 +245,12 @@ class Node:
             out["type"] = self.sym_type
         if self.rank is not None:
             out["rank"] = self.rank
+        if self.is_object:
+            out["object"] = True
+        if self.is_proc:
+            out["proc"] = True
+        if self.assoc is not None:
+            out["assoc"] = self.assoc
         if self.leading_comments:
             out["leadingComments"] = [c.to_json() for c in self.leading_comments]
         if self.trailing_comments:

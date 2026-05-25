@@ -26,6 +26,18 @@ pick one per question before implementation starts.
 3. Make every kind of Fortran source artifact (statement, common
    block, save block, module variable, I/O) map onto a small, stable
    set of C++ patterns so the output is predictable and auditable.
+4. **Minimize heuristics.** The converter must prefer *facts* that
+   flang's semantic analysis already computed over re-deriving them with
+   guesswork.  When the converter needs to know something the front end
+   knows — a variable's resolved type and kind, its rank, whether a
+   `name(...)` is an array element or a procedure call, whether a name is
+   a local vs module/host-associated state — that information is exposed
+   by the JSON parse-tree dumper (see `dump-parse-tree-json.h`, which
+   emits `type` / `rank` / `object` / `proc` / `assoc` on `Name` nodes
+   from the resolved `Symbol`) and read directly.  **Extend the dumper
+   rather than add a heuristic to the converter.**  The default
+   implicit-typing (I-N) rule survives only as a last-resort fallback for
+   the rare name flang leaves untyped.
 
 ---
 

@@ -124,31 +124,13 @@ def _safe_name(fortran: str | None) -> str:
 # positional ``f(1, 2)`` the C++ signature expects.
 _SIGNATURES: dict[str, list[str]] = {}
 
-# Names declared as module variables (across all modules in the unit).
-# Implicit typing must not synthesize locals for these — they are plumbed
-# as module state (via host association or USE), not unit-local variables.
-_MODULE_VAR_NAMES: set[str] = set()
-
-
-def _build_module_var_names(root: Node) -> set[str]:
-    names: set[str] = set()
-    for mod in root.walk():
-        if mod.kind != "Module":
-            continue
-        for child in mod.children:
-            if child.kind == "SpecificationPart":
-                for loc in _lower_specification(child):
-                    names.add(loc.name)
-    return names
-
 
 def lower_program(
     root: Node, *, source_file: str | None = None
 ) -> IRTranslationUnit:
     """Lower an annotated, dependency-ordered parse tree to IR."""
-    global _SIGNATURES, _MODULE_VAR_NAMES
+    global _SIGNATURES
     _SIGNATURES = _build_signatures(root)
-    _MODULE_VAR_NAMES = _build_module_var_names(root)
     tu = IRTranslationUnit(source_file=source_file)
     # Derived-type definitions first (deduplicated by name) so the
     # emitter can declare the structs ahead of everything that uses
@@ -672,12 +654,23 @@ def _scalar_type_from_fortran(spelling: str) -> IRType | None:
     return None
 
 
+def _unit_names(node: Node) -> Iterable[Node]:
+    """Yield the Name nodes belonging to ``node`` itself, *not* descending
+    into nested (CONTAINS) subprograms — their locals belong to them."""
+    for child in node.children:
+        if child.kind in ("InternalSubprogramPart", "ModuleSubprogramPart"):
+            continue
+        if child.kind == "Name":
+            yield child
+        yield from _unit_names(child)
+
+
 def _resolved_types(node: Node) -> dict[str, IRType]:
     """Collect resolved scalar/element types for every Name in ``node``
     that the dumper annotated, keyed by the safe-named identifier."""
     out: dict[str, IRType] = {}
-    for n in node.walk():
-        if n.kind == "Name" and n.sym_type and n.fortran:
+    for n in _unit_names(node):
+        if n.sym_type and n.fortran:
             key = _safe_name(n.fortran)
             if key not in out:
                 ty = _scalar_type_from_fortran(n.sym_type)
@@ -689,19 +682,16 @@ def _resolved_types(node: Node) -> dict[str, IRType]:
 def _apply_implicit_typing(
     node: Node, sub: IRSubprogram, resolved: dict[str, IRType]
 ) -> None:
-    """Declare undeclared variables using Fortran's implicit-typing rule.
+    """Declare variables that have no explicit declaration.
 
-    Only runs when the unit does not specify ``implicit none`` (which all
-    modern free-form code does, so this is a no-op there).  Variables get
-    INTEGER if their name starts with I-N, else REAL; arrays come from
-    DIMENSION statements and COMMON members carrying an explicit shape.
+    Driven by facts from flang's symbol table (emitted on each Name): a
+    name is a local of this unit when it is an object entity, is not a
+    procedure, and is not module/host-associated.  Types come from the
+    resolved type (``resolved``); array shapes come from the declaration's
+    ArraySpec (DIMENSION / COMMON).  The I-N rule is only a fallback for
+    the rare name flang left untyped.
     """
     spec = node.first_child("SpecificationPart")
-    if spec is not None:
-        # ``implicit none`` parses to an ImplicitStmt with no ImplicitSpec.
-        for impl in spec.find_all("ImplicitStmt"):
-            if impl.first_child("ImplicitSpec") is None:
-                return
 
     dummy: set[str] = set()
     if node.kind == "SubroutineSubprogram":
@@ -709,8 +699,8 @@ def _apply_implicit_typing(
     elif node.kind == "FunctionSubprogram":
         dummy = set(_extract_function_dummy_args(node))
 
-    # Names with an explicit array shape but no type (DIMENSION; COMMON
-    # members declared as ``common /b/ a(10)``).
+    # Array shapes for names declared with a shape but no type (DIMENSION;
+    # ``common /b/ a(10)``).
     array_specs: dict[str, Node] = {}
     if spec is not None:
         for dim in spec.find_all("DimensionStmt"):
@@ -726,94 +716,38 @@ def _apply_implicit_typing(
                 if nm is not None and nm.fortran and asp is not None:
                     array_specs.setdefault(_safe_name(nm.fortran), asp)
 
-    known = {loc.name for loc in sub.locals} | dummy | _MODULE_VAR_NAMES
+    known = {loc.name for loc in sub.locals} | dummy
     known.add(sub.name)
     known.add(sub.name + "_result")
 
-    referenced, loop_vars = _collect_referenced_names(sub.body)
-    # DATA initializers haven't been lowered into the body yet; collect
-    # their target names too so a DATA-only variable still gets declared.
-    if spec is not None:
-        for obj in spec.find_all("DataStmtObject"):
-            nm = obj.find_first("Name")
-            if nm is not None and nm.fortran:
-                referenced.add(_safe_name(nm.fortran))
+    # Local object-entity variables of this unit, from symbol facts.
+    ranks: dict[str, int] = {}
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for n in _unit_names(node):
+        if not n.fortran:
+            continue
+        if not n.is_object or n.is_proc or n.assoc is not None:
+            continue
+        key = _safe_name(n.fortran)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(key)
+        if n.rank:
+            ranks[key] = n.rank
 
-    # Prefer the type flang resolved (handles custom IMPLICIT, KINDs, etc.);
-    # fall back to the default I-N rule only when unavailable.
     def element_type(nm: str) -> IRType:
         return resolved.get(nm) or _implicit_type_for(nm)
 
-    to_declare: dict[str, IRType] = {}
-    for nm, asp in array_specs.items():
-        if nm not in known:
-            to_declare[nm] = _make_array_type(element_type(nm), asp)
-    for nm in sorted(referenced | loop_vars):
-        if nm not in known and nm not in to_declare:
-            to_declare[nm] = element_type(nm)
-
-    for nm, ty in to_declare.items():
+    for nm in sorted(candidates):
+        if nm in known:
+            continue
+        if ranks.get(nm, 0) > 0 and nm in array_specs:
+            ty = _make_array_type(element_type(nm), array_specs[nm])
+        else:
+            ty = element_type(nm)
         sub.locals.append(IRLocal(name=nm, type=ty))
-
-
-def _collect_referenced_names(
-    body: list[IRStatement],
-) -> tuple[set[str], set[str]]:
-    """Walk a lowered body collecting referenced variable names and loop
-    index names.  Procedure callees (``f(...)`` / ``call g``) are *not*
-    collected — only the array name of a section and bare identifiers —
-    so external procedures aren't mistaken for variables."""
-    referenced: set[str] = set()
-    loops: set[str] = set()
-
-    def visit_expr(e: IRExpr) -> None:
-        if isinstance(e, IRName):
-            referenced.add(e.name)
-        elif isinstance(e, IRFunctionCall):
-            for a in e.args:
-                visit_expr(a)
-        elif isinstance(e, IRBinaryOp):
-            visit_expr(e.lhs)
-            visit_expr(e.rhs)
-        elif isinstance(e, IRUnaryOp):
-            visit_expr(e.operand)
-        elif isinstance(e, IRMember):
-            visit_expr(e.base)
-        elif isinstance(e, IRCast):
-            visit_expr(e.operand)
-        elif isinstance(e, IRSection):
-            referenced.add(e.array)
-            for s in e.subscripts:
-                if isinstance(s, IRTriplet):
-                    for p in (s.lower, s.upper, s.stride):
-                        if p is not None:
-                            visit_expr(p)
-                else:
-                    visit_expr(s)
-        elif isinstance(e, IRArrayConstructor):
-            for el in e.elements:
-                visit_expr(el)
-        elif isinstance(e, IRImpliedDo):
-            loops.add(e.var)
-            visit_expr(e.lower)
-            visit_expr(e.upper)
-            if e.step is not None:
-                visit_expr(e.step)
-            for it in e.items:
-                visit_expr(it)
-
-    def on_expr(e: IRExpr) -> IRExpr:
-        visit_expr(e)
-        return e
-
-    def on_stmt(s: IRStatement) -> IRStatement:
-        if isinstance(s, IRDo):
-            loops.add(s.var)
-        return s
-
-    for st in body:
-        map_statement(st, on_expr=on_expr, on_stmt=on_stmt)
-    return referenced, loops
 
 
 def _lower_data_statements(

@@ -18,6 +18,7 @@
 #include "unparse.h"
 #include "flang/Common/indirection.h"
 #include "flang/Semantics/symbol.h"
+#include "flang/Semantics/scope.h"
 #include "flang/Semantics/type.h"
 #include "llvm/Support/raw_ostream.h"
 #include <string>
@@ -67,6 +68,19 @@ public:
 
   template <typename T> void Post(const T &) { CloseNode(); }
 
+  // Track the scope of the enclosing program unit so a Name can be told
+  // apart as a local of this unit vs. host-associated state (e.g. a module
+  // variable referenced in a contained procedure resolves directly to the
+  // module symbol, with no association wrapper).
+  bool Pre(const SubroutineStmt &x) {
+    SetUnitScope(std::get<Name>(x.t));
+    return Pre<SubroutineStmt>(x);
+  }
+  bool Pre(const FunctionStmt &x) {
+    SetUnitScope(std::get<Name>(x.t));
+    return Pre<FunctionStmt>(x);
+  }
+
   // Transparent wrappers: do not produce a JSON node, just propagate.
   bool Pre(const CharBlock &) { return true; }
   void Post(const CharBlock &) {}
@@ -110,6 +124,26 @@ public:
         out_ << "\"";
       }
       out_ << ",\"rank\":" << sym.Rank();
+      // Classification facts so the converter need not guess whether a
+      // ``name(...)`` is an array element or a function call, or whether a
+      // referenced name is a local variable vs module/host state.
+      if (sym.has<semantics::ObjectEntityDetails>()) {
+        out_ << ",\"object\":true";
+      }
+      if (sym.IsSubprogram() || sym.has<semantics::ProcEntityDetails>() ||
+          sym.attrs().test(semantics::Attr::EXTERNAL) ||
+          sym.attrs().test(semantics::Attr::INTRINSIC)) {
+        out_ << ",\"proc\":true";
+      }
+      // Association: a name whose resolved symbol lives outside the
+      // enclosing program unit's scope is module/host state, not a local.
+      if (x.symbol->has<semantics::UseDetails>()) {
+        out_ << ",\"assoc\":\"use\"";
+      } else if (x.symbol->has<semantics::HostAssocDetails>()) {
+        out_ << ",\"assoc\":\"host\"";
+      } else if (unitScope_ && !OwnedBy(sym, *unitScope_)) {
+        out_ << ",\"assoc\":\"host\"";
+      }
     }
     return true;
   }
@@ -164,6 +198,22 @@ private:
     // True once we have emitted the `, "children": [` opener at this level.
     bool inChildrenArray{false};
   };
+
+  // Record the inner scope of the program unit named by ``x`` so later
+  // Name visits can tell locals from host-associated state.
+  void SetUnitScope(const Name &x) {
+    if (x.symbol && x.symbol->scope()) {
+      unitScope_ = x.symbol->scope();
+    }
+  }
+
+  // True if ``sym`` is declared in ``scope`` or one of its ancestors up to
+  // (but not crossing into) an enclosing module/program — i.e. it is a
+  // genuine local/dummy of this unit rather than host/module state.
+  static bool OwnedBy(
+      const semantics::Symbol &sym, const semantics::Scope &unit) {
+    return &sym.owner() == &unit;
+  }
 
   void OpenNode(const std::string &name) { OpenNode(name.c_str()); }
 
@@ -308,6 +358,7 @@ private:
   const AllCookedSources *const allCooked_;
   const AnalyzedObjectsAsFortran *const asFortran_;
   std::vector<Level> stack_;
+  const semantics::Scope *unitScope_{nullptr};
 };
 
 template <typename T>
