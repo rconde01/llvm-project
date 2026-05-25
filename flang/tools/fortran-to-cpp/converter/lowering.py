@@ -180,8 +180,78 @@ def lower_program(
     _collect_units(root, tu, parent_module=None)
     _resolve_component_allocations(tu)
     _reshape_sequence_associated_args(tu)
+    _infer_readonly_scalar_params(tu)
     _apply_logical_print_format(tu)
     return tu
+
+
+def _infer_readonly_scalar_params(tu: IRTranslationUnit) -> None:
+    """Mark an ``inout`` scalar dummy that the body never modifies as
+    ``intent(in)`` (``const T&``).
+
+    FORTRAN 77 has no INTENT, so every dummy defaults to ``inout`` /
+    ``T&`` — which can't bind an rvalue, so a call like ``eptr(x, y, z*2)``
+    fails.  A scalar dummy that is never assigned, used as a DO variable,
+    read into, or passed to another call is read-only and can safely be a
+    ``const T&`` reference.  Passing it to any call is treated
+    conservatively as a possible write (the callee might modify it), so
+    only leaf read-only uses are downgraded; a wrong guess would be a
+    compile error, never silent misbehavior.
+    """
+    for sub in tu.subprograms:
+        scalar_inout = {
+            p.name
+            for p in sub.parameters
+            if p.intent == "inout" and not p.type.is_array and not p.type.is_pointer
+        }
+        if not scalar_inout:
+            continue
+        written: set[str] = set()
+
+        def root(e: IRExpr) -> str | None:
+            # The base variable an lvalue/argument touches: ``v`` for
+            # ``v``, ``v%c``, ``v%c(i)``, ``a(i)`` and ``a(i:j)``.
+            if isinstance(e, IRName):
+                return e.name
+            if isinstance(e, IRMember):
+                return root(e.base)
+            if isinstance(e, IRFunctionCall):
+                return e.callee.split(".", 1)[0]
+            if isinstance(e, IRSection):
+                return e.array.split(".", 1)[0]
+            return None
+
+        def mark(e: IRExpr) -> None:
+            b = root(e)
+            if b is not None:
+                written.add(b)
+
+        def note_stmt(stmt: IRStatement) -> IRStatement:
+            if isinstance(stmt, IRAssignment):
+                mark(stmt.target)  # incl. component / element writes
+            elif isinstance(stmt, IRDo) and stmt.var:
+                written.add(stmt.var)
+            elif isinstance(stmt, IRRead):
+                for it in stmt.items:
+                    mark(it)
+            elif isinstance(stmt, IRCall):
+                for a in stmt.args:
+                    mark(a)  # callee may modify it -> conservatively written
+            return stmt
+
+        def note_expr(expr: IRExpr) -> IRExpr:
+            if isinstance(expr, IRFunctionCall):
+                for a in expr.args:
+                    mark(a)
+            return expr
+
+        for s in sub.body:
+            map_statement(
+                s, on_stmt=note_stmt, on_expr=lambda e: map_expr(e, note_expr)
+            )
+        for p in sub.parameters:
+            if p.name in scalar_inout and p.name not in written:
+                p.intent = "in"
 
 
 def _expr_rank(expr: IRExpr) -> int | None:
