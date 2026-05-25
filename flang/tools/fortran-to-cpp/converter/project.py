@@ -28,6 +28,7 @@ from flang_ast.nodes import Node
 from .emit import emit_shared_header, emit_translation_unit
 from .ir import IRTranslationUnit
 from .lowering import _reshape_sequence_associated_args, lower_program
+from .prepass import sanitized_source
 from .state_plumbing import plumb_state
 
 #: Name of the generated header that carries the project's shared structs
@@ -64,9 +65,16 @@ def convert_files(
             if _needs_cpp(src):
                 extra.append("-cpp")
             try:
-                root = parse_fortran_file(
-                    src, flang=flang, sema=True, extra_args=extra, module_dir=moddir
-                )
+                with sanitized_source(src) as parse_path:
+                    root = parse_fortran_file(
+                        parse_path,
+                        flang=flang,
+                        sema=True,
+                        extra_args=extra,
+                        module_dir=moddir,
+                    )
+                    annotate_tree(root)
+                    per_file[src] = lower_program(root, source_file=str(src))
             except FlangError as exc:
                 # flang couldn't parse/analyze this file (bad encoding,
                 # a sema error, or a dependency that itself failed).  Skip
@@ -74,8 +82,6 @@ def convert_files(
                 # aborting the whole run.
                 _warn_skip(src, exc)
                 continue
-            annotate_tree(root)
-            per_file[src] = lower_program(root, source_file=str(src))
 
     # Plumb persistent/scratch state across the *whole* program so that a
     # routine in one file and its callers in another agree on the state
@@ -151,9 +157,10 @@ def _dependency_order(
         # defining/using nothing so the rest of the project proceeds (the
         # later sema parse will skip it too, with a warning).
         try:
-            root = parse_fortran_file(
-                src, flang=flang, sema=False, extra_args=extra
-            )
+            with sanitized_source(src) as parse_path:
+                root = parse_fortran_file(
+                    parse_path, flang=flang, sema=False, extra_args=extra
+                )
         except FlangError:
             uses[src] = set()
             continue
