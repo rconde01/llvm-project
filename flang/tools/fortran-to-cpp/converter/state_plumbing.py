@@ -39,6 +39,7 @@ from .ir import (
     IRPrint,
     IRRaw,
     IRRead,
+    IRSection,
     IRStateBinding,
     IRStateParam,
     IRStateStruct,
@@ -92,7 +93,16 @@ def _collect_names(body: list[IRStatement]) -> set[str]:
         if isinstance(expr, IRName):
             names.add(expr.name)
         elif isinstance(expr, IRFunctionCall):
+            # An array/component access (``a(i)``, ``v.c(i)``) lowers to a
+            # call-shaped node whose callee is a dotted access path; record
+            # the path *and* its base variable (``v`` in ``v.c``) so a
+            # module variable referenced only through a component is still
+            # detected.
             names.add(expr.callee)
+            names.add(expr.callee.split(".", 1)[0])
+        elif isinstance(expr, IRSection):
+            names.add(expr.array)
+            names.add(expr.array.split(".", 1)[0])
         return expr
 
     for stmt in body:
@@ -468,7 +478,14 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
             )
 
         new_body = [
-            map_statement(s, on_stmt=rewrite_call, on_expr=rewrite_fcall)
+            # Wrap ``rewrite_fcall`` in ``map_expr`` so function calls
+            # nested inside larger expressions (``x + f(y)``) are rewritten,
+            # not just a statement's top-level expressions.
+            map_statement(
+                s,
+                on_stmt=rewrite_call,
+                on_expr=lambda e: map_expr(e, rewrite_fcall),
+            )
             for s in caller.body
         ]
         if local_state_instances:
@@ -494,11 +511,14 @@ def _callee_names(body: list[IRStatement]) -> list[str]:
             names.append(stmt.callee)
         return stmt
 
-    def on_expr(expr: IRExpr) -> IRExpr:
+    def note(expr: IRExpr) -> IRExpr:
         if isinstance(expr, IRFunctionCall):
             names.append(expr.callee)
         return expr
 
     for stmt in body:
-        map_statement(stmt, on_stmt=on_stmt, on_expr=on_expr)
+        # ``map_statement``'s ``on_expr`` only sees each statement's
+        # top-level expressions; wrap in ``map_expr`` to reach calls
+        # nested inside larger expressions (``x + f(y)``).
+        map_statement(stmt, on_stmt=on_stmt, on_expr=lambda e: map_expr(e, note))
     return names
