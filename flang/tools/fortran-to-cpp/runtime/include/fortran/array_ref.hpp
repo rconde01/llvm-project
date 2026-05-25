@@ -81,6 +81,16 @@ public:
   // this file).  We do not also define the inverse converting
   // constructor here, to avoid an ambiguous overload at the call site.
 
+  /// Add ``const``: a mutable view converts to a read-only view of the
+  /// same data (``ArrayRef<T>`` -> ``ArrayRef<const T>``), so a mutable
+  /// array/section can be passed where a ``const`` view is expected.
+  /// Only enabled when ``T`` is ``const U`` for the source's ``U``.
+  template <typename U>
+    requires(std::is_const_v<T> && std::is_same_v<std::remove_const_t<T>, U>)
+  ArrayRef(const ArrayRef<U, Rank> &other) noexcept
+      : data_(other.data()), lower_(other.lower_bounds()),
+        extents_(other.extents()), strides_(other.strides()) {}
+
   // ---- Indexing -------------------------------------------------------
 
   template <typename... Idx>
@@ -114,6 +124,16 @@ public:
   const extent_array &strides() const noexcept { return strides_; }
 
   T *data() const noexcept { return data_; }
+
+  /// Broadcast a scalar to every viewed element (Fortran ``a(i:j) = 0``).
+  /// Writes through the view; ``const`` because it mutates the pointed-to
+  /// data, not the view itself (so it also binds to a section rvalue).
+  const ArrayRef &operator=(const T &scalar) const {
+    for (index_t i = 0; i < size(); ++i) {
+      linear_at(i) = scalar;
+    }
+    return *this;
+  }
 
   /// Element at 0-based column-major logical position ``k``, honoring this
   /// view's (possibly non-contiguous) strides.  Lets the elementwise

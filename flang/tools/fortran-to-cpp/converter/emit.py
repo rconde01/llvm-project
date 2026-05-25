@@ -317,6 +317,18 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
     out.write("}\n")
 
 
+def _is_scalar_constant(expr: object) -> bool:
+    """True for a scalar constant expression — a literal or a unary
+    op (e.g. negation) over one.  Used to recognize a whole-array scalar
+    initializer (``= -9999.0``) versus an array-valued initializer (an
+    array constructor or an elementwise expression)."""
+    if isinstance(expr, IRLiteral):
+        return True
+    if isinstance(expr, IRUnaryOp):
+        return _is_scalar_constant(expr.operand)
+    return False
+
+
 def _emit_local(
     out: StringIO, loc: IRLocal, *, indent: int, storage: str = "local"
 ) -> None:
@@ -347,13 +359,14 @@ def _emit_local(
         prefix = ""
     if (
         loc.type.is_array
-        and isinstance(loc.initializer, IRLiteral)
+        and _is_scalar_constant(loc.initializer)
         and loc.type.array_extent_exprs
     ):
-        # Whole-array scalar initializer (Fortran ``real :: a(n) = 0.0``):
-        # build the array with its shape and broadcast the scalar to every
-        # element.  A non-scalar initializer (array constructor) keeps the
-        # plain ``= ...`` form below.
+        # Whole-array scalar initializer (Fortran ``real :: a(n) = 0.0`` or
+        # ``= -9999.0``): build the array with its shape and broadcast the
+        # scalar constant expression to every element.  An array-valued
+        # initializer (array constructor) keeps the plain ``= ...`` form
+        # below.
         fill = _render_expr(loc.initializer)
         extents = ", ".join(loc.type.array_extent_exprs)
         # Always use the explicit-lower-bound form so the call resolves to
