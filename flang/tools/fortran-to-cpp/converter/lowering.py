@@ -1714,6 +1714,23 @@ def _expand_array_assignments(sub: IRSubprogram) -> None:
         tgt = stmt.target
         rhs_has_section = _contains_section(stmt.value)
         if isinstance(tgt, IRSection) or rhs_has_section:
+            # ``a(lo:hi) = matmul(...)`` / ``= [v1, v2]`` — the RHS is a
+            # whole array-valued result with no section to index
+            # elementwise, so assign the section as a whole
+            # (ArrayRef::operator= copies the elements) rather than
+            # scattering the array result into a scalar slot.
+            if (
+                isinstance(tgt, IRSection)
+                and not rhs_has_section
+                and (
+                    isinstance(stmt.value, IRArrayConstructor)
+                    or (
+                        isinstance(stmt.value, IRFunctionCall)
+                        and stmt.value.callee in _ARRAY_RETURNING
+                    )
+                )
+            ):
+                return stmt
             loop = _section_assignment_loop(stmt, arrays, array_names, counter)
             return loop if loop is not None else stmt
         if isinstance(tgt, IRName) and tgt.name in arrays:

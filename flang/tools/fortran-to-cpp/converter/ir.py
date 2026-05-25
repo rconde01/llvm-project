@@ -583,10 +583,15 @@ class IRParameter:
             return f"std::optional<{self.type.cpp}> {self.name}{default}"
         if self.type.is_array:
             const_q = "const " if self.intent == "in" else ""
-            return (
+            decl = (
                 f"fortran::ArrayRef<{const_q}{self.type.element_type_cpp}, "
                 f"{self.type.array_rank}> {self.name}"
             )
+            if self.optional and with_default:
+                # An OPTIONAL array dummy defaults to a null (empty) view,
+                # which PRESENT() reports as absent — so callers can omit it.
+                decl += " = {}"
+            return decl
         if self.intent == "in":
             return f"const {self.type.cpp}& {self.name}"
         return f"{self.type.cpp}& {self.name}"

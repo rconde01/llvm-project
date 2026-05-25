@@ -259,7 +259,7 @@ def _signature(sub: IRSubprogram, *, with_defaults: bool = True) -> str:
     params = sub.parameters
     default_from = len(params)
     for i in range(len(params) - 1, -1, -1):
-        if params[i].optional and not params[i].type.is_array:
+        if params[i].optional:  # optional scalar (=nullopt) or array (={})
             default_from = i
         else:
             break

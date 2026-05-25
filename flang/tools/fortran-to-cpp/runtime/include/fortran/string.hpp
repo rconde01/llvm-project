@@ -34,6 +34,7 @@
 #include <cstddef>
 #include <cstring>
 #include <iosfwd>
+#include <istream>
 #include <ostream>
 #include <string>
 #include <string_view>
@@ -291,6 +292,16 @@ constexpr bool operator!=(std::string_view a,
 template <std::size_t N>
 inline std::ostream &operator<<(std::ostream &os, const FortranString<N> &s) {
   return os.write(s.data(), static_cast<std::streamsize>(N));
+}
+
+/// List-directed ``read`` of a character variable: take the next
+/// whitespace-delimited token (left-justified, blank-padded to width N).
+template <std::size_t N>
+inline std::istream &operator>>(std::istream &is, FortranString<N> &s) {
+  std::string token;
+  is >> token;
+  s = std::string_view{token};
+  return is;
 }
 
 // ---- Character <-> integer intrinsics -------------------------------------

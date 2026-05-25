@@ -37,6 +37,7 @@
 #include <array>
 #include <cassert>
 #include <cstddef>
+#include <istream>
 #include <ostream>
 #include <tuple>
 #include <type_traits>
@@ -136,6 +137,17 @@ public:
   const ArrayRef &operator=(const T &scalar) const {
     for (index_t i = 0; i < size(); ++i) {
       linear_at(i) = scalar;
+    }
+    return *this;
+  }
+
+  /// Copy an array-valued result into the viewed elements (Fortran
+  /// ``a(lo:hi) = matmul(...)``).  Writes through the view, with element
+  /// conversion; shapes are assumed conformable.
+  template <typename U>
+  const ArrayRef &operator=(const Array<U, Rank> &src) const {
+    for (index_t i = 0; i < size(); ++i) {
+      linear_at(i) = static_cast<T>(src.linear_at(i));
     }
     return *this;
   }
@@ -337,6 +349,28 @@ std::ostream &operator<<(std::ostream &os, const ArrayRef<T, Rank> &a) {
     first = false;
   });
   return os;
+}
+
+// ---- List-directed array input --------------------------------------------
+
+/// Read a whole array's elements (Fortran column-major order) — Fortran
+/// list-directed ``read`` of an array variable / section.
+template <typename T, std::size_t Rank>
+std::istream &operator>>(std::istream &is, Array<T, Rank> &a) {
+  const index_t n = a.size();
+  for (index_t i = 0; i < n; ++i) {
+    is >> a.linear_at(i);
+  }
+  return is;
+}
+
+template <typename T, std::size_t Rank>
+std::istream &operator>>(std::istream &is, const ArrayRef<T, Rank> &a) {
+  const index_t n = a.size();
+  for (index_t i = 0; i < n; ++i) {
+    is >> a.linear_at(i);
+  }
+  return is;
 }
 
 // ---- ASSOCIATED ----------------------------------------------------------
