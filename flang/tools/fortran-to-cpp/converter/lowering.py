@@ -656,7 +656,7 @@ def _lower_function(node: Node) -> IRSubprogram:
 
     _lower_specification_and_execution(node, sub)
     _separate_parameters(sub, dummy_arg_names)
-    _lift_function_return(sub, prefix_return_type)
+    _lift_function_return(sub, prefix_return_type, node)
     return sub
 
 
@@ -779,8 +779,17 @@ def _deref_optional_params(sub: IRSubprogram) -> None:
     ]
 
 
+def _implicit_scalar_type(name: str) -> IRType:
+    """The default FORTRAN 77 implicit type for ``name``: ``integer`` for
+    initials I-N, otherwise ``real``."""
+    first = name[0].lower() if name else "x"
+    if "i" <= first <= "n":
+        return IRType(cpp="std::int32_t", fortran="integer", is_integer=True)
+    return IRType(cpp="float", fortran="real", is_real=True)
+
+
 def _lift_function_return(
-    sub: IRSubprogram, prefix_type: IRType | None
+    sub: IRSubprogram, prefix_type: IRType | None, node: Node
 ) -> None:
     """Turn the local variable named after the function into a return
     value.  Renames every reference to ``<name>`` in the body to
@@ -802,9 +811,13 @@ def _lift_function_return(
         func_local.type if func_local is not None else prefix_type
     )
     if return_type is None:
-        # No way to determine the return type; leave it as auto and let
-        # the user fix it.
-        return_type = IRType(cpp="auto", fortran="<inferred>")
+        # No explicit declaration: use flang's resolved type for the
+        # function-result symbol, then the F77 first-letter implicit rule.
+        # An ``auto`` return would be ill-formed once the function is
+        # forward-declared and called (which the prototype pass does).
+        return_type = _resolved_types(node).get(sub.name) or _implicit_scalar_type(
+            sub.display_name
+        )
     sub.return_type = return_type
 
     result_name = sub.name + "_result"
