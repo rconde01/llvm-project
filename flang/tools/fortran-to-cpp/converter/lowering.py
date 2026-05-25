@@ -58,6 +58,7 @@ from .ir import (
     IRBlock,
     IRCast,
     IRCaseClause,
+    IRComment,
     IRCycle,
     IRDeallocate,
     IRDerivedType,
@@ -120,13 +121,31 @@ def _safe_name(fortran: str | None) -> str:
 # positional ``f(1, 2)`` the C++ signature expects.
 _SIGNATURES: dict[str, list[str]] = {}
 
+# Names declared as module variables (across all modules in the unit).
+# Implicit typing must not synthesize locals for these — they are plumbed
+# as module state (via host association or USE), not unit-local variables.
+_MODULE_VAR_NAMES: set[str] = set()
+
+
+def _build_module_var_names(root: Node) -> set[str]:
+    names: set[str] = set()
+    for mod in root.walk():
+        if mod.kind != "Module":
+            continue
+        for child in mod.children:
+            if child.kind == "SpecificationPart":
+                for loc in _lower_specification(child):
+                    names.add(loc.name)
+    return names
+
 
 def lower_program(
     root: Node, *, source_file: str | None = None
 ) -> IRTranslationUnit:
     """Lower an annotated, dependency-ordered parse tree to IR."""
-    global _SIGNATURES
+    global _SIGNATURES, _MODULE_VAR_NAMES
     _SIGNATURES = _build_signatures(root)
+    _MODULE_VAR_NAMES = _build_module_var_names(root)
     tu = IRTranslationUnit(source_file=source_file)
     # Derived-type definitions first (deduplicated by name) so the
     # emitter can declare the structs ahead of everything that uses
@@ -557,9 +576,145 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
             sub.body.extend(_lower_execution(child))
     # DATA-statement initializations run before the executable body.
     sub.body = data_inits + sub.body
+    # FORTRAN 77 implicit typing: synthesize declarations for undeclared
+    # variables (must precede array-assignment expansion, which keys off
+    # which locals are arrays).
+    _apply_implicit_typing(node, sub)
     _resolve_allocations(sub)
     _resolve_pointers(sub)
     _expand_array_assignments(sub)
+
+
+# Variables whose name begins with one of these letters default to
+# INTEGER under Fortran's implicit-typing rule; everything else defaults
+# to REAL.  (Custom IMPLICIT statements with letter ranges are not yet
+# read from the JSON AST, so only the standard rule and IMPLICIT NONE are
+# honored.)
+_IMPLICIT_INT_LETTERS = frozenset("ijklmn")
+
+
+def _implicit_type_for(name: str) -> IRType:
+    first = name[:1].lower()
+    if first in _IMPLICIT_INT_LETTERS:
+        return IRType(cpp="std::int32_t", fortran="integer(kind=4)",
+                      is_integer=True)
+    return IRType(cpp="float", fortran="real(kind=4)", is_real=True)
+
+
+def _apply_implicit_typing(node: Node, sub: IRSubprogram) -> None:
+    """Declare undeclared variables using Fortran's implicit-typing rule.
+
+    Only runs when the unit does not specify ``implicit none`` (which all
+    modern free-form code does, so this is a no-op there).  Variables get
+    INTEGER if their name starts with I-N, else REAL; arrays come from
+    DIMENSION statements and COMMON members carrying an explicit shape.
+    """
+    spec = node.first_child("SpecificationPart")
+    if spec is not None:
+        # ``implicit none`` parses to an ImplicitStmt with no ImplicitSpec.
+        for impl in spec.find_all("ImplicitStmt"):
+            if impl.first_child("ImplicitSpec") is None:
+                return
+
+    dummy: set[str] = set()
+    if node.kind == "SubroutineSubprogram":
+        dummy = set(_extract_subroutine_dummy_args(node))
+    elif node.kind == "FunctionSubprogram":
+        dummy = set(_extract_function_dummy_args(node))
+
+    # Names with an explicit array shape but no type (DIMENSION; COMMON
+    # members declared as ``common /b/ a(10)``).
+    array_specs: dict[str, Node] = {}
+    if spec is not None:
+        for dim in spec.find_all("DimensionStmt"):
+            for decl in dim.children_of_kind("Declaration"):
+                nm = decl.first_child("Name")
+                asp = decl.first_child("ArraySpec")
+                if nm is not None and nm.fortran and asp is not None:
+                    array_specs.setdefault(_safe_name(nm.fortran), asp)
+        for common in spec.find_all("CommonStmt"):
+            for obj in common.find_all("CommonBlockObject"):
+                nm = obj.first_child("Name")
+                asp = obj.first_child("ArraySpec")
+                if nm is not None and nm.fortran and asp is not None:
+                    array_specs.setdefault(_safe_name(nm.fortran), asp)
+
+    known = {loc.name for loc in sub.locals} | dummy | _MODULE_VAR_NAMES
+    known.add(sub.name)
+    known.add(sub.name + "_result")
+
+    referenced, loop_vars = _collect_referenced_names(sub.body)
+
+    to_declare: dict[str, IRType] = {}
+    for nm, asp in array_specs.items():
+        if nm not in known:
+            to_declare[nm] = _make_array_type(_implicit_type_for(nm), asp)
+    for nm in sorted(referenced | loop_vars):
+        if nm not in known and nm not in to_declare:
+            to_declare[nm] = _implicit_type_for(nm)
+
+    for nm, ty in to_declare.items():
+        sub.locals.append(IRLocal(name=nm, type=ty))
+
+
+def _collect_referenced_names(
+    body: list[IRStatement],
+) -> tuple[set[str], set[str]]:
+    """Walk a lowered body collecting referenced variable names and loop
+    index names.  Procedure callees (``f(...)`` / ``call g``) are *not*
+    collected — only the array name of a section and bare identifiers —
+    so external procedures aren't mistaken for variables."""
+    referenced: set[str] = set()
+    loops: set[str] = set()
+
+    def visit_expr(e: IRExpr) -> None:
+        if isinstance(e, IRName):
+            referenced.add(e.name)
+        elif isinstance(e, IRFunctionCall):
+            for a in e.args:
+                visit_expr(a)
+        elif isinstance(e, IRBinaryOp):
+            visit_expr(e.lhs)
+            visit_expr(e.rhs)
+        elif isinstance(e, IRUnaryOp):
+            visit_expr(e.operand)
+        elif isinstance(e, IRMember):
+            visit_expr(e.base)
+        elif isinstance(e, IRCast):
+            visit_expr(e.operand)
+        elif isinstance(e, IRSection):
+            referenced.add(e.array)
+            for s in e.subscripts:
+                if isinstance(s, IRTriplet):
+                    for p in (s.lower, s.upper, s.stride):
+                        if p is not None:
+                            visit_expr(p)
+                else:
+                    visit_expr(s)
+        elif isinstance(e, IRArrayConstructor):
+            for el in e.elements:
+                visit_expr(el)
+        elif isinstance(e, IRImpliedDo):
+            loops.add(e.var)
+            visit_expr(e.lower)
+            visit_expr(e.upper)
+            if e.step is not None:
+                visit_expr(e.step)
+            for it in e.items:
+                visit_expr(it)
+
+    def on_expr(e: IRExpr) -> IRExpr:
+        visit_expr(e)
+        return e
+
+    def on_stmt(s: IRStatement) -> IRStatement:
+        if isinstance(s, IRDo):
+            loops.add(s.var)
+        return s
+
+    for st in body:
+        map_statement(st, on_expr=on_expr, on_stmt=on_stmt)
+    return referenced, loops
 
 
 def _lower_data_statements(
@@ -1075,8 +1230,11 @@ def _lower_action_statement(stmt: Node) -> IRStatement | None:
     result = _lower_action_inner(inner)
     if result is None:
         return _unsupported(inner, kind=inner.kind, leading=leading)
-    result.leading_comments = leading
-    result.trailing_comments = trailing
+    # IRComment (e.g. a lowered CONTINUE) carries comments differently;
+    # only statements with the standard comment slots get them attached.
+    if hasattr(result, "leading_comments"):
+        result.leading_comments = leading
+        result.trailing_comments = trailing
     return result
 
 
@@ -1117,6 +1275,10 @@ def _lower_action_inner(inner: Node) -> IRStatement | None:
             return _lower_if_stmt(inner)
         case "ForallStmt":
             return _lower_forall(inner)
+        case "ContinueStmt":
+            # CONTINUE is a no-op (often just a labeled loop terminator,
+            # which the structured loop already absorbs).
+            return IRComment(comments=[])
     return None
 
 
