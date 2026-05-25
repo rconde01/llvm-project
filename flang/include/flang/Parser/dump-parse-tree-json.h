@@ -20,6 +20,7 @@
 #include "flang/Semantics/symbol.h"
 #include "flang/Semantics/scope.h"
 #include "flang/Semantics/type.h"
+#include "flang/Evaluate/fold.h"
 #include "llvm/Support/raw_ostream.h"
 #include <string>
 #include <type_traits>
@@ -124,6 +125,7 @@ public:
         out_ << "\"";
       }
       out_ << ",\"rank\":" << sym.Rank();
+      EmitShape(sym);
       // Classification facts so the converter need not guess whether a
       // ``name(...)`` is an array element or a function call, or whether a
       // referenced name is a local variable vs module/host state.
@@ -198,6 +200,47 @@ private:
     // True once we have emitted the `, "children": [` opener at this level.
     bool inChildrenArray{false};
   };
+
+  // Emit an explicit, constant-foldable array shape as
+  // ``"shape":[[lo,hi],...]`` so the converter can size arrays from the
+  // resolved symbol rather than re-reading DIMENSION/ArraySpec.  Folds
+  // named-constant (PARAMETER) bounds; omitted when any bound is not a
+  // compile-time constant.
+  void EmitShape(const semantics::Symbol &sym) {
+    const auto *obj{sym.detailsIf<semantics::ObjectEntityDetails>()};
+    if (!obj) {
+      return;
+    }
+    const semantics::ArraySpec &shape{obj->shape()};
+    if (shape.empty() || !shape.IsExplicitShape()) {
+      return;
+    }
+    std::string buf;
+    llvm::raw_string_ostream ss{buf};
+    ss << "[";
+    bool first{true};
+    for (const semantics::ShapeSpec &spec : shape) {
+      auto lo{BoundValue(spec.lbound())};
+      auto hi{BoundValue(spec.ubound())};
+      if (!lo || !hi) {
+        return; // not fully constant — omit the field
+      }
+      if (!first) {
+        ss << ",";
+      }
+      first = false;
+      ss << "[" << *lo << "," << *hi << "]";
+    }
+    ss << "]";
+    out_ << ",\"shape\":" << buf;
+  }
+
+  static std::optional<std::int64_t> BoundValue(const semantics::Bound &b) {
+    if (!b.isExplicit() || !b.GetExplicit()) {
+      return std::nullopt;
+    }
+    return evaluate::ToInt64(*b.GetExplicit());
+  }
 
   // Record the inner scope of the program unit named by ``x`` so later
   // Name visits can tell locals from host-associated state.

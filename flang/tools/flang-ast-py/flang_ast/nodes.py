@@ -175,6 +175,11 @@ class Node:
     """``"use"`` / ``"host"`` when a ``Name`` is module/host-associated
     state rather than a local of the enclosing unit; ``None`` otherwise."""
 
+    shape: list[tuple[int, int]] | None = None
+    """Explicit, constant array shape from the resolved symbol: one
+    ``(lower, upper)`` pair per dimension.  ``None`` for scalars or when a
+    bound isn't a compile-time constant."""
+
     children: list[Node] = field(default_factory=list)
     """Direct sub-nodes, in source order."""
 
@@ -227,6 +232,7 @@ class Node:
             is_object=raw.get("object") is True,
             is_proc=raw.get("proc") is True,
             assoc=_opt_str(raw.get("assoc")),
+            shape=_opt_shape(raw.get("shape")),
             children=children,
             leading_comments=leading,
             trailing_comments=trailing,
@@ -251,6 +257,8 @@ class Node:
             out["proc"] = True
         if self.assoc is not None:
             out["assoc"] = self.assoc
+        if self.shape is not None:
+            out["shape"] = [[lo, hi] for lo, hi in self.shape]
         if self.leading_comments:
             out["leadingComments"] = [c.to_json() for c in self.leading_comments]
         if self.trailing_comments:
@@ -372,6 +380,22 @@ def _opt_str(v: object) -> str | None:
 
 def _opt_int(v: object) -> int | None:
     return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def _opt_shape(v: object) -> list[tuple[int, int]] | None:
+    if not isinstance(v, list):
+        return None
+    out: list[tuple[int, int]] = []
+    for dim in v:
+        if (
+            isinstance(dim, list)
+            and len(dim) == 2
+            and all(isinstance(b, int) and not isinstance(b, bool) for b in dim)
+        ):
+            out.append((dim[0], dim[1]))
+        else:
+            return None
+    return out
 
 
 # ---------------------------------------------------------------------------

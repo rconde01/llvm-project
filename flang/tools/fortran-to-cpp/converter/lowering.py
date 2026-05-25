@@ -592,22 +592,6 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
         )
 
 
-# Variables whose name begins with one of these letters default to
-# INTEGER under Fortran's implicit-typing rule; everything else defaults
-# to REAL.  (Custom IMPLICIT statements with letter ranges are not yet
-# read from the JSON AST, so only the standard rule and IMPLICIT NONE are
-# honored.)
-_IMPLICIT_INT_LETTERS = frozenset("ijklmn")
-
-
-def _implicit_type_for(name: str) -> IRType:
-    first = name[:1].lower()
-    if first in _IMPLICIT_INT_LETTERS:
-        return IRType(cpp="std::int32_t", fortran="integer(kind=4)",
-                      is_integer=True)
-    return IRType(cpp="float", fortran="real(kind=4)", is_real=True)
-
-
 _FTYPE_RE = re.compile(r"^\s*([A-Za-z ]+?)\s*(?:\(([^)]*)\))?\s*$")
 
 
@@ -686,41 +670,24 @@ def _apply_implicit_typing(
 
     Driven by facts from flang's symbol table (emitted on each Name): a
     name is a local of this unit when it is an object entity, is not a
-    procedure, and is not module/host-associated.  Types come from the
-    resolved type (``resolved``); array shapes come from the declaration's
-    ArraySpec (DIMENSION / COMMON).  The I-N rule is only a fallback for
-    the rare name flang left untyped.
+    procedure, and is not module/host-associated.  Type and array shape
+    both come from the resolved symbol (emitted on each Name); there is no
+    fallback guess — a name flang did not type is left undeclared.
     """
-    spec = node.first_child("SpecificationPart")
-
     dummy: set[str] = set()
     if node.kind == "SubroutineSubprogram":
         dummy = set(_extract_subroutine_dummy_args(node))
     elif node.kind == "FunctionSubprogram":
         dummy = set(_extract_function_dummy_args(node))
 
-    # Array shapes for names declared with a shape but no type (DIMENSION;
-    # ``common /b/ a(10)``).
-    array_specs: dict[str, Node] = {}
-    if spec is not None:
-        for dim in spec.find_all("DimensionStmt"):
-            for decl in dim.children_of_kind("Declaration"):
-                nm = decl.first_child("Name")
-                asp = decl.first_child("ArraySpec")
-                if nm is not None and nm.fortran and asp is not None:
-                    array_specs.setdefault(_safe_name(nm.fortran), asp)
-        for common in spec.find_all("CommonStmt"):
-            for obj in common.find_all("CommonBlockObject"):
-                nm = obj.first_child("Name")
-                asp = obj.first_child("ArraySpec")
-                if nm is not None and nm.fortran and asp is not None:
-                    array_specs.setdefault(_safe_name(nm.fortran), asp)
-
     known = {loc.name for loc in sub.locals} | dummy
     known.add(sub.name)
     known.add(sub.name + "_result")
 
-    # Local object-entity variables of this unit, from symbol facts.
+    # Local object-entity variables of this unit, from symbol facts: their
+    # resolved type and (constant) array shape.
+    types: dict[str, IRType] = {}
+    shapes: dict[str, list[tuple[int, int]]] = {}
     ranks: dict[str, int] = {}
     candidates: list[str] = []
     seen: set[str] = set()
@@ -736,18 +703,51 @@ def _apply_implicit_typing(
         candidates.append(key)
         if n.rank:
             ranks[key] = n.rank
-
-    def element_type(nm: str) -> IRType:
-        return resolved.get(nm) or _implicit_type_for(nm)
+        if n.shape:
+            shapes[key] = n.shape
+        ty = resolved.get(key)
+        if ty is not None:
+            types[key] = ty
 
     for nm in sorted(candidates):
         if nm in known:
             continue
-        if ranks.get(nm, 0) > 0 and nm in array_specs:
-            ty = _make_array_type(element_type(nm), array_specs[nm])
+        elem = types.get(nm)
+        if elem is None:
+            # No resolved type — nothing to declare from (do not guess).
+            continue
+        if ranks.get(nm, 0) > 0 and nm in shapes:
+            ty = _array_type_from_shape(elem, shapes[nm])
         else:
-            ty = element_type(nm)
+            ty = elem
         sub.locals.append(IRLocal(name=nm, type=ty))
+
+
+def _array_type_from_shape(
+    element_type: IRType, dims: list[tuple[int, int]]
+) -> IRType:
+    """Build a ``fortran::Array<T, Rank>`` IRType from a resolved symbol's
+    constant shape (per-dimension inclusive ``(lower, upper)`` bounds)."""
+    lowers = [lo for lo, _ in dims]
+    extents = [hi - lo + 1 for lo, hi in dims]
+    rank = len(dims)
+    has_explicit_lower = any(lo != 1 for lo in lowers)
+    return IRType(
+        cpp=f"fortran::Array<{element_type.cpp}, {rank}>",
+        fortran=f"{element_type.fortran}, dimension({rank})",
+        is_array=True,
+        array_rank=rank,
+        array_extent_exprs=tuple(str(e) for e in extents),
+        array_lower_bound_exprs=(
+            tuple(str(lo) for lo in lowers) if has_explicit_lower else ()
+        ),
+        array_static=True,
+        element_type_cpp=element_type.cpp,
+        is_integer=element_type.is_integer,
+        is_real=element_type.is_real,
+        is_logical=element_type.is_logical,
+        is_character=element_type.is_character,
+    )
 
 
 def _lower_data_statements(

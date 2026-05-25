@@ -101,6 +101,37 @@ end program
 """
 
 
+SHAPE_F = """\
+      program shp
+      parameter (nmax=4)
+      dimension d(5), e(0:9), g(nmax)
+      common /b/ narr(3)
+      d(1) = 1.0
+      e(0) = 2.0
+      g(1) = 3.0
+      narr(1) = 7
+      print *, d(1), e(0), g(1), narr(1)
+      end
+"""
+
+
+@unittest.skipUnless(_have_flang(), "flang binary not available")
+class ShapeFromSymbolTests(unittest.TestCase):
+    """Array shapes are sized from the resolved symbol (constant-folded,
+    incl. PARAMETER bounds and arbitrary lower bounds) — no DIMENSION read."""
+
+    def test_constant_and_parameter_bounds(self) -> None:
+        cpp = _convert(SHAPE_F)
+        self.assertIn("fortran::Array<float, 1> d{{5}};", cpp)
+        # g(nmax) with nmax==4 is folded.
+        self.assertIn("fortran::Array<float, 1> g{{4}};", cpp)
+
+    def test_arbitrary_lower_bound(self) -> None:
+        cpp = _convert(SHAPE_F)
+        # e(0:9): lower 0, extent 10.
+        self.assertIn("fortran::Array<float, 1> e{{0}, {10}};", cpp)
+
+
 @unittest.skipUnless(_have_flang(), "flang binary not available")
 class ClassificationTests(unittest.TestCase):
     """Symbol facts replace the variable-vs-procedure / module-var
