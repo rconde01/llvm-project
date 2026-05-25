@@ -98,10 +98,13 @@ class ProjectTests(unittest.TestCase):
         circle_cpp = results[self.circle]
         self.assertIn("area", circle_cpp)
         self.assertNotIn("TODO", circle_cpp)
-        # The shared header carries the used module's struct; cross-file
-        # module data (pi) is threaded into the routine that references it.
-        self.assertIn("GeoConstantsModule", results[Path(SHARED_HEADER_NAME)])
-        self.assertIn("GeoConstantsModule", circle_cpp)
+        # ``pi`` is a module PARAMETER (compile-time constant): the shared
+        # header exposes it as a free ``inline constexpr`` referenced
+        # without any threaded module instance.
+        self.assertIn(
+            "inline constexpr float pi", results[Path(SHARED_HEADER_NAME)]
+        )
+        self.assertIn("pi", circle_cpp)
 
 
 @unittest.skipUnless(

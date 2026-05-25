@@ -77,12 +77,22 @@ def _camelcase(name: str) -> str:
 
 
 def _collect_names(body: list[IRStatement]) -> set[str]:
-    """Every IRName referenced anywhere in ``body``."""
+    """Every name referenced anywhere in ``body``.
+
+    Besides plain ``IRName`` references this includes ``IRFunctionCall``
+    callees, because an array element reference (``a(i)``) lowers to a
+    call-shaped node whose callee is the array's name — so array-valued
+    module variables would otherwise look unreferenced and never get
+    threaded/bound.  Spurious function names (``std::sin`` etc.) are
+    harmless: they won't match a module variable's name.
+    """
     names: set[str] = set()
 
     def note(expr: IRExpr) -> IRExpr:
         if isinstance(expr, IRName):
             names.add(expr.name)
+        elif isinstance(expr, IRFunctionCall):
+            names.add(expr.callee)
         return expr
 
     for stmt in body:
@@ -159,10 +169,14 @@ def _build_module_structs(tu: IRTranslationUnit) -> None:
 
         for mod_name in in_scope:
             module = module_by_name[mod_name]
+            # PARAMETERs are emitted as free compile-time constants, so
+            # they need no threaded instance — only mutable variables do.
             touched = [
                 v
                 for v in module.variables
-                if v.name in referenced and v.name not in local_names
+                if v.name in referenced
+                and v.name not in local_names
+                and not v.is_parameter
             ]
             if not touched:
                 continue

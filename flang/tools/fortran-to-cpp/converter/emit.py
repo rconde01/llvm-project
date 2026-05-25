@@ -78,7 +78,8 @@ def emit_translation_unit(
     _emit_file_header(out, tu)
     _emit_includes(out, tu, shared_header=shared_header)
     if shared_header is None:
-        # Single-file: all structs and prototypes live here.
+        # Single-file: all structs, constants and prototypes live here.
+        _emit_module_constants(out, tu)
         _emit_derived_types(out, tu)
         _emit_module_structs(out, tu)
         _emit_common_structs(out, tu)
@@ -104,6 +105,8 @@ def emit_shared_header(tu: IRTranslationUnit, *, guard: str) -> str:
     out.write(f"#ifndef {guard}\n#define {guard}\n\n")
     out.write('#include "fortran/runtime.hpp"\n')
     out.write("\nusing namespace std::string_view_literals;\n")
+    # Constants first — array bounds in the structs below may use them.
+    _emit_module_constants(out, tu)
     _emit_derived_types(out, tu)
     _emit_module_structs(out, tu)
     _emit_common_structs(out, tu)
@@ -120,19 +123,37 @@ def _emit_derived_types(out: StringIO, tu: IRTranslationUnit) -> None:
     for dt in tu.derived_types:
         out.write(f"\nstruct {dt.cpp_type} {{\n")
         for field_local in dt.fields:
-            _emit_local(out, field_local, indent=1, in_struct=True)
+            _emit_local(out, field_local, indent=1, storage="struct")
         out.write("};\n")
 
 
+def _emit_module_constants(out: StringIO, tu: IRTranslationUnit) -> None:
+    """Module ``PARAMETER``\\s are compile-time constants — emit them as
+    file/header-scope ``inline constexpr`` so they can be referenced
+    without a module instance (in routine bodies, array bounds, and even
+    workspace/derived-type struct fields)."""
+    params = [(m, v) for m in tu.modules for v in m.variables if v.is_parameter]
+    if not params:
+        return
+    out.write("\n// ---- Module parameters (compile-time constants) ----\n")
+    for _, var in params:
+        _emit_local(out, var, indent=0, storage="namespace")
+
+
 def _emit_module_structs(out: StringIO, tu: IRTranslationUnit) -> None:
-    modules = [m for m in tu.modules if m.variables]
+    # Only mutable module variables become struct members; PARAMETERs are
+    # emitted as free constants by ``_emit_module_constants``.
+    modules = [
+        m for m in tu.modules if any(not v.is_parameter for v in m.variables)
+    ]
     if not modules:
         return
     out.write("\n// ---- Module state structs (module variables) ----\n")
     for m in modules:
         out.write(f"\nstruct {m.cpp_type} {{\n")
         for var in m.variables:
-            _emit_local(out, var, indent=1, in_struct=True)
+            if not var.is_parameter:
+                _emit_local(out, var, indent=1, storage="struct")
         out.write("};\n")
 
 
@@ -168,7 +189,7 @@ def _emit_one_struct(out: StringIO, s: IRStateStruct) -> None:
     for field_local in s.fields:
         # Reuse the local-declaration emitter so types and defaults
         # stay consistent.
-        _emit_local(out, field_local, indent=1, in_struct=True)
+        _emit_local(out, field_local, indent=1, storage="struct")
     out.write("};\n")
 
 
@@ -297,21 +318,31 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
 
 
 def _emit_local(
-    out: StringIO, loc: IRLocal, *, indent: int, in_struct: bool = False
+    out: StringIO, loc: IRLocal, *, indent: int, storage: str = "local"
 ) -> None:
     pad = "  " * indent
     _emit_comment_block(out, loc.leading_comments, indent=indent)
     # PARAMETER constants: scalars of literal type can be ``constexpr``;
-    # arrays (``fortran::Array`` — a non-literal type, and often with a
-    # runtime-evaluated initializer) must fall back to ``const``.  As a
-    # data member, ``constexpr`` implies ``static`` and a non-literal
-    # ``const`` member needs ``static inline`` for a single definition
-    # shared across translation units.
+    # arrays (``fortran::Array`` — a non-literal type, often with a
+    # runtime-evaluated initializer) must fall back to ``const``.  The
+    # storage qualifier depends on where the declaration lives:
+    #   * ``local``     — a function-body variable (no extra qualifier);
+    #   * ``struct``    — a data member (``static`` / ``static inline``);
+    #   * ``namespace`` — a file/header-scope constant (``inline`` so the
+    #                     definition is shared across translation units).
     if loc.is_parameter:
         if loc.type.is_array:
-            prefix = "static inline const " if in_struct else "const "
+            prefix = {
+                "local": "const ",
+                "struct": "static inline const ",
+                "namespace": "inline const ",
+            }[storage]
         else:
-            prefix = "static constexpr " if in_struct else "constexpr "
+            prefix = {
+                "local": "constexpr ",
+                "struct": "static constexpr ",
+                "namespace": "inline constexpr ",
+            }[storage]
     else:
         prefix = ""
     if loc.type.is_array and loc.initializer is None:
