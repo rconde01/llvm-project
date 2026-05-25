@@ -48,6 +48,7 @@ from .ir import (
     IRPrint,
     IRRaw,
     IRRead,
+    IRGoto,
     IRReturn,
     IRSection,
     IRSelectCase,
@@ -228,6 +229,15 @@ def _map_statement_children(
             extents=[_e(e, on_expr) for e in stmt.extents],
             lowers=[_e(e, on_expr) for e in stmt.lowers],
             cpp_type=stmt.cpp_type,
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    if isinstance(stmt, IRGoto):
+        return IRGoto(
+            target=stmt.target,
+            condition=(
+                _e(stmt.condition, on_expr) if stmt.condition is not None else None
+            ),
             leading_comments=stmt.leading_comments,
             trailing_comments=stmt.trailing_comments,
         )

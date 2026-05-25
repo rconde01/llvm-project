@@ -365,6 +365,28 @@ class IRExit:
 
 
 @dataclass(slots=True)
+class IRLabel:
+    """A statement label (``10 continue``).  Transient: the structuring
+    pass consumes every IRLabel, so none survive to emission."""
+
+    label: int
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class IRGoto:
+    """A ``goto`` (optionally guarded by ``condition`` — ``if (c) goto
+    n``).  Computed GOTO and arithmetic IF lower to a sequence of these.
+    Transient: consumed by the structuring pass, never emitted."""
+
+    target: int
+    condition: "IRExpr | None" = None
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class IRAllocate:
     """``allocate(a(n))`` — re-sizes a heap-backed array.
 
@@ -475,6 +497,8 @@ IRStatement = Union[
     IRSelectCase,
     IRCycle,
     IRExit,
+    IRLabel,
+    IRGoto,
     IRReturn,
     IRBlock,
     IRComment,

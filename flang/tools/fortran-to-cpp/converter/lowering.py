@@ -63,7 +63,9 @@ from .ir import (
     IRDeallocate,
     IRDerivedType,
     IRExit,
+    IRGoto,
     IRImpliedDo,
+    IRLabel,
     IRMember,
     IRModule,
     IRPointerAssign,
@@ -75,6 +77,7 @@ from .ir import (
     IRWhere,
     IRWhile,
 )
+from .structure import structure_gotos
 from .transform import map_expr, map_statement, rename_var
 from .types import camelcase, lower_type_spec
 
@@ -586,6 +589,15 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     _resolve_allocations(sub)
     _resolve_pointers(sub)
     _expand_array_assignments(sub)
+    # Eliminate goto in favor of structured control flow.
+    sub.body, used_dispatch = structure_gotos(sub.body)
+    if used_dispatch:
+        sub.locals.append(
+            IRLocal(
+                name="_pc",
+                type=IRType(cpp="int", fortran="integer", is_integer=True),
+            )
+        )
 
 
 # Variables whose name begins with one of these letters default to
@@ -1120,10 +1132,27 @@ def _lower_execution(exec_part: Node) -> list[IRStatement]:
 def _lower_block(block: Node) -> list[IRStatement]:
     out: list[IRStatement] = []
     for construct in block.children:
+        label = _leading_label(construct)
+        if label is not None:
+            out.append(IRLabel(label=label))
         stmt = _lower_construct(construct)
         if stmt is not None:
             out.append(stmt)
     return out
+
+
+def _leading_label(construct: Node) -> int | None:
+    """The statement label on a construct's leading statement, if any —
+    a goto target like ``10 continue`` or ``100 if (...) then``."""
+    target = _drill(
+        construct, skip={"ExecutionPartConstruct", "ExecutableConstruct"}
+    )
+    if target is None:
+        return None
+    if target.kind == "Statement":
+        return target.label
+    first_stmt = target.first_child("Statement")
+    return first_stmt.label if first_stmt is not None else None
 
 
 def _lower_construct(construct: Node) -> IRStatement | None:
@@ -1297,6 +1326,12 @@ def _lower_action_inner(inner: Node) -> IRStatement | None:
             return _lower_if_stmt(inner)
         case "ForallStmt":
             return _lower_forall(inner)
+        case "GotoStmt":
+            return _lower_goto(inner)
+        case "ComputedGotoStmt":
+            return _lower_computed_goto(inner)
+        case "ArithmeticIfStmt":
+            return _lower_arithmetic_if(inner)
         case "ContinueStmt":
             # CONTINUE is a no-op (often just a labeled loop terminator,
             # which the structured loop already absorbs).
@@ -1325,7 +1360,64 @@ def _lower_if_stmt(node: Node) -> IRStatement:
                     if lowered is not None
                     else _unsupported(inner, kind=inner.kind)
                 ]
+    # ``if (c) goto N`` is kept as a single guarded goto so the
+    # structuring pass can recognize the forward-skip / loop idioms.
+    if len(body) == 1 and isinstance(body[0], IRGoto) and body[0].condition is None:
+        return IRGoto(target=body[0].target, condition=condition)
     return IRIf(branches=[(condition, body)], else_body=None)
+
+
+def _label_targets(node: Node) -> list[int]:
+    out: list[int] = []
+    for c in node.children_of_kind("uint64_t"):
+        if c.fortran:
+            try:
+                out.append(int(c.fortran))
+            except ValueError:
+                pass
+    return out
+
+
+def _lower_goto(node: Node) -> IRStatement:
+    labels = _label_targets(node)
+    return IRGoto(target=labels[0]) if labels else IRComment(comments=[])
+
+
+def _lower_computed_goto(node: Node) -> IRStatement:
+    """``goto (l1, l2, ...), e`` -> guarded gotos on ``e == k`` (1-based)."""
+    labels = _label_targets(node)
+    sel = node.first_child("Scalar")
+    sel_expr = None
+    if sel is not None:
+        e = sel.find_first("Expr")
+        sel_expr = _lower_expression(e) if e is not None else None
+    if sel_expr is None or not labels:
+        return IRComment(comments=[])
+    branches = [
+        (
+            IRBinaryOp(op="==", lhs=sel_expr, rhs=IRLiteral(cpp_text=str(idx))),
+            [IRGoto(target=lbl)],
+        )
+        for idx, lbl in enumerate(labels, start=1)
+    ]
+    return IRIf(branches=branches, else_body=None)
+
+
+def _lower_arithmetic_if(node: Node) -> IRStatement:
+    """``if (e) ln, lz, lp`` -> goto by the sign of ``e``."""
+    e = node.first_child("Expr")
+    val = _lower_expression(e) if e is not None else IRRaw("0")
+    labels = _label_targets(node)
+    if len(labels) < 3:
+        return IRComment(comments=[])
+    neg, zero, pos = labels[0], labels[1], labels[2]
+    branches = [
+        (IRBinaryOp(op="<", lhs=val, rhs=IRLiteral(cpp_text="0")),
+         [IRGoto(target=neg)]),
+        (IRBinaryOp(op="==", lhs=val, rhs=IRLiteral(cpp_text="0")),
+         [IRGoto(target=zero)]),
+    ]
+    return IRIf(branches=branches, else_body=[IRGoto(target=pos)])
 
 
 # Array intrinsics that take a whole array and return a scalar (or
