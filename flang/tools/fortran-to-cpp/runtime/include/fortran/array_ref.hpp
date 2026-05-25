@@ -395,6 +395,21 @@ bool associated(const ArrayRef<T, R> &p) noexcept {
   return p.data() != nullptr;
 }
 
+/// Fortran sequence association of an array *element* actual to an array
+/// dummy: ``call s(a(i,j))`` where ``s``'s dummy is an array views the
+/// storage from ``a(i,j)`` to the end of ``a`` (column-major).  The
+/// element's address is the start; the extent is the remaining elements.
+template <typename T, std::size_t R, typename... Idx>
+ArrayRef<T, 1> elem_tail(Array<T, R> &a, Idx... idx) {
+  T *base = &a(static_cast<index_t>(idx)...);
+  return ArrayRef<T, 1>(base, {a.size() - static_cast<index_t>(base - a.data())});
+}
+template <typename T, std::size_t R, typename... Idx>
+ArrayRef<T, 1> elem_tail(const ArrayRef<T, R> &a, Idx... idx) {
+  T *base = &a(static_cast<index_t>(idx)...);
+  return ArrayRef<T, 1>(base, {a.size() - static_cast<index_t>(base - a.data())});
+}
+
 /// Fortran sequence association: view a contiguous rank-1 actual as a
 /// higher-rank, explicit-shape dummy.  Fortran lets a contiguous array
 /// (or array section) be passed to a dummy of a different rank; the

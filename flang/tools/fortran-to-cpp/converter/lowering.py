@@ -263,6 +263,19 @@ def _expr_rank(expr: IRExpr) -> int | None:
     return None
 
 
+def _is_array_element(expr: IRExpr, subprograms: dict) -> bool:
+    """True if ``expr`` indexes an array (``a(i)``, ``v%c(i)``) rather than
+    calls a function.  An array access lowers to a call-shaped node whose
+    callee is an access path, not a known subprogram or a ``fortran::`` /
+    ``std::`` intrinsic."""
+    return (
+        isinstance(expr, IRFunctionCall)
+        and "::" not in expr.callee
+        and expr.callee not in subprograms
+        and len(expr.args) >= 1
+    )
+
+
 def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
     """Fortran sequence association: a contiguous rank-1 actual passed to
     a higher-rank, explicit-shape dummy.  Wrap such an actual in
@@ -279,11 +292,13 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
         for i, p in enumerate(params):
             if i >= len(out):
                 break
+            if not p.type.is_array:
+                continue
+            actual = out[i]
             if (
-                p.type.is_array
-                and p.type.array_rank >= 2
+                p.type.array_rank >= 2
                 and p.type.array_extent_exprs
-                and _expr_rank(out[i]) == 1
+                and _expr_rank(actual) == 1
             ):
                 rank = p.type.array_rank
                 lowers = p.type.array_lower_bound_exprs or ["1"] * rank
@@ -291,9 +306,19 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
                 out[i] = IRFunctionCall(
                     callee=f"fortran::seq_assoc<{rank}>",
                     args=(
-                        out[i],
+                        actual,
                         IRRaw("{" + ", ".join(lowers) + "}"),
                         IRRaw("{" + ", ".join(extents) + "}"),
+                    ),
+                )
+            elif p.type.array_rank == 1 and _is_array_element(actual, params_by_name):
+                # ``call s(a(i,j))`` with an array dummy: the dummy views
+                # the storage from that element onward (sequence assoc).
+                out[i] = IRFunctionCall(
+                    callee="fortran::elem_tail",
+                    args=(
+                        IRName(name=actual.callee, fortran=actual.callee),
+                        *actual.args,
                     ),
                 )
         return out
