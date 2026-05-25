@@ -229,6 +229,20 @@ public:
     return *this;
   }
 
+  /// Fill a multi-dimensional array from a flat rank-1 list, in Fortran
+  /// element (column-major) order — ``DATA a(2,3) /.../`` lowers to
+  /// ``a = array_of({...})``, where the constructor is one-dimensional.
+  /// (Rank-1 targets use the element-copy overload above.)
+  template <typename U>
+    requires(Rank != 1)
+  Array &operator=(const Array<U, 1> &flat) {
+    const index_t n = std::min(size(), flat.size());
+    for (index_t i = 0; i < n; ++i) {
+      linear_at(i) = static_cast<T>(flat.linear_at(i));
+    }
+    return *this;
+  }
+
   /// Swap with another array of the same type.  Used by the move ops.
   void swap(Array &other) noexcept {
     using std::swap;
