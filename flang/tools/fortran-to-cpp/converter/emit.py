@@ -89,7 +89,7 @@ def _emit_derived_types(out: StringIO, tu: IRTranslationUnit) -> None:
     for dt in tu.derived_types:
         out.write(f"\nstruct {dt.cpp_type} {{\n")
         for field_local in dt.fields:
-            _emit_local(out, field_local, indent=1)
+            _emit_local(out, field_local, indent=1, in_struct=True)
         out.write("};\n")
 
 
@@ -101,7 +101,7 @@ def _emit_module_structs(out: StringIO, tu: IRTranslationUnit) -> None:
     for m in modules:
         out.write(f"\nstruct {m.cpp_type} {{\n")
         for var in m.variables:
-            _emit_local(out, var, indent=1)
+            _emit_local(out, var, indent=1, in_struct=True)
         out.write("};\n")
 
 
@@ -132,7 +132,7 @@ def _emit_one_struct(out: StringIO, s: IRStateStruct) -> None:
     for field_local in s.fields:
         # Reuse the local-declaration emitter so types and defaults
         # stay consistent.
-        _emit_local(out, field_local, indent=1)
+        _emit_local(out, field_local, indent=1, in_struct=True)
     out.write("};\n")
 
 
@@ -242,10 +242,17 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
     out.write("}\n")
 
 
-def _emit_local(out: StringIO, loc: IRLocal, *, indent: int) -> None:
+def _emit_local(
+    out: StringIO, loc: IRLocal, *, indent: int, in_struct: bool = False
+) -> None:
     pad = "  " * indent
     _emit_comment_block(out, loc.leading_comments, indent=indent)
-    prefix = "constexpr " if loc.is_parameter else ""
+    # A ``constexpr`` data member must be ``static constexpr``; a local
+    # ``constexpr`` variable must not carry ``static``.
+    if loc.is_parameter:
+        prefix = "static constexpr " if in_struct else "constexpr "
+    else:
+        prefix = ""
     if loc.type.is_array and loc.initializer is None:
         if not loc.type.array_extent_exprs:
             # Deferred-shape (allocatable) array: default-construct

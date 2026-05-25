@@ -45,6 +45,7 @@ def parse_fortran_file(
     flang: str | os.PathLike[str] | None = None,
     sema: bool = True,
     extra_args: Sequence[str] = (),
+    module_dir: str | os.PathLike[str] | None = None,
 ) -> Node:
     """Run ``flang -fc1 -fdebug-dump-parse-tree-json`` on a file.
 
@@ -55,29 +56,46 @@ def parse_fortran_file(
         sema: If ``True`` (default) run the semantic checks first so that
             the ``fortran`` fields are populated.  If ``False`` use the
             ``-no-sema`` variant.
-        extra_args: Additional ``flang -fc1`` arguments (e.g. ``["-J", "mods"]``).
+        extra_args: Additional ``flang -fc1`` arguments (e.g. ``["-I", "mods"]``).
+        module_dir: Where flang writes (and the build reads) ``.mod``
+            files.  When ``None`` a throw-away temp dir is used so we
+            never pollute the caller's cwd; pass a persistent directory
+            to share generated modules across calls (multi-file projects
+            where one file ``USE``s a module defined in another).
 
     Returns:
         The parsed AST root.
     """
     binary = _resolve_flang(flang)
     flag = "-fdebug-dump-parse-tree-json" if sema else "-fdebug-dump-parse-tree-json-no-sema"
+    if module_dir is not None:
+        return _run(binary, flag, os.fspath(module_dir), extra_args, path)
     # flang writes generated .mod files to the current working directory
     # by default; redirect them to a throw-away temp dir so we never
     # pollute the caller's cwd.
     with tempfile.TemporaryDirectory(prefix="flang-ast-mod-") as moddir:
-        cmd = [
-            binary,
-            "-fc1",
-            flag,
-            "-module-dir",
-            moddir,
-            *extra_args,
-            os.fspath(path),
-        ]
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, check=False, cwd=moddir
-        )
+        return _run(binary, flag, moddir, extra_args, path)
+
+
+def _run(
+    binary: str,
+    flag: str,
+    moddir: str,
+    extra_args: Sequence[str],
+    path: str | os.PathLike[str],
+) -> Node:
+    cmd = [
+        binary,
+        "-fc1",
+        flag,
+        "-module-dir",
+        moddir,
+        *extra_args,
+        os.fspath(path),
+    ]
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, cwd=moddir
+    )
     if proc.returncode != 0 and not proc.stdout.strip():
         raise FlangError(
             f"flang failed (exit {proc.returncode}) running {' '.join(cmd)}",

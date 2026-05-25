@@ -24,6 +24,7 @@ from flang_ast import (
 from .emit import emit_translation_unit
 from .ir import IRTranslationUnit
 from .lowering import lower_program
+from .project import convert_files
 from .state_plumbing import plumb_state
 
 
@@ -65,5 +66,6 @@ __all__ = [
     "IRTranslationUnit",
     "convert_ast",
     "convert_file",
+    "convert_files",
     "lower_to_ir",
 ]
