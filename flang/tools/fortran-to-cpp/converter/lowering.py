@@ -918,13 +918,12 @@ def _apply_implicit_typing(
     both come from the resolved symbol (emitted on each Name); there is no
     fallback guess — a name flang did not type is left undeclared.
     """
-    dummy: set[str] = set()
-    if node.kind == "SubroutineSubprogram":
-        dummy = set(_extract_subroutine_dummy_args(node))
-    elif node.kind == "FunctionSubprogram":
-        dummy = set(_extract_function_dummy_args(node))
-
-    known = {loc.name for loc in sub.locals} | dummy
+    # An implicitly-typed dummy argument (no explicit declaration — common
+    # in FORTRAN 77) has no local to ``_separate_parameters`` into the
+    # signature, so it must be synthesized here just like any other
+    # undeclared local; it is moved into ``parameters`` afterwards.  Only
+    # *declared* names (already in ``sub.locals``) are excluded.
+    known = {loc.name for loc in sub.locals}
     known.add(sub.name)
     known.add(sub.name + "_result")
     # Statement-function names and their dummy args are not unit locals.
