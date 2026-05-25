@@ -914,6 +914,44 @@ def _lower_specification(spec_part: Node) -> list[IRLocal]:
             locals_[0].leading_comments = leading
             locals_[-1].trailing_comments = trailing
         out.extend(locals_)
+    # Named constants from ``parameter (...)`` statements become constexpr
+    # locals.  They go first so attribute-form initializers and array
+    # bounds that reference them are already declared; a name given a type
+    # *and* a PARAMETER value (``integer n`` + ``parameter (n=5)``) keeps
+    # only the constexpr form.
+    params = _lower_parameter_statements(spec_part)
+    param_names = {p.name for p in params}
+    return params + [loc for loc in out if loc.name not in param_names]
+
+
+def _lower_parameter_statements(spec_part: Node) -> list[IRLocal]:
+    """``parameter (n=5, pi=3.14)`` -> constexpr locals.
+
+    The name carries its resolved type; the value is the lowered constant
+    expression.  (The attribute form ``integer, parameter :: n=5`` is
+    handled by the type-declaration path instead.)"""
+    out: list[IRLocal] = []
+    for pstmt in spec_part.find_all("ParameterStmt"):
+        for ncd in pstmt.children_of_kind("NamedConstantDef"):
+            nc = ncd.first_child("NamedConstant")
+            name = nc.first_child("Name") if nc is not None else None
+            const = ncd.first_child("Constant")
+            expr = const.find_first("Expr") if const is not None else None
+            if name is None or not name.fortran or expr is None:
+                continue
+            ty = (
+                _scalar_type_from_fortran(name.sym_type)
+                if name.sym_type
+                else None
+            ) or IRType(cpp="auto", fortran="parameter")
+            out.append(
+                IRLocal(
+                    name=_safe_name(name.fortran),
+                    type=ty,
+                    is_parameter=True,
+                    initializer=_lower_expression(expr),
+                )
+            )
     return out
 
 
