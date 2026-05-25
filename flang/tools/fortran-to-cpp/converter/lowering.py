@@ -799,14 +799,23 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     # IMPLICIT, etc.) over the parse-tree spelling for scalar locals, and
     # for the implicit-typing synthesis below.
     resolved = _resolved_types(node)
+    array_resolved = _resolved_array_types(node)
     for loc in sub.locals:
-        if loc.type.is_array or loc.type.is_pointer:
+        if loc.type.is_pointer:
             continue
         if isinstance(loc.initializer, IRLambda):
             continue  # statement function: keep the deduced ``auto`` type
-        rt = resolved.get(loc.name)
-        if rt is not None and not rt.is_array:
-            loc.type = rt
+        if not loc.type.is_array:
+            # A scalar parse-tree spelling that flang resolved as an array
+            # — e.g. the dimension is on the COMMON statement
+            # (``common /x/ a(81,5)``) rather than a DIMENSION/type decl.
+            at = array_resolved.get(loc.name)
+            if at is not None:
+                loc.type = at
+                continue
+            rt = resolved.get(loc.name)
+            if rt is not None and not rt.is_array:
+                loc.type = rt
     # FORTRAN 77 implicit typing: synthesize declarations for undeclared
     # variables (must precede array-assignment expansion, which keys off
     # which locals are arrays).
@@ -904,6 +913,33 @@ def _resolved_types(node: Node) -> dict[str, IRType]:
                 ty = _scalar_type_from_fortran(n.sym_type)
                 if ty is not None:
                     out[key] = ty
+    return out
+
+
+def _resolved_array_types(node: Node) -> dict[str, IRType]:
+    """Full ``fortran::Array`` IRTypes for names flang resolved with a
+    constant array shape, keyed by safe name.  Lets a scalar-looking
+    declaration whose dimension lives on the COMMON statement
+    (``common /x/ a(81,5)``) be typed as an array."""
+    elem: dict[str, IRType] = {}
+    shapes: dict[str, list[tuple[int, int]]] = {}
+    ranks: dict[str, int] = {}
+    for n in _unit_names(node):
+        if not n.fortran:
+            continue
+        key = _safe_name(n.fortran)
+        if n.sym_type and key not in elem:
+            ty = _scalar_type_from_fortran(n.sym_type)
+            if ty is not None:
+                elem[key] = ty
+        if n.rank and key not in ranks:
+            ranks[key] = n.rank
+        if n.shape and key not in shapes:
+            shapes[key] = n.shape
+    out: dict[str, IRType] = {}
+    for key, element in elem.items():
+        if ranks.get(key, 0) > 0 and key in shapes:
+            out[key] = _array_type_from_shape(element, shapes[key])
     return out
 
 
