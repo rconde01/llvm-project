@@ -178,8 +178,42 @@ def lower_program(
                 seen_types.add(dt.fortran_name)
                 tu.derived_types.append(dt)
     _collect_units(root, tu, parent_module=None)
+    _resolve_component_allocations(tu)
     _apply_logical_print_format(tu)
     return tu
+
+
+def _resolve_component_allocations(tu: IRTranslationUnit) -> None:
+    """Resolve the cpp_type of ``allocate`` targets that are derived-type
+    components (``allocate(subset%beta(...))``).  The per-subprogram
+    :func:`_resolve_allocations` only knows local names; a component's
+    type comes from the owning derived type's field, so it is resolved
+    here once all derived types and subprograms are lowered."""
+    dt_by_cpp = {dt.cpp_type: dt for dt in tu.derived_types}
+    if not dt_by_cpp:
+        return
+    for sub in tu.subprograms:
+        local_type = {loc.name: loc.type for loc in sub.locals}
+        for p in sub.parameters:
+            local_type.setdefault(p.name, p.type)
+
+        def fix(stmt: IRStatement) -> IRStatement:
+            if (
+                isinstance(stmt, IRAllocate)
+                and not stmt.cpp_type
+                and "." in stmt.obj
+            ):
+                base, _, field = stmt.obj.partition(".")
+                base_type = local_type.get(base)
+                dt = dt_by_cpp.get(base_type.cpp) if base_type else None
+                if dt is not None:
+                    for f in dt.fields:
+                        if f.name == field:
+                            stmt.cpp_type = f.type.cpp
+                            break
+            return stmt
+
+        sub.body = [map_statement(s, on_stmt=fix) for s in sub.body]
 
 
 # Operators whose result is logical, so a list-directed print item built
@@ -2263,8 +2297,19 @@ def _lower_allocate(node: Node) -> IRStatement:
     if alloc is None:
         return _unsupported(node, kind="AllocateStmt")
     obj_node = alloc.find_first("AllocateObject")
-    name = obj_node.find_first("Name") if obj_node is not None else None
-    obj = _safe_name(name.fortran) if name is not None and name.fortran else "?"
+    obj = "?"
+    if obj_node is not None:
+        # The allocated object may be a derived-type component
+        # (``allocate(subset%beta(...))``) — keep the full access path.
+        sc = obj_node.first_child("StructureComponent")
+        if sc is not None:
+            path = _access_path(_lower_structure_component(sc))
+            if path is not None:
+                obj = path
+        else:
+            name = obj_node.find_first("Name")
+            if name is not None and name.fortran:
+                obj = _safe_name(name.fortran)
 
     extents: list[IRExpr] = []
     lowers: list[IRExpr] = []
