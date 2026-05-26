@@ -361,6 +361,13 @@ public:
   constexpr CharRef &operator=(const CharRef &o) noexcept {
     return *this = o.view();
   }
+  /// Exact overload for a FortranString actual: without it ``charref =
+  /// fortranstring`` is ambiguous, since FortranString converts to both
+  /// std::string_view and CharRef.
+  template <std::size_t N>
+  constexpr CharRef &operator=(const FortranString<N> &s) noexcept {
+    return *this = s.view();
+  }
 
   constexpr operator std::string_view() const noexcept {
     return std::string_view{data_, size_};

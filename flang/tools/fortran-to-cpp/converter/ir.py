@@ -604,6 +604,15 @@ class IRParameter:
             default = " = std::nullopt" if with_default else ""
             return f"std::optional<{self.type.cpp}> {self.name}{default}"
         if self.type.is_array:
+            # A rank-1 array of assumed-length CHARACTER (element rendered
+            # as std::string_view) can't be an ArrayRef<string_view> — the
+            # element length is a runtime value, not a C++ type.  Use the
+            # character-array view, whose elements are CharRef.
+            if (
+                self.type.element_type_cpp == "std::string_view"
+                and self.type.array_rank == 1
+            ):
+                return f"fortran::CharArrayRef {self.name}"
             const_q = "const " if self.intent == "in" else ""
             decl = (
                 f"fortran::ArrayRef<{const_q}{self.type.element_type_cpp}, "

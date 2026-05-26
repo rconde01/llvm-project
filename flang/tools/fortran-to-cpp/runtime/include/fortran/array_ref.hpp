@@ -33,6 +33,7 @@
 #define FORTRAN_RT_ARRAY_REF_HPP
 
 #include "array.hpp"
+#include "string.hpp"
 
 #include <array>
 #include <cassert>
@@ -453,6 +454,52 @@ ArrayRef<T, R> seq_assoc(const ArrayRef<T, 1> &flat,
                          const std::array<index_t, R> &extents) {
   return ArrayRef<T, R>(flat.data(), lower, extents);
 }
+
+// ---- Assumed-length CHARACTER array dummy ---------------------------------
+
+/// Non-owning view of a rank-1 array of characters whose element length
+/// the *caller* fixes — the dummy form of an assumed-length array
+/// ``CHARACTER*(*) X(*)`` (a SPICE "character cell").  Indexing yields a
+/// CharRef, so ``x(i)`` reads or writes element ``i`` with Fortran
+/// blank-pad / truncate semantics.  The element type isn't a single C++
+/// type (the length is a runtime value), so this can't be a plain
+/// ``ArrayRef``; it carries the base pointer, element length, lower
+/// bound, and count instead.
+class CharArrayRef {
+public:
+  constexpr CharArrayRef(char *base, std::size_t elem_len, index_t lower,
+                         index_t count) noexcept
+      : base_(base), elem_len_(elem_len), lower_(lower), count_(count) {}
+
+  /// From a fixed-length character array actual (contiguous FortranString
+  /// elements, each exactly ``N`` bytes).
+  template <std::size_t N>
+  CharArrayRef(Array<FortranString<N>, 1> &a) noexcept
+      : base_(reinterpret_cast<char *>(a.data())), elem_len_(N),
+        lower_(a.lbound(1)), count_(a.size()) {}
+  /// From a single character scalar (scalar/array storage association).
+  template <std::size_t N>
+  CharArrayRef(FortranString<N> &s) noexcept
+      : base_(s.data()), elem_len_(N), lower_(1), count_(1) {}
+
+  /// 1-based element ``x(i)`` as a writable character view.
+  constexpr CharRef operator()(index_t i) const noexcept {
+    return CharRef(base_ + (i - lower_) * static_cast<index_t>(elem_len_),
+                   elem_len_);
+  }
+  constexpr index_t size() const noexcept { return count_; }
+  constexpr index_t lbound(std::size_t = 1) const noexcept { return lower_; }
+  constexpr index_t ubound(std::size_t = 1) const noexcept {
+    return lower_ + count_ - 1;
+  }
+  constexpr char *data() const noexcept { return base_; }
+
+private:
+  char *base_;
+  std::size_t elem_len_;
+  index_t lower_;
+  index_t count_;
+};
 
 } // namespace fortran
 
