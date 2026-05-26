@@ -29,6 +29,7 @@ from .emit import emit_shared_header, emit_translation_unit
 from .ir import IRTranslationUnit
 from .lowering import (
     _drop_external_function_locals,
+    _materialize_value_args,
     _reshape_sequence_associated_args,
     lower_program,
 )
@@ -100,6 +101,11 @@ def convert_files(
     # file's subprograms are visible as one program.
     _drop_external_function_locals(combined)
     _reshape_sequence_associated_args(combined)
+    # Constant/expression actuals passed to a modifiable dummy in another
+    # file need the same copy-in temporary; run on the whole program so
+    # cross-file call signatures are visible.  (Before state plumbing, so
+    # user args still align 1:1 with user params.)
+    _materialize_value_args(combined)
     plumb_state(combined)
 
     results: dict[Path, str] = {

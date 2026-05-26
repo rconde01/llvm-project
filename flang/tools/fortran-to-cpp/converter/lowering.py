@@ -182,6 +182,7 @@ def lower_program(
     _resolve_component_allocations(tu)
     _reshape_sequence_associated_args(tu)
     _infer_readonly_scalar_params(tu)
+    _materialize_value_args(tu)
     _apply_logical_print_format(tu)
     return tu
 
@@ -512,6 +513,62 @@ def _apply_logical_print_format(tu: IRTranslationUnit) -> None:
             return stmt
 
         sub.body = [map_statement(s, on_stmt=fix) for s in sub.body]
+
+
+def _materialize_value_args(tu: IRTranslationUnit) -> None:
+    """Pass a constant/expression actual through ``fortran::byref`` when
+    the dummy is a modifiable scalar reference.
+
+    Fortran lets any expression be an actual argument; for an INOUT/OUT
+    dummy the compiler binds a temporary (copy-in, write-back discarded).
+    C++ won't bind a non-const ``T&`` to an rvalue, so ``call s(x, 0.0)``
+    fails to compile.  ``fortran::byref`` materializes the value into an
+    lvalue whose lifetime spans the call, restoring Fortran's behavior
+    (it is a no-op for an lvalue actual, which still binds directly)."""
+    by_name = {s.name: s for s in tu.subprograms}
+    if not by_name:
+        return
+    # Unambiguous rvalues — a literal, an arithmetic/relational result, or
+    # a cast.  Designators (names, array elements, sections, components)
+    # are left alone: they already bind to a reference.
+    rvalue_nodes = (IRLiteral, IRBinaryOp, IRUnaryOp, IRCast)
+
+    def wants_ref(callee: str, i: int) -> bool:
+        sub = by_name.get(callee)
+        if sub is None or i >= len(sub.parameters):
+            return False
+        p = sub.parameters[i]
+        return (
+            not p.type.is_array
+            and not p.type.is_procedure
+            and not p.optional
+            and p.intent != "in"
+        )
+
+    def wrap(callee: str, args) -> list:
+        out = []
+        for i, a in enumerate(args):
+            if isinstance(a, rvalue_nodes) and wants_ref(callee, i):
+                out.append(IRFunctionCall(callee="fortran::byref", args=(a,)))
+            else:
+                out.append(a)
+        return out
+
+    def on_expr(e: IRExpr) -> IRExpr:
+        if isinstance(e, IRFunctionCall) and e.callee in by_name:
+            return IRFunctionCall(callee=e.callee, args=tuple(wrap(e.callee, e.args)))
+        return e
+
+    def on_stmt(s: IRStatement) -> IRStatement:
+        if isinstance(s, IRCall) and s.callee in by_name:
+            s.args = wrap(s.callee, s.args)
+        return s
+
+    for sub in tu.subprograms:
+        sub.body = [
+            map_statement(st, on_stmt=on_stmt, on_expr=lambda e: map_expr(e, on_expr))
+            for st in sub.body
+        ]
 
 
 def _is_logical_expr(expr: IRExpr, logical_names: set[str]) -> bool:
@@ -862,10 +919,20 @@ def _separate_parameters(
     if not arg_names:
         return
     wanted = {a.lower(): i for i, a in enumerate(arg_names)}
+    # Dummy *procedure* arguments (a function/subroutine passed in and
+    # invoked inside the routine).  flang marks these a procedure; a
+    # ``real func`` / ``external func`` declaration only states the
+    # result type, so the matching "local" is not a variable — it must
+    # become a ``std::function`` parameter, not a scalar.
+    proc_dummies = (
+        _procedure_dummy_return_types(node, arg_names) if node is not None else {}
+    )
     by_idx: list[tuple[int, IRParameter]] = []
     remaining: list[IRLocal] = []
     for loc in sub.locals:
         if loc.name in wanted:
+            if loc.name in proc_dummies:
+                continue  # placed below as a procedure parameter
             param = IRParameter(
                 name=loc.name,
                 type=loc.type,
@@ -875,18 +942,12 @@ def _separate_parameters(
             by_idx.append((wanted[loc.name], param))
         else:
             remaining.append(loc)
-    # A dummy *procedure* argument (a function/subroutine passed in and
-    # invoked inside the routine) has no variable local to lift — flang
-    # marks it a procedure, so implicit typing skipped it.  Synthesize a
-    # ``std::function`` parameter at its dummy position so the signature's
-    # arity is correct and ``f(x)`` calls type-check.
-    placed = {p.name for _, p in by_idx}
-    if node is not None:
-        for name, ret in _procedure_dummy_return_types(node, arg_names).items():
-            if name in placed:
-                continue
-            arity = _count_call_arity(sub.body, name)
-            by_idx.append((wanted[name], _procedure_param(name, ret, arity)))
+    # Synthesize the ``std::function`` parameter at its dummy position so
+    # the signature's arity is correct and ``f(x)`` calls type-check —
+    # whether or not the procedure also had an explicit result-type decl.
+    for name, ret in proc_dummies.items():
+        arity = _count_call_arity(sub.body, name)
+        by_idx.append((wanted[name], _procedure_param(name, ret, arity)))
     by_idx.sort(key=lambda t: t[0])
     sub.parameters = [p for _, p in by_idx]
     sub.locals = remaining

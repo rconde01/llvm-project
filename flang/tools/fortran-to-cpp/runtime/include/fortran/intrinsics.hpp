@@ -36,6 +36,20 @@
 
 namespace fortran {
 
+// ---- Argument copy-in ------------------------------------------------------
+//
+// Fortran lets any expression be an actual argument; for an INOUT/OUT dummy
+// the compiler binds a temporary (copy-in), and any write-back is discarded
+// because the actual is not a variable.  C++ refuses to bind a non-const
+// ``T&`` to an rvalue, so ``byref`` materializes the value into an lvalue
+// whose lifetime spans the enclosing call expression, reproducing that
+// behavior.  For an lvalue actual it is a no-op (returns the same object),
+// so the write-back still reaches the caller's variable.
+template <class T>
+constexpr T &byref(T &&value) noexcept {
+  return value;
+}
+
 // ---- Elemental math intrinsics --------------------------------------------
 //
 // Fortran's math intrinsics are *elemental*: applied to an array they map
