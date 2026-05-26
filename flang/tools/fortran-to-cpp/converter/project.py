@@ -29,6 +29,7 @@ from .emit import emit_shared_header, emit_translation_unit
 from .ir import IRTranslationUnit
 from .lowering import (
     _drop_external_function_locals,
+    _infer_readonly_scalar_params,
     _materialize_value_args,
     _reshape_sequence_associated_args,
     lower_program,
@@ -101,6 +102,10 @@ def convert_files(
     # file's subprograms are visible as one program.
     _drop_external_function_locals(combined)
     _reshape_sequence_associated_args(combined)
+    # Re-run const inference over the whole program: a scalar dummy a
+    # routine never writes locally may still be passed to a callee in
+    # another file that writes it, which the per-file run could not see.
+    _infer_readonly_scalar_params(combined)
     # Constant/expression actuals passed to a modifiable dummy in another
     # file need the same copy-in temporary; run on the whole program so
     # cross-file call signatures are visible.  (Before state plumbing, so

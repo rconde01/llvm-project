@@ -278,12 +278,17 @@ def _infer_readonly_scalar_params(tu: IRTranslationUnit) -> None:
 
     for sub in tu.subprograms:
         pnames = {p.name for p in sub.parameters}
+        # Any scalar (non-array, non-pointer) param is a const candidate —
+        # including one a prior (per-file) run already marked ``in``, so a
+        # later whole-program run can correct it back to ``inout`` once a
+        # cross-file callee that writes it becomes visible.
         scalar_inout[sub.name] = {
             p.name
             for p in sub.parameters
-            if p.intent == "inout"
+            if p.intent in ("in", "inout")
             and not p.type.is_array
             and not p.type.is_pointer
+            and not p.type.is_procedure
         }
         w: set[str] = set()
         e: list[tuple[str, str, int]] = []
@@ -347,8 +352,10 @@ def _infer_readonly_scalar_params(tu: IRTranslationUnit) -> None:
 
     for sub in tu.subprograms:
         for p in sub.parameters:
-            if p.name in scalar_inout[sub.name] and (sub.name, p.name) not in non_const:
-                p.intent = "in"
+            if p.name in scalar_inout[sub.name]:
+                p.intent = (
+                    "inout" if (sub.name, p.name) in non_const else "in"
+                )
 
 
 def _expr_rank(expr: IRExpr) -> int | None:
