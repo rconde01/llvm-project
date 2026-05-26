@@ -412,6 +412,44 @@ def _uses_units(body: list[IRStatement]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _procedure_actuals(
+    caller: IRSubprogram, by_name: dict[str, IRSubprogram]
+) -> set[str]:
+    """Subprogram names ``caller`` passes as a *procedure* argument.
+
+    Such an actual is wrapped in a state-capturing lambda at the call
+    site, so ``caller`` must itself hold the passed routine's state to
+    capture it — exactly as if it called the routine directly."""
+    out: set[str] = set()
+
+    def scan(callee_name: str, args) -> None:
+        callee = by_name.get(callee_name)
+        if callee is None:
+            return
+        for i, a in enumerate(args):
+            if (
+                i < len(callee.parameters)
+                and callee.parameters[i].type.is_procedure
+                and isinstance(a, IRName)
+                and a.name in by_name
+            ):
+                out.add(a.name)
+
+    def on_stmt(s: IRStatement) -> IRStatement:
+        if isinstance(s, IRCall):
+            scan(s.callee, s.args)
+        return s
+
+    def on_expr(e: IRExpr) -> IRExpr:
+        if isinstance(e, IRFunctionCall):
+            scan(e.callee, e.args)
+        return e
+
+    for s in caller.body:
+        map_statement(s, on_stmt=on_stmt, on_expr=lambda e: map_expr(e, on_expr))
+    return out
+
+
 def _propagate_state_parameters(tu: IRTranslationUnit) -> None:
     by_name = {s.name: s for s in tu.subprograms}
     changed = True
@@ -420,7 +458,10 @@ def _propagate_state_parameters(tu: IRTranslationUnit) -> None:
         for caller in tu.subprograms:
             if caller.kind == "main":
                 continue  # main owns instances locally (handled below)
-            for callee_name in _callee_names(caller.body):
+            needed = set(_callee_names(caller.body)) | _procedure_actuals(
+                caller, by_name
+            )
+            for callee_name in needed:
                 callee = by_name.get(callee_name)
                 if callee is None:
                     continue
@@ -478,15 +519,47 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
                 extra.append(IRName(name=nm, fortran=nm))
             return extra
 
+        def proc_lambda(actual_name: str, arity: int) -> IRRaw:
+            """A state-capturing lambda forwarding ``arity`` scalar args to
+            ``actual_name`` (a procedure passed as an argument)."""
+            sargs = state_args(actual_name) or []
+            forwarded = [e.name for e in sargs if isinstance(e, IRName)]
+            params = ", ".join(f"float _a{k}" for k in range(arity))
+            forwarded += [f"_a{k}" for k in range(arity)]
+            call = f"{actual_name}({', '.join(forwarded)})"
+            actual = by_name.get(actual_name)
+            ret = "" if actual is not None and actual.kind != "function" else "return "
+            return IRRaw(f"[&]({params}) {{ {ret}{call}; }}")
+
+        def wrap_proc_args(callee_name: str, args) -> list[IRExpr]:
+            """Replace any actual that is a bare procedure name passed to a
+            dummy-procedure parameter with a capturing lambda."""
+            callee = by_name.get(callee_name)
+            if callee is None:
+                return list(args)
+            out: list[IRExpr] = []
+            for i, a in enumerate(args):
+                if (
+                    i < len(callee.parameters)
+                    and callee.parameters[i].type.is_procedure
+                    and isinstance(a, IRName)
+                    and a.name in by_name
+                ):
+                    out.append(proc_lambda(a.name, callee.parameters[i].type.proc_arity))
+                else:
+                    out.append(a)
+            return out
+
         def rewrite_call(stmt: IRStatement) -> IRStatement:
             if not isinstance(stmt, IRCall):
                 return stmt
             extra = state_args(stmt.callee)
-            if extra is None:
+            wrapped = wrap_proc_args(stmt.callee, stmt.args)
+            if extra is None and wrapped == list(stmt.args):
                 return stmt
             return IRCall(
                 callee=stmt.callee,
-                args=extra + list(stmt.args),
+                args=(extra or []) + wrapped,
                 leading_comments=stmt.leading_comments,
                 trailing_comments=stmt.trailing_comments,
             )
@@ -495,10 +568,11 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
             if not isinstance(expr, IRFunctionCall):
                 return expr
             extra = state_args(expr.callee)
-            if extra is None:
+            wrapped = wrap_proc_args(expr.callee, expr.args)
+            if extra is None and wrapped == list(expr.args):
                 return expr
             return IRFunctionCall(
-                callee=expr.callee, args=tuple(extra) + tuple(expr.args)
+                callee=expr.callee, args=tuple(extra or []) + tuple(wrapped)
             )
 
         new_body = [

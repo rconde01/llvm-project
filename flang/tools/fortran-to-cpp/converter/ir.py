@@ -64,6 +64,15 @@ class IRType:
     element_type_cpp: str = ""
     """For arrays, the element type spelling (e.g. ``"std::int32_t"``)."""
 
+    is_procedure: bool = False
+    """True for a dummy-procedure parameter: a function/subroutine passed
+    as an argument (``cpp`` is a ``std::function<...>`` spelling).  Call
+    sites wrap the actual procedure in a state-capturing lambda."""
+
+    proc_arity: int = 0
+    """For ``is_procedure`` types, how many (scalar) arguments the dummy
+    procedure is invoked with inside the routine."""
+
 
 # ---------------------------------------------------------------------------
 # Expressions

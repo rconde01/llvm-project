@@ -750,7 +750,7 @@ def _lower_function(node: Node) -> IRSubprogram:
     prefix_return_type = _extract_function_prefix_return_type(node)
 
     _lower_specification_and_execution(node, sub)
-    _separate_parameters(sub, dummy_arg_names)
+    _separate_parameters(sub, dummy_arg_names, node)
     _lift_function_return(sub, prefix_return_type, node)
     return sub
 
@@ -766,7 +766,7 @@ def _lower_subroutine(node: Node) -> IRSubprogram:
     )
     dummy_arg_names = _extract_subroutine_dummy_args(node)
     _lower_specification_and_execution(node, sub)
-    _separate_parameters(sub, dummy_arg_names)
+    _separate_parameters(sub, dummy_arg_names, node)
     return sub
 
 
@@ -829,12 +829,14 @@ def _extract_function_prefix_return_type(subprog: Node) -> IRType | None:
     return None
 
 
-def _separate_parameters(sub: IRSubprogram, arg_names: list[str]) -> None:
+def _separate_parameters(
+    sub: IRSubprogram, arg_names: list[str], node: Node | None = None
+) -> None:
     """Pull every local matching a dummy arg name out into ``parameters``."""
     if not arg_names:
         return
     wanted = {a.lower(): i for i, a in enumerate(arg_names)}
-    by_idx: list[tuple[int, IRParameter, IRLocal]] = []
+    by_idx: list[tuple[int, IRParameter]] = []
     remaining: list[IRLocal] = []
     for loc in sub.locals:
         if loc.name in wanted:
@@ -844,13 +846,87 @@ def _separate_parameters(sub: IRSubprogram, arg_names: list[str]) -> None:
                 intent=loc.intent or "inout",
                 optional=loc.is_optional,
             )
-            by_idx.append((wanted[loc.name], param, loc))
+            by_idx.append((wanted[loc.name], param))
         else:
             remaining.append(loc)
+    # A dummy *procedure* argument (a function/subroutine passed in and
+    # invoked inside the routine) has no variable local to lift — flang
+    # marks it a procedure, so implicit typing skipped it.  Synthesize a
+    # ``std::function`` parameter at its dummy position so the signature's
+    # arity is correct and ``f(x)`` calls type-check.
+    placed = {p.name for _, p in by_idx}
+    if node is not None:
+        for name, ret in _procedure_dummy_return_types(node, arg_names).items():
+            if name in placed:
+                continue
+            arity = _count_call_arity(sub.body, name)
+            by_idx.append((wanted[name], _procedure_param(name, ret, arity)))
     by_idx.sort(key=lambda t: t[0])
-    sub.parameters = [p for _, p, _ in by_idx]
+    sub.parameters = [p for _, p in by_idx]
     sub.locals = remaining
     _deref_optional_params(sub)
+
+
+def _procedure_param(name: str, ret: IRType | None, arity: int) -> IRParameter:
+    """A ``std::function``-typed parameter for a dummy procedure.
+
+    ``ret is None`` means a dummy *subroutine* (``void`` result).  The
+    argument types are unknown under FORTRAN 77's implicit interface;
+    ``float`` covers the numeric procedures these are in practice, and
+    other numeric actuals convert implicitly at the (lambda) call site."""
+    ret_cpp = ret.cpp if ret is not None else "void"
+    args = ", ".join(["float"] * max(arity, 0))
+    return IRParameter(
+        name=name,
+        type=IRType(
+            cpp=f"std::function<{ret_cpp}({args})>",
+            fortran="procedure",
+            is_procedure=True,
+            proc_arity=arity,
+        ),
+        intent="in",
+    )
+
+
+def _procedure_dummy_return_types(
+    node: Node, arg_names: list[str]
+) -> dict[str, IRType | None]:
+    """Dummy arg names flang resolved as procedures, mapped to their
+    result type (``None`` for a subroutine).  Restricted to *this* unit's
+    names so a like-named object in another routine isn't misread."""
+    wanted = set(arg_names)
+    out: dict[str, IRType | None] = {}
+    for n in _unit_names(node):
+        if not n.fortran:
+            continue
+        key = _safe_name(n.fortran)
+        if key not in wanted or key in out:
+            continue
+        if getattr(n, "is_proc", False) and not n.is_object:
+            out[key] = _scalar_type_from_fortran(n.sym_type) if n.sym_type else None
+    return out
+
+
+def _count_call_arity(body: list[IRStatement], name: str) -> int:
+    """Largest argument count among calls to ``name`` in ``body`` (both
+    function-call expressions and subroutine-call statements)."""
+    best = 1
+
+    def see_expr(e: IRExpr) -> IRExpr:
+        nonlocal best
+        if isinstance(e, IRFunctionCall) and e.callee == name:
+            best = max(best, len(e.args))
+        return e
+
+    def see_stmt(s: IRStatement) -> IRStatement:
+        nonlocal best
+        if isinstance(s, IRCall) and s.callee == name:
+            best = max(best, len(s.args))
+        return s
+
+    for s in body:
+        map_statement(s, on_stmt=see_stmt, on_expr=lambda e: map_expr(e, see_expr))
+    return best
 
 
 def _deref_optional_params(sub: IRSubprogram) -> None:
