@@ -331,6 +331,12 @@ public:
   template <std::size_t N>
   constexpr CharRef(FortranString<N> &s) noexcept
       : data_(s.data()), size_(N) {}
+  /// View a read-only string (a literal, a concatenation temporary, or an
+  /// intent(in) actual).  Valid for the duration of the call; the callee
+  /// writes only when the actual is a genuine variable, so this covers the
+  /// common Fortran pattern of passing any character expression.
+  constexpr CharRef(std::string_view s) noexcept
+      : data_(const_cast<char *>(s.data())), size_(s.size()) {}
 
   // Assignment writes through to the viewed storage (pad / truncate).  The
   // user-declared copy-assignment likewise copies characters (not the
