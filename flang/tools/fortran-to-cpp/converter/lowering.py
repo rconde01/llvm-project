@@ -194,22 +194,48 @@ def _drop_external_function_locals(tu: IRTranslationUnit) -> None:
     becomes a scalar local that shadows the function, so the call
     ``interp(...)`` is rejected as "interp cannot be used as a function".
     Such a declaration isn't a variable — drop it so the call binds the
-    function (and its prototype)."""
+    function (and its prototype).
+
+    Only drop when the routine *actually calls* that name: a local that
+    merely shares a name with some unrelated function elsewhere in the
+    program (e.g. a CHARACTER ``fout`` used to build a filename, when
+    another file defines a function ``fout``) is a real variable."""
     func_names = {s.name for s in tu.subprograms if s.kind == "function"}
     if not func_names:
         return
     for sub in tu.subprograms:
         param_names = {p.name for p in sub.parameters}
+        called = _called_names(sub.body)
         sub.locals = [
             loc
             for loc in sub.locals
             if not (
                 loc.name in func_names
+                and loc.name in called
                 and loc.name != sub.name
                 and loc.name not in param_names
                 and not loc.type.is_array
             )
         ]
+
+
+def _called_names(body: list[IRStatement]) -> set[str]:
+    """Names invoked as a function or subroutine anywhere in ``body``."""
+    out: set[str] = set()
+
+    def on_expr(e: IRExpr) -> IRExpr:
+        if isinstance(e, IRFunctionCall):
+            out.add(e.callee)
+        return e
+
+    def on_stmt(s: IRStatement) -> IRStatement:
+        if isinstance(s, IRCall):
+            out.add(s.callee)
+        return s
+
+    for s in body:
+        map_statement(s, on_stmt=on_stmt, on_expr=lambda e: map_expr(e, on_expr))
+    return out
 
 
 def _infer_readonly_scalar_params(tu: IRTranslationUnit) -> None:
