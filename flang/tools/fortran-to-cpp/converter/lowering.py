@@ -1860,6 +1860,17 @@ def _make_array_type(
             extents.append(f"/* TODO: {shape.kind} */ 0")
             lowers.append("1")
             all_static = False
+        elif shape.kind == "ImpliedShapeSpec":
+            # The classic F77 assumed-size dummy ``a(*)`` (or ``a(lo:*)``,
+            # ``a(m,*)``) parses as an implied-shape spec — one dimension
+            # per ``AssumedImpliedSpec``.  The extent is unknown (caller
+            # sized), so as a dummy it lowers to an ``ArrayRef`` of the
+            # right rank; only the rank matters here.
+            ndims = max(1, sum(1 for _ in shape.find_all("AssumedImpliedSpec")))
+            for _ in range(ndims):
+                extents.append("/* assumed-size */ 0")
+                lowers.append("1")
+            all_static = False
     rank = len(extents)
     return IRType(
         cpp=f"fortran::Array<{element_type.cpp}, {rank}>",
