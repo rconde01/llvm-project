@@ -896,7 +896,9 @@ def _render_expr(expr: IRExpr) -> str:
         return f"static_cast<{expr.cpp_type}>({_render_expr(expr.operand)})"
     if isinstance(expr, IRArrayConstructor):
         elems = ", ".join(_render_expr(e) for e in expr.elements)
-        return f"fortran::array_of({{{elems}}})"
+        # Variadic (no braces) so a mixed-literal constructor deduces a
+        # common element type rather than a homogeneous initializer_list.
+        return f"fortran::array_of({elems})"
     if isinstance(expr, IRLambda):
         params = ", ".join(f"auto {p}" for p in expr.params)
         return f"[&]({params}) {{ return {_render_expr(expr.body)}; }}"

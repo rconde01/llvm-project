@@ -61,7 +61,7 @@ def _convert(src: str) -> str:
 class DataEmitTests(unittest.TestCase):
     def test_array_data_uses_array_of(self) -> None:
         cpp = _convert(DATA_F90)
-        self.assertIn("a = fortran::array_of({10, 20, 30});", cpp)
+        self.assertIn("a = fortran::array_of(10, 20, 30);", cpp)
 
     def test_scalar_data_pairs(self) -> None:
         cpp = _convert(DATA_F90)
@@ -76,7 +76,7 @@ class DataEmitTests(unittest.TestCase):
     def test_repeat_count_expanded(self) -> None:
         cpp = _convert(REPEAT_F90)
         # ``3*7`` expands to three 7s.
-        self.assertIn("k = fortran::array_of({1, 2, 7, 7, 7, 9});", cpp)
+        self.assertIn("k = fortran::array_of(1, 2, 7, 7, 7, 9);", cpp)
 
 
 @unittest.skipUnless(

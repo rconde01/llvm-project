@@ -74,7 +74,7 @@ class MatmulEmitTests(unittest.TestCase):
         cpp = _convert(RESHAPE_F90)
         # shape [2,3] becomes trailing dim args so the rank is deduced.
         self.assertIn(
-            "fortran::reshape(fortran::array_of({1, 2, 3, 4, 5, 6}), 2, 3)",
+            "fortran::reshape(fortran::array_of(1, 2, 3, 4, 5, 6), 2, 3)",
             cpp,
         )
 

@@ -147,16 +147,17 @@ template <typename T> int digits(const T &) noexcept {
 // ---- Array constructor ----------------------------------------------------
 
 /// Build a 1-based rank-1 Array from a braced element list — the
-/// translation of Fortran's ``[e1, e2, ...]`` / ``(/ ... /)``.  The
-/// element type is deduced from the initializer list, so the C++
-/// literal types drive it (``{10, 20}`` -> int, ``{1.0f}`` -> float).
-template <typename T>
-Array<T, 1> array_of(std::initializer_list<T> elems) {
-  Array<T, 1> r({static_cast<index_t>(elems.size())});
+/// translation of Fortran's ``[e1, e2, ...]`` / ``(/ ... /)``.  Variadic
+/// (rather than ``std::initializer_list<T>``) so a mixed-literal
+/// constructor — common in DATA, e.g. ``(/400., 0, 10./)`` where the
+/// zero prints as an int literal — deduces a common element type instead
+/// of failing to deduce a homogeneous list.
+template <typename... Args>
+auto array_of(const Args &...elems) {
+  using T = std::common_type_t<Args...>;
+  Array<T, 1> r({static_cast<index_t>(sizeof...(Args))});
   index_t i = 1;
-  for (const T &e : elems) {
-    r(i++) = e;
-  }
+  ((r(i++) = static_cast<T>(elems)), ...);
   return r;
 }
 

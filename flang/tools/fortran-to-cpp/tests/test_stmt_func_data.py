@@ -97,7 +97,7 @@ class DataExecEmitTests(unittest.TestCase):
     def test_data_in_execution_part_collected(self) -> None:
         cpp = _convert(DATA_EXEC_F)
         self.assertNotIn("does not yet translate", cpp)
-        self.assertIn("a = fortran::array_of({10.0f, 20.0f, 30.0f});", cpp)
+        self.assertIn("a = fortran::array_of(10.0f, 20.0f, 30.0f);", cpp)
         self.assertIn("k = 7;", cpp)
 
 
