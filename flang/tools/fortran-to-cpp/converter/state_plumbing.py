@@ -466,9 +466,9 @@ def _propagate_state_parameters(tu: IRTranslationUnit) -> None:
         for caller in tu.subprograms:
             if caller.kind == "main":
                 continue  # main owns instances locally (handled below)
-            needed = set(_callee_names(caller.body)) | _procedure_actuals(
-                caller, by_name
-            )
+            needed = set(
+                _callee_names(caller.body, _shadowed_names(caller))
+            ) | _procedure_actuals(caller, by_name)
             for callee_name in needed:
                 callee = by_name.get(callee_name)
                 if callee is None:
@@ -511,12 +511,16 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
             if loc.type.cpp in all_struct_types:
                 caller_state_names.setdefault(loc.type.cpp, loc.name)
         local_state_instances: dict[str, str] = {}
+        # Data names that shadow a like-named subprogram in this routine: a
+        # ``name(...)`` using one is indexing/substring, not a call, so it
+        # must not have state arguments prepended.
+        shadowed = _shadowed_names(caller)
 
         def state_args(callee_name: str) -> list[IRExpr] | None:
             """The state arguments to prepend at a call to ``callee_name``,
             or ``None`` if it takes none."""
             callee = by_name.get(callee_name)
-            if callee is None or not callee.state_params:
+            if callee is None or not callee.state_params or callee_name in shadowed:
                 return None
             extra: list[IRExpr] = []
             for sp in callee.state_params:
@@ -543,7 +547,7 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
             """Replace any actual that is a bare procedure name passed to a
             dummy-procedure parameter with a capturing lambda."""
             callee = by_name.get(callee_name)
-            if callee is None:
+            if callee is None or callee_name in shadowed:
                 return list(args)
             out: list[IRExpr] = []
             for i, a in enumerate(args):
@@ -607,18 +611,35 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
         caller.body = new_body
 
 
-def _callee_names(body: list[IRStatement]) -> list[str]:
+def _shadowed_names(sub: IRSubprogram) -> set[str]:
+    """Names that, *within this routine*, denote data — locals, dummy
+    arguments, and common/module/save/workspace-bound members.  A
+    ``name(...)`` using one of these is array indexing or a substring, not
+    a call, even when ``name`` collides with a global subprogram (a
+    routine's local ``STPOOL`` array vs. a library ``STPOOL`` function).
+    Such a name must not be treated as a callee for state plumbing."""
+    return (
+        {loc.name for loc in sub.locals}
+        | {p.name for p in sub.parameters}
+        | {b.name for b in sub.state_bindings}
+    )
+
+
+def _callee_names(
+    body: list[IRStatement], exclude: frozenset[str] | set[str] = frozenset()
+) -> list[str]:
     """Every routine called from ``body`` — both subroutine ``CALL``
-    statements and function-call expressions — in encounter order."""
+    statements and function-call expressions — in encounter order.  Names
+    in ``exclude`` (data shadowing a like-named subprogram) are skipped."""
     names: list[str] = []
 
     def on_stmt(stmt: IRStatement) -> IRStatement:
-        if isinstance(stmt, IRCall):
+        if isinstance(stmt, IRCall) and stmt.callee not in exclude:
             names.append(stmt.callee)
         return stmt
 
     def note(expr: IRExpr) -> IRExpr:
-        if isinstance(expr, IRFunctionCall):
+        if isinstance(expr, IRFunctionCall) and expr.callee not in exclude:
             names.append(expr.callee)
         return expr
 
