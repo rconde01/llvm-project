@@ -234,8 +234,16 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
                 mine.append(m)
                 if m not in members:
                     members.append(m)
-                if m not in types and m in local_types:
-                    types[m] = local_types[m]
+                lt = local_types.get(m)
+                if lt is not None and (
+                    m not in types
+                    # A CHARACTER declaration is authoritative: implicit
+                    # typing never yields character, so a routine that
+                    # spells a common slot CHARACTER pins its type over a
+                    # (possibly implicit) integer/real view elsewhere.
+                    or (lt.is_character and not types[m].is_character)
+                ):
+                    types[m] = lt
     if not block_members:
         return
 
