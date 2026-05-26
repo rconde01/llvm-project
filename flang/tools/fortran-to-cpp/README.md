@@ -12,6 +12,10 @@ of the translator should honor it.  The "Open design questions"
 section lists the architectural choices that have real trade-offs —
 pick one per question before implementation starts.
 
+For a construct-by-construct catalog — each Fortran feature paired with
+the C++ the converter emits, plus the trade-offs behind each mapping —
+see [`docs/CONSTRUCTS.md`](docs/CONSTRUCTS.md).
+
 ---
 
 ## Goals
