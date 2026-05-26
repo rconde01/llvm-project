@@ -229,6 +229,22 @@ public:
     return *this;
   }
 
+  /// Elementwise copy from a same-rank array of a *different* element
+  /// type (Fortran ``a = b`` with a kind/type conversion, or a character
+  /// constructor feeding a CHARACTER array).  Constrained to a different
+  /// element type so the deleted same-type copy still forces an explicit
+  /// ``clone()`` (D1); template deduction wouldn't apply the implicit
+  /// Array->ArrayRef conversion, hence this dedicated overload.
+  template <typename U>
+    requires(!std::is_same_v<U, T>)
+  Array &operator=(const Array<U, Rank> &src) {
+    const index_t n = size();
+    for (index_t i = 0; i < n; ++i) {
+      linear_at(i) = static_cast<T>(src.linear_at(i));
+    }
+    return *this;
+  }
+
   /// Fill a multi-dimensional array from a flat rank-1 list, in Fortran
   /// element (column-major) order — ``DATA a(2,3) /.../`` lowers to
   /// ``a = array_of({...})``, where the constructor is one-dimensional.

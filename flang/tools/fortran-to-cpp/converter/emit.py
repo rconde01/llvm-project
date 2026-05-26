@@ -287,9 +287,18 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
     out.write(_signature(sub, with_defaults=False))
     out.write(" {\n")
 
-    # Local variable declarations (state-instance locals come first so
-    # the bindings below can refer to them).
-    for loc in sub.locals:
+    # Emission order: state-*instance* locals (the ``Mod mod{}`` objects
+    # the bindings refer to) first, then the bindings, then ordinary
+    # locals.  This lets an ordinary local that captures a bound name —
+    # notably a statement-function lambda using a COMMON/module variable
+    # (``auto f = [&]{ ... re ... }`` with ``auto& re = parmb.re``) — see
+    # the binding, which would otherwise be declared after it.
+    def _is_state_instance(loc: IRLocal) -> bool:
+        return isinstance(loc.initializer, IRRaw) and loc.initializer.text == "{}"
+
+    instance_locals = [loc for loc in sub.locals if _is_state_instance(loc)]
+    other_locals = [loc for loc in sub.locals if not _is_state_instance(loc)]
+    for loc in instance_locals:
         _emit_local(out, loc, indent=1)
 
     # State bindings: ``auto& field = param.field;`` so the body can use
@@ -297,6 +306,9 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
     # name and stay clean.
     for b in sub.state_bindings:
         out.write(f"  auto& {b.name} = {b.param}.{b.field};\n")
+
+    for loc in other_locals:
+        _emit_local(out, loc, indent=1)
 
     if (sub.locals or sub.state_bindings) and sub.body:
         out.write("\n")
