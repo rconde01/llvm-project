@@ -1068,8 +1068,10 @@ def _scalar_type_from_fortran(spelling: str) -> IRType | None:
         name = arg.split(",")[0].strip()
         return IRType(cpp=camelcase(name), fortran=spelling) if name else None
     if cat == "CHARACTER":
-        length = (arg.split(",")[0].strip() if arg else "*")
-        if length.isdigit():
+        # flang spells the length as ``CHARACTER(14_8,1)`` — the first
+        # selector is the length, possibly kind-suffixed (``14_8``).
+        length = _first_int(arg.split(",")[0]) if arg else None
+        if length is not None:
             return IRType(
                 cpp=f"fortran::FortranString<{length}>",
                 fortran=spelling,

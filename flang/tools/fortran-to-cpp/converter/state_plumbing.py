@@ -116,14 +116,17 @@ def _attach_state(
     struct_type: str,
     param_name: str,
     owned_by: str,
-    bound_fields: list[str],
+    bound_fields: list[str | tuple[str, str]],
 ) -> None:
     """Give ``sub`` access to a state struct and bind the fields it uses.
 
     A non-main routine receives the struct as a reference parameter; the
     main program owns the instance as a value-initialized local (it
     can't take parameters).  Either way we emit ``auto& f = p.f;``
-    bindings so the body references the fields by name.
+    bindings so the body references the fields by name.  A field may be
+    bound under a *different* local name (``auto& local = p.field;``) by
+    passing a ``(local_name, field_name)`` pair — needed for common
+    blocks whose members are spelled differently in different routines.
     """
     if sub.kind == "main":
         if not any(loc.name == param_name for loc in sub.locals):
@@ -142,12 +145,14 @@ def _attach_state(
                     name=param_name, struct_type=struct_type, owned_by=owned_by
                 )
             )
-    for f in bound_fields:
+    for entry in bound_fields:
+        local_name, field_name = (entry, entry) if isinstance(entry, str) else entry
         if not any(
-            b.name == f and b.param == param_name for b in sub.state_bindings
+            b.name == local_name and b.param == param_name
+            for b in sub.state_bindings
         ):
             sub.state_bindings.append(
-                IRStateBinding(name=f, param=param_name, field=f)
+                IRStateBinding(name=local_name, param=param_name, field=field_name)
             )
 
 
@@ -205,14 +210,28 @@ def _build_module_structs(tu: IRTranslationUnit) -> None:
 
 
 def _build_common_structs(tu: IRTranslationUnit) -> None:
+    """A common block is shared storage declared (re-)independently in
+    each routine that uses it.  Routines may spell its slots with
+    different names and even tile them differently (one routine's
+    ``dl(16)`` is another's twelve scalars ``tlb,s,...``), so we model the
+    block by the *union* of the distinctly-named members across all
+    routines, typed from wherever each name is declared.  Crucially, a
+    routine binds (and has dropped from its locals) only the members *it
+    itself* declared in the block — never the whole union — so a routine
+    that never put name ``x`` in the block keeps its own local ``x``
+    instead of having it shadowed by another routine's common member."""
     block_members: dict[str, list[str]] = {}
     block_member_types: dict[str, dict[str, IRType]] = {}
-    for sub in tu.subprograms:
+    # Per (sub index, block), this routine's own declared members.
+    own: dict[int, dict[str, list[str]]] = {}
+    for idx, sub in enumerate(tu.subprograms):
         local_types = {loc.name: loc.type for loc in sub.locals}
         for use in sub.common_uses:
             members = block_members.setdefault(use.block_name, [])
             types = block_member_types.setdefault(use.block_name, {})
+            mine = own.setdefault(idx, {}).setdefault(use.block_name, [])
             for m in use.member_names:
+                mine.append(m)
                 if m not in members:
                     members.append(m)
                 if m not in types and m in local_types:
@@ -238,26 +257,25 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
     for struct in struct_for_block.values():
         tu.common_structs.append(struct)
 
-    for sub in tu.subprograms:
+    for idx, sub in enumerate(tu.subprograms):
         param_names = {p.name for p in sub.parameters}
-        for block_name in {u.block_name for u in sub.common_uses}:
+        for block_name, members in own.get(idx, {}).items():
             struct = struct_for_block[block_name]
-            member_names = {f.name for f in struct.fields}
-            # Members are also declared as locals in Fortran; drop them.
+            # This routine's own common members are also declared as
+            # locals in Fortran; drop those (only the ones *this* routine
+            # put in the block — a like-named local elsewhere stays).
+            member_set = set(members)
             sub.locals = [
-                loc for loc in sub.locals if loc.name not in member_names
+                loc for loc in sub.locals if loc.name not in member_set
             ]
-            # A member whose name is also a dummy argument is shadowed by
-            # that argument in this routine (Fortran can't reference the
-            # common entity by that name here), so don't bind it.
+            # A member shadowed by a dummy argument of the same name can't
+            # reference the common entity here, so skip it.
             _attach_state(
                 sub,
                 struct_type=struct.cpp_type,
                 param_name=_common_param_name(block_name),
                 owned_by="__common_" + block_name,
-                bound_fields=[
-                    f.name for f in struct.fields if f.name not in param_names
-                ],
+                bound_fields=[m for m in members if m not in param_names],
             )
 
 

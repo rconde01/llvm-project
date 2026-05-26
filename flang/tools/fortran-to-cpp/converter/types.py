@@ -198,20 +198,18 @@ def _extract_character_length(char_spec: Node) -> int | str | None:
     Returns the integer length, the literal string ``"*"`` for
     assumed length, or ``None`` if no length is specified.
     """
-    # An asterisk shows up as a ``Star`` node.
+    # An asterisk shows up as a ``Star`` node.  A constant length appears
+    # either as an ``IntLiteralConstant`` (``CHARACTER(LEN=14)``) or, for
+    # the old ``CHARACTER*14`` star-length form, as a bare integer node
+    # (``uint64_t`` / ``int``) under a ``CharLength``.
     for n in char_spec.walk():
         if n.kind == "Star":
             return "*"
-        if n.kind == "TypeParamValue":
-            # TypeParamValue wraps the length expression.
-            for sub in n.walk():
-                if sub.kind == "Star":
-                    return "*"
-                if sub.kind == "IntLiteralConstant" and sub.fortran:
-                    try:
-                        return int(sub.fortran.split("_")[0])
-                    except ValueError:
-                        pass
+        if n.kind in ("IntLiteralConstant", "uint64_t", "int") and n.fortran:
+            try:
+                return int(n.fortran.split("_")[0])
+            except ValueError:
+                pass
     return None
 
 
