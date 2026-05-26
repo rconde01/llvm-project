@@ -166,22 +166,32 @@ def _emit_common_structs(out: StringIO, tu: IRTranslationUnit) -> None:
 
 def _emit_local_state_structs(out: StringIO, tu: IRTranslationUnit) -> None:
     """Per-subprogram state (SAVE locals, workspaces) — these belong with
-    the routine's definition, so they stay in the routine's own file."""
+    the routine's definition, so they stay in the routine's own file.
+
+    Deduplicated by struct name: a utility routine duplicated across
+    several files (common in old code) yields several subprograms with
+    the same workspace/save struct, which must be defined only once."""
+    seen: set[str] = set()
+
+    def emit_unique(structs: list[IRStateStruct]) -> None:
+        for s in structs:
+            if s.cpp_type not in seen:
+                seen.add(s.cpp_type)
+                _emit_one_struct(out, s)
+
     save_structs = [
         s.save_struct for s in tu.subprograms if s.save_struct is not None
     ]
     if save_structs:
         out.write("\n// ---- Per-subprogram state structs (SAVE locals) ----\n")
-        for s in save_structs:
-            _emit_one_struct(out, s)
+        emit_unique(save_structs)
     workspaces = [s.workspace for s in tu.subprograms if s.workspace is not None]
     if workspaces:
         out.write(
             "\n// ---- Per-subprogram workspaces (hoisted local arrays, "
             "allocated once) ----\n"
         )
-        for s in workspaces:
-            _emit_one_struct(out, s)
+        emit_unique(workspaces)
 
 
 def _emit_one_struct(out: StringIO, s: IRStateStruct) -> None:
@@ -277,7 +287,11 @@ def _emit_prototypes(out: StringIO, tu: IRTranslationUnit) -> None:
     if not subs:
         return
     out.write("\n// ---- Forward declarations ----\n")
+    seen: set[str] = set()  # a routine duplicated across files: declare once
     for sub in subs:
+        if sub.name in seen:
+            continue
+        seen.add(sub.name)
         out.write(f"{_signature(sub)};\n")
 
 
