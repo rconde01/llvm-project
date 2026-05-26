@@ -27,7 +27,11 @@ from flang_ast.nodes import Node
 
 from .emit import emit_shared_header, emit_translation_unit
 from .ir import IRTranslationUnit
-from .lowering import _reshape_sequence_associated_args, lower_program
+from .lowering import (
+    _drop_external_function_locals,
+    _reshape_sequence_associated_args,
+    lower_program,
+)
 from .prepass import sanitized_source
 from .state_plumbing import plumb_state
 
@@ -90,6 +94,11 @@ def convert_files(
     # Sequence-association reshaping needs the whole program: a rank-1
     # actual may be passed to a higher-rank dummy declared in another
     # file.  (Idempotent w.r.t. the per-file pass run during lowering.)
+    # A routine may call a function defined in *another* file; the
+    # per-file drop pass couldn't see it, so its result-type declaration
+    # still shadows the function as a scalar local.  Re-run now that every
+    # file's subprograms are visible as one program.
+    _drop_external_function_locals(combined)
     _reshape_sequence_associated_args(combined)
     plumb_state(combined)
 

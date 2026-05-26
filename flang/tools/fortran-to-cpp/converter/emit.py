@@ -613,8 +613,12 @@ def _emit_formatted_chunks(out: StringIO, stmt: "IRPrint") -> None:
         chunks = render_format(stmt.format, item_exprs)
     except FormatParseError as exc:
         # Couldn't parse — degrade gracefully to list-directed, leaving
-        # a marker so the user knows fidelity wasn't achieved.
-        out.write(f" /* TODO: format {stmt.format!r}: {exc} */")
+        # a marker so the user knows fidelity wasn't achieved.  The format
+        # text is arbitrary Fortran and may itself contain ``*/`` (e.g. a
+        # Hollerith ``12h ** ERROR **/...``); neutralize it so it can't
+        # close this block comment early and corrupt the rest of the file.
+        note = f"format {stmt.format!r}: {exc}".replace("*/", "* /")
+        out.write(f" /* TODO: {note} */")
         for i, expr in enumerate(item_exprs):
             if i > 0:
                 out.write(" << ' '")

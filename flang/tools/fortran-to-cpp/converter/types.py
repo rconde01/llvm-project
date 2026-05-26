@@ -218,5 +218,6 @@ def _unknown_type(node: Node) -> IRType:
     so the user still gets a (probably broken) translation they can
     inspect, rather than a hard error."""
     src = node.source.text if node.source else node.kind
-    return IRType(cpp=f"/* TODO: unknown type {src!r} */ auto",
+    safe = repr(src).replace("*/", "* /")  # keep embedded text from closing
+    return IRType(cpp=f"/* TODO: unknown type {safe} */ auto",
                   fortran=src)
