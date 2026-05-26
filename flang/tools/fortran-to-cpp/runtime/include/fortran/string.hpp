@@ -343,6 +343,9 @@ public:
   /// keeps such an actual viable for the call's duration.
   CharRef(const std::string &s) noexcept
       : data_(const_cast<char *>(s.data())), size_(s.size()) {}
+  /// Bare string literal actual (``foo("ABC")``).
+  CharRef(const char *s) noexcept
+      : data_(const_cast<char *>(s)), size_(std::char_traits<char>::length(s)) {}
 
   // Assignment writes through to the viewed storage (pad / truncate).  The
   // user-declared copy-assignment likewise copies characters (not the
