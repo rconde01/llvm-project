@@ -614,6 +614,15 @@ class IRParameter:
                 # which PRESENT() reports as absent — so callers can omit it.
                 decl += " = {}"
             return decl
+        # An assumed-length CHARACTER*(*) dummy is a non-owning view.
+        # Read-only -> ``std::string_view`` (binds any actual); writable ->
+        # ``fortran::CharRef`` (writes through to the caller's storage).  A
+        # mutable ``std::string_view&`` would be wrong both ways: it can't
+        # bind an rvalue actual and can't write characters back.
+        if not self.type.is_array and self.type.cpp == "std::string_view":
+            if self.intent == "in":
+                return f"const std::string_view& {self.name}"
+            return f"fortran::CharRef {self.name}"
         if self.intent == "in":
             return f"const {self.type.cpp}& {self.name}"
         return f"{self.type.cpp}& {self.name}"

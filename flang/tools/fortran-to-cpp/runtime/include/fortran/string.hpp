@@ -313,6 +313,74 @@ inline std::istream &operator>>(std::istream &is, FortranString<N> &s) {
   return is;
 }
 
+// ---- Writable assumed-length character dummy ------------------------------
+
+/// Non-owning, writable view of a character variable whose length the
+/// *caller* fixes — the dummy form of an assumed-length ``CHARACTER*(*)``
+/// the callee writes (the analog of ``ArrayRef`` for character data).
+///
+/// Reads convert to ``std::string_view``; assignment copies into the
+/// caller's storage with Fortran blank-pad / truncate semantics.  A
+/// read-only assumed-length dummy uses ``std::string_view`` directly; this
+/// type is only for the writable (intent out / inout) case, so the body
+/// can do ``out = ...`` and have the characters reach the caller.
+class CharRef {
+public:
+  constexpr CharRef(char *data, std::size_t size) noexcept
+      : data_(data), size_(size) {}
+  template <std::size_t N>
+  constexpr CharRef(FortranString<N> &s) noexcept
+      : data_(s.data()), size_(N) {}
+
+  // Assignment writes through to the viewed storage (pad / truncate).  The
+  // user-declared copy-assignment likewise copies characters (not the
+  // view), so ``out = other`` behaves like Fortran character assignment.
+  constexpr CharRef &operator=(std::string_view s) noexcept {
+    const std::size_t take = std::min(s.size(), size_);
+    std::copy_n(s.data(), take, data_);
+    for (std::size_t i = take; i < size_; ++i) {
+      data_[i] = ' ';
+    }
+    return *this;
+  }
+  constexpr CharRef &operator=(const char *s) noexcept {
+    return *this = std::string_view{s};
+  }
+  constexpr CharRef &operator=(const CharRef &o) noexcept {
+    return *this = o.view();
+  }
+
+  constexpr operator std::string_view() const noexcept {
+    return std::string_view{data_, size_};
+  }
+  constexpr std::string_view view() const noexcept {
+    return std::string_view{data_, size_};
+  }
+  constexpr std::string_view trimmed() const noexcept {
+    return detail::rstrip_blanks(view());
+  }
+  constexpr std::size_t size() const noexcept { return size_; }
+  constexpr std::size_t len_trim() const noexcept { return trimmed().size(); }
+  constexpr char *data() const noexcept { return data_; }
+
+  /// 1-based character index.
+  constexpr char &operator[](std::size_t one_based) const noexcept {
+    return data_[one_based - 1];
+  }
+  /// 1-based inclusive substring ``s(lo:hi)`` — itself a writable view.
+  constexpr CharRef operator()(std::size_t lo, std::size_t hi) const noexcept {
+    return CharRef(data_ + (lo - 1), hi - lo + 1);
+  }
+
+  friend std::ostream &operator<<(std::ostream &os, const CharRef &s) {
+    return os << s.view();
+  }
+
+private:
+  char *data_;
+  std::size_t size_;
+};
+
 // ---- Character <-> integer intrinsics -------------------------------------
 
 /// ACHAR(i) / CHAR(i): the length-1 character whose code is ``i``.
