@@ -294,6 +294,22 @@ Array<T, Rank>::operator ArrayRef<const T, Rank>() const noexcept {
   return ArrayRef<const T, Rank>(data(), lower_, extents_, strides_);
 }
 
+// Sequence association: flatten a higher-rank array to a rank-1 view over
+// its contiguous storage (extent = total element count, lower bound 1).
+template <typename T, std::size_t Rank>
+template <std::size_t R>
+  requires(R != 1)
+Array<T, Rank>::operator ArrayRef<T, 1>() noexcept {
+  return ArrayRef<T, 1>(data(), std::array<index_t, 1>{{size()}});
+}
+
+template <typename T, std::size_t Rank>
+template <std::size_t R>
+  requires(R != 1)
+Array<T, Rank>::operator ArrayRef<const T, 1>() const noexcept {
+  return ArrayRef<const T, 1>(data(), std::array<index_t, 1>{{size()}});
+}
+
 template <typename T, std::size_t Rank>
 ArrayRef<T, 1> Array<T, Rank>::section(index_t lo, index_t hi,
                                        index_t stride) noexcept {

@@ -372,6 +372,18 @@ public:
   operator ArrayRef<T, Rank>() noexcept;
   operator ArrayRef<const T, Rank>() const noexcept;
 
+  /// Fortran sequence association: a whole array passed to a rank-1
+  /// (assumed-size) dummy shares its storage as one flat 1-D sequence.
+  /// Storage is contiguous column-major, so the flat view *is* the
+  /// storage order.  Guarded to ``Rank != 1`` so the same-rank
+  /// conversion above still handles an ordinary rank-1 actual.
+  template <std::size_t R = Rank>
+    requires(R != 1)
+  operator ArrayRef<T, 1>() noexcept;
+  template <std::size_t R = Rank>
+    requires(R != 1)
+  operator ArrayRef<const T, 1>() const noexcept;
+
   /// Rank-1 section view ``a(lo:hi:stride)``.  Convenience that
   /// forwards to ArrayRef::section (defined in array_ref.hpp).
   ArrayRef<T, 1> section(index_t lo, index_t hi, index_t stride = 1) noexcept;
