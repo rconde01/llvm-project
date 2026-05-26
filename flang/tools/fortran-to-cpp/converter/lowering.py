@@ -198,6 +198,7 @@ def _infer_readonly_scalar_params(tu: IRTranslationUnit) -> None:
     only leaf read-only uses are downgraded; a wrong guess would be a
     compile error, never silent misbehavior.
     """
+    subprogram_names = {s.name for s in tu.subprograms}
     for sub in tu.subprograms:
         scalar_inout = {
             p.name
@@ -240,7 +241,15 @@ def _infer_readonly_scalar_params(tu: IRTranslationUnit) -> None:
             return stmt
 
         def note_expr(expr: IRExpr) -> IRExpr:
-            if isinstance(expr, IRFunctionCall):
+            # Only a real user-function call can modify a passed argument
+            # (an out/inout dummy).  An array element / section indexing
+            # node is also call-shaped but its arguments are read-only
+            # subscripts, and intrinsics (``fortran::``/``std::``) are
+            # pure — don't treat those args as written.
+            if (
+                isinstance(expr, IRFunctionCall)
+                and expr.callee in subprogram_names
+            ):
                 for a in expr.args:
                     mark(a)
             return expr
