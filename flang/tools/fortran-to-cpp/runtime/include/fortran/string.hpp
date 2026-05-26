@@ -158,6 +158,10 @@ public:
     }
     constexpr std::size_t size() const noexcept { return size_; }
 
+    friend std::ostream &operator<<(std::ostream &os, const ConstSubstring &s) {
+      return os << s.view();
+    }
+
   private:
     const char *base_;
     std::size_t size_;
@@ -192,6 +196,10 @@ public:
       return std::string_view{base_, size_};
     }
     constexpr std::size_t size() const noexcept { return size_; }
+
+    friend std::ostream &operator<<(std::ostream &os, const Substring &s) {
+      return os << s.view();
+    }
 
   private:
     char *base_;
