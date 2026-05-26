@@ -337,6 +337,12 @@ public:
   /// common Fortran pattern of passing any character expression.
   constexpr CharRef(std::string_view s) noexcept
       : data_(const_cast<char *>(s.data())), size_(s.size()) {}
+  /// Direct ``std::string`` overload — a concatenation (``a // b``)
+  /// produces a ``std::string`` rvalue, and C++ won't chain two
+  /// user-defined conversions (string -> string_view -> CharRef), so this
+  /// keeps such an actual viable for the call's duration.
+  CharRef(const std::string &s) noexcept
+      : data_(const_cast<char *>(s.data())), size_(s.size()) {}
 
   // Assignment writes through to the viewed storage (pad / truncate).  The
   // user-declared copy-assignment likewise copies characters (not the
