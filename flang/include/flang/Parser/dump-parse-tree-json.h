@@ -81,6 +81,30 @@ public:
     SetUnitScope(std::get<Name>(x.t));
     return Pre<FunctionStmt>(x);
   }
+  // A main program / block data unit has no leading name-bearing stmt the
+  // way a subprogram does (the PROGRAM statement is optional, and a block
+  // data name is optional), so clear the scope on entry: otherwise the
+  // unit inherits the previous subprogram's scope and every one of its
+  // own variables is misreported as host-associated.  A named PROGRAM /
+  // BLOCK DATA then sets the scope precisely.
+  bool Pre(const MainProgram &x) {
+    unitScope_ = nullptr;
+    return Pre<MainProgram>(x);
+  }
+  bool Pre(const ProgramStmt &x) {
+    SetUnitScope(x.v);
+    return Pre<ProgramStmt>(x);
+  }
+  bool Pre(const BlockData &x) {
+    unitScope_ = nullptr;
+    return Pre<BlockData>(x);
+  }
+  bool Pre(const BlockDataStmt &x) {
+    if (x.v) {
+      SetUnitScope(*x.v);
+    }
+    return Pre<BlockDataStmt>(x);
+  }
 
   // Transparent wrappers: do not produce a JSON node, just propagate.
   bool Pre(const CharBlock &) { return true; }
