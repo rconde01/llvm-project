@@ -178,11 +178,38 @@ def lower_program(
                 seen_types.add(dt.fortran_name)
                 tu.derived_types.append(dt)
     _collect_units(root, tu, parent_module=None)
+    _drop_external_function_locals(tu)
     _resolve_component_allocations(tu)
     _reshape_sequence_associated_args(tu)
     _infer_readonly_scalar_params(tu)
     _apply_logical_print_format(tu)
     return tu
+
+
+def _drop_external_function_locals(tu: IRTranslationUnit) -> None:
+    """Drop a scalar local whose name is a function defined in the program.
+
+    A routine that calls an external function declares only the
+    function's *result type* (``REAL INTERP``); lowered naively this
+    becomes a scalar local that shadows the function, so the call
+    ``interp(...)`` is rejected as "interp cannot be used as a function".
+    Such a declaration isn't a variable — drop it so the call binds the
+    function (and its prototype)."""
+    func_names = {s.name for s in tu.subprograms if s.kind == "function"}
+    if not func_names:
+        return
+    for sub in tu.subprograms:
+        param_names = {p.name for p in sub.parameters}
+        sub.locals = [
+            loc
+            for loc in sub.locals
+            if not (
+                loc.name in func_names
+                and loc.name != sub.name
+                and loc.name not in param_names
+                and not loc.type.is_array
+            )
+        ]
 
 
 def _infer_readonly_scalar_params(tu: IRTranslationUnit) -> None:
@@ -191,75 +218,109 @@ def _infer_readonly_scalar_params(tu: IRTranslationUnit) -> None:
 
     FORTRAN 77 has no INTENT, so every dummy defaults to ``inout`` /
     ``T&`` — which can't bind an rvalue, so a call like ``eptr(x, y, z*2)``
-    fails.  A scalar dummy that is never assigned, used as a DO variable,
-    read into, or passed to another call is read-only and can safely be a
-    ``const T&`` reference.  Passing it to any call is treated
-    conservatively as a possible write (the callee might modify it), so
-    only leaf read-only uses are downgraded; a wrong guess would be a
-    compile error, never silent misbehavior.
+    fails.  A scalar dummy can be ``const T&`` (intent(in)) when the body
+    never modifies it: it's not assigned, a DO variable, or read into, and
+    every call that receives it passes it to a parameter that is itself
+    read-only.  That last condition is cross-procedural (``interp`` passes
+    ``n`` to ``locate``, which only reads it), so this is solved as a
+    fixpoint: a parameter is non-const if it's written locally or passed
+    to an already-non-const callee parameter.  Passing to an unknown
+    callee is conservatively a write.  A wrong guess is a compile error,
+    never silent misbehavior.
     """
-    subprogram_names = {s.name for s in tu.subprograms}
+    by_name = {s.name: s for s in tu.subprograms}
+
+    def root(e: IRExpr) -> str | None:
+        if isinstance(e, IRName):
+            return e.name
+        if isinstance(e, IRMember):
+            return root(e.base)
+        if isinstance(e, IRFunctionCall):
+            return e.callee.split(".", 1)[0]
+        if isinstance(e, IRSection):
+            return e.array.split(".", 1)[0]
+        return None
+
+    # Per subprogram: which scalar params are inout candidates, which are
+    # written locally (definitely non-const), and the call edges
+    # (param passed as the idx-th argument of callee).
+    scalar_inout: dict[str, set[str]] = {}
+    written: dict[str, set[str]] = {}
+    edges: dict[str, list[tuple[str, str, int]]] = {}
+    non_const: set[tuple[str, str]] = set()
+
     for sub in tu.subprograms:
-        scalar_inout = {
+        pnames = {p.name for p in sub.parameters}
+        scalar_inout[sub.name] = {
             p.name
             for p in sub.parameters
-            if p.intent == "inout" and not p.type.is_array and not p.type.is_pointer
+            if p.intent == "inout"
+            and not p.type.is_array
+            and not p.type.is_pointer
         }
-        if not scalar_inout:
-            continue
-        written: set[str] = set()
+        w: set[str] = set()
+        e: list[tuple[str, str, int]] = []
 
-        def root(e: IRExpr) -> str | None:
-            # The base variable an lvalue/argument touches: ``v`` for
-            # ``v``, ``v%c``, ``v%c(i)``, ``a(i)`` and ``a(i:j)``.
-            if isinstance(e, IRName):
-                return e.name
-            if isinstance(e, IRMember):
-                return root(e.base)
-            if isinstance(e, IRFunctionCall):
-                return e.callee.split(".", 1)[0]
-            if isinstance(e, IRSection):
-                return e.array.split(".", 1)[0]
-            return None
+        def handle_call(callee: str, args, *, _e=e, _pn=pnames) -> None:
+            # Only a known user subprogram creates a dependency edge.  A
+            # call-shaped node with an unknown callee is array indexing
+            # (``apl(i,ic)`` — read-only subscripts) or an intrinsic
+            # (pure); neither modifies its arguments.
+            if callee not in by_name:
+                return
+            for idx, a in enumerate(args):
+                if isinstance(a, IRName) and a.name in _pn:
+                    _e.append((a.name, callee, idx))
 
-        def mark(e: IRExpr) -> None:
-            b = root(e)
-            if b is not None:
-                written.add(b)
-
-        def note_stmt(stmt: IRStatement) -> IRStatement:
+        def note_stmt(stmt: IRStatement, *, _w=w) -> IRStatement:
             if isinstance(stmt, IRAssignment):
-                mark(stmt.target)  # incl. component / element writes
+                r = root(stmt.target)
+                if r is not None:
+                    _w.add(r)
             elif isinstance(stmt, IRDo) and stmt.var:
-                written.add(stmt.var)
+                _w.add(stmt.var)
             elif isinstance(stmt, IRRead):
                 for it in stmt.items:
-                    mark(it)
+                    r = root(it)
+                    if r is not None:
+                        _w.add(r)
             elif isinstance(stmt, IRCall):
-                for a in stmt.args:
-                    mark(a)  # callee may modify it -> conservatively written
+                handle_call(stmt.callee, stmt.args)
             return stmt
 
         def note_expr(expr: IRExpr) -> IRExpr:
-            # Only a real user-function call can modify a passed argument
-            # (an out/inout dummy).  An array element / section indexing
-            # node is also call-shaped but its arguments are read-only
-            # subscripts, and intrinsics (``fortran::``/``std::``) are
-            # pure — don't treat those args as written.
-            if (
-                isinstance(expr, IRFunctionCall)
-                and expr.callee in subprogram_names
-            ):
-                for a in expr.args:
-                    mark(a)
+            if isinstance(expr, IRFunctionCall):
+                handle_call(expr.callee, expr.args)
             return expr
 
         for s in sub.body:
             map_statement(
-                s, on_stmt=note_stmt, on_expr=lambda e: map_expr(e, note_expr)
+                s, on_stmt=note_stmt, on_expr=lambda e2: map_expr(e2, note_expr)
             )
+        written[sub.name] = w
+        edges[sub.name] = e
+        for pn in scalar_inout[sub.name] & w:
+            non_const.add((sub.name, pn))
+
+    # Fixpoint: a candidate becomes non-const if it's passed to a callee
+    # parameter that is (now) non-const.
+    changed = True
+    while changed:
+        changed = False
+        for sname, elist in edges.items():
+            for pname, callee, idx in elist:
+                if (sname, pname) in non_const:
+                    continue
+                if pname not in scalar_inout[sname]:
+                    continue
+                cparams = by_name[callee].parameters
+                if idx < len(cparams) and (callee, cparams[idx].name) in non_const:
+                    non_const.add((sname, pname))
+                    changed = True
+
+    for sub in tu.subprograms:
         for p in sub.parameters:
-            if p.name in scalar_inout and p.name not in written:
+            if p.name in scalar_inout[sub.name] and (sub.name, p.name) not in non_const:
                 p.intent = "in"
 
 
