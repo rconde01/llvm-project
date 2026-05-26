@@ -950,6 +950,18 @@ def _separate_parameters(
         by_idx.append((wanted[name], _procedure_param(name, ret, arity)))
     by_idx.sort(key=lambda t: t[0])
     sub.parameters = [p for _, p in by_idx]
+    # Drop scalar locals that are really EXTERNAL-procedure declarations
+    # (a ``real f`` result-type decl shadowing the procedure ``f``).  Keep
+    # the function's own result variable (shares the unit's name) and
+    # statement functions (also ``is_proc`` to flang, but lowered here to a
+    # lambda local that must stay).
+    if node is not None:
+        externals = _external_procedure_names(node) - {sub.name}
+        remaining = [
+            loc
+            for loc in remaining
+            if loc.name not in externals or isinstance(loc.initializer, IRLambda)
+        ]
     sub.locals = remaining
     _deref_optional_params(sub)
 
@@ -991,6 +1003,21 @@ def _procedure_dummy_return_types(
             continue
         if getattr(n, "is_proc", False) and not n.is_object:
             out[key] = _scalar_type_from_fortran(n.sym_type) if n.sym_type else None
+    return out
+
+
+def _external_procedure_names(node: Node) -> set[str]:
+    """Names flang resolves as procedures (EXTERNAL functions/subroutines)
+    in this unit.  An ``external f`` / ``real f`` pair declares ``f``'s
+    result type, not a variable; the resulting scalar local would shadow
+    the real procedure, so callers (or a dummy-procedure lambda wrapping
+    it) can't invoke it.  Such locals must be dropped."""
+    out: set[str] = set()
+    for n in _unit_names(node):
+        if not n.fortran:
+            continue
+        if getattr(n, "is_proc", False) and not n.is_object:
+            out.add(_safe_name(n.fortran))
     return out
 
 
@@ -3263,9 +3290,43 @@ def _lower_expression(node: Node) -> IRExpr:
             return _lower_structure_component(target)
         case "ArrayConstructor":
             return _lower_array_constructor(target)
+        case "Substring":
+            return _lower_substring(target)
     if target.kind in _BINARY_OP_MAP or target.kind in _UNARY_OP_MAP:
         return _lower_expr_operator(target)
     return _expr_raw(node)
+
+
+def _lower_substring(node: Node) -> IRExpr:
+    """Lower a character substring ``s(lo:hi)`` to the runtime's 1-based
+    inclusive slice ``s(lo, hi)`` (``FortranString::operator()(lo, hi)``).
+
+    Either bound may be omitted: ``s(:hi)`` defaults ``lo`` to 1, ``s(lo:)``
+    defaults ``hi`` to the string's declared length."""
+    dataref = node.first_child("DataRef")
+    base = _lower_expression(dataref) if dataref is not None else None
+    if not isinstance(base, IRName):
+        return _expr_raw(node)  # substring of a non-trivial designator: TODO
+    rng = node.first_child("SubstringRange")
+    lo: IRExpr | None = None
+    hi: IRExpr | None = None
+    if rng is not None:
+        scalars = [c for c in rng.children if c.kind == "Scalar"]
+        src = (rng.source.text or "").strip() if rng.source else ""
+        if len(scalars) >= 2:
+            lo = _lower_expression(scalars[0])
+            hi = _lower_expression(scalars[1])
+        elif len(scalars) == 1:
+            # One bound omitted; the colon's position says which.
+            if src.startswith(":"):
+                hi = _lower_expression(scalars[0])
+            else:
+                lo = _lower_expression(scalars[0])
+    if lo is None:
+        lo = IRLiteral(cpp_text="1")
+    if hi is None:
+        hi = IRRaw(f"{base.name}.length")
+    return IRFunctionCall(callee=base.name, args=(lo, hi))
 
 
 def _lower_array_constructor(node: Node) -> IRExpr:
