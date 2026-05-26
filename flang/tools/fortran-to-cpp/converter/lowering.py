@@ -2363,6 +2363,18 @@ def _expand_array_assignments(sub: IRSubprogram) -> None:
             return stmt
         tgt = stmt.target
         rhs_has_section = _contains_section(stmt.value)
+        if (
+            isinstance(tgt, IRName)
+            and tgt.name in arrays
+            and rhs_has_section
+            and arrays[tgt.name].array_rank >= 2
+        ):
+            # ``a = b(:,:,k)`` — a rank>=2 *whole-array* target assigned an
+            # array-valued (section) expression.  The element-loop expander
+            # emits a single loop that indexes the target with one
+            # subscript, wrong for a multidimensional array; assign as a
+            # whole instead and let the runtime operator= copy elements.
+            return stmt
         if isinstance(tgt, IRSection) or rhs_has_section:
             # ``a(lo:hi) = matmul(...)`` / ``= [v1, v2]`` — the RHS is a
             # whole array-valued result with no section to index
