@@ -486,6 +486,19 @@ class IRReturn:
 
 
 @dataclass(slots=True)
+class IREntry:
+    """An ``ENTRY name(args)`` alternate entry point.  Transient: the
+    lowering splits the body at each marker into a standalone subprogram
+    (the statements from the entry point onward) and removes the markers,
+    so none survive to emission."""
+
+    name: str
+    arg_names: tuple[str, ...] = ()
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class IRUnsupported:
     """A construct the lowering pass doesn't yet model.
 
@@ -664,6 +677,11 @@ class IRSubprogram:
     body: list[IRStatement] = field(default_factory=list)
     leading_comments: list[Comment] = field(default_factory=list)
     source: SourceRange | None = None
+
+    entry_points: list["IRSubprogram"] = field(default_factory=list)
+    """Subprograms synthesized from this unit's ``ENTRY`` statements (one
+    per alternate entry point).  Populated during lowering and flattened
+    into the translation unit's subprogram list by the collector."""
 
     save_struct: IRStateStruct | None = None
     """The save struct *owned* by this subprogram (None if it has no

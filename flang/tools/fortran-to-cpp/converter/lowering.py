@@ -24,6 +24,7 @@ Currently supported (v1):
 
 from __future__ import annotations
 
+import copy
 import re
 from typing import Iterable, Literal
 
@@ -62,6 +63,7 @@ from .ir import (
     IRCycle,
     IRDeallocate,
     IRDerivedType,
+    IREntry,
     IRExit,
     IRGoto,
     IRImpliedDo,
@@ -670,13 +672,13 @@ def _collect_units(
             sub = _lower_function(child)
             sub.parent_module = parent_module
             _add_inherited_uses(sub, inherited_uses)
-            tu.subprograms.append(sub)
+            _append_with_entries(tu, sub, inherited_uses)
         elif kind == "SubroutineSubprogram":
             _collect_internal_subprograms(child, tu, parent_module, inherited_uses)
             sub = _lower_subroutine(child)
             sub.parent_module = parent_module
             _add_inherited_uses(sub, inherited_uses)
-            tu.subprograms.append(sub)
+            _append_with_entries(tu, sub, inherited_uses)
         else:
             # Descend through containers (Program, ProgramUnit,
             # ModuleSubprogramPart, ModuleSubprogram, ...).
@@ -686,6 +688,19 @@ def _collect_units(
                 parent_module=parent_module,
                 inherited_uses=inherited_uses,
             )
+
+
+def _append_with_entries(
+    tu: IRTranslationUnit, sub: IRSubprogram, inherited_uses: tuple[str, ...]
+) -> None:
+    """Append ``sub`` and any subprograms its ENTRY statements produced;
+    the entries inherit the same module/host context as their unit."""
+    tu.subprograms.append(sub)
+    for entry in sub.entry_points:
+        entry.parent_module = sub.parent_module
+        _add_inherited_uses(entry, inherited_uses)
+        tu.subprograms.append(entry)
+    sub.entry_points = []
 
 
 def _add_inherited_uses(sub: "IRSubprogram", inherited_uses: tuple[str, ...]) -> None:
@@ -1203,6 +1218,11 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     _resolve_allocations(sub)
     _resolve_pointers(sub)
     _expand_array_assignments(sub)
+    # ENTRY statements split this unit into several alternate entry points
+    # that share its storage.  Carve each one out (statements from the
+    # entry onward) as its own subprogram before goto-structuring, which
+    # rewrites the body irreversibly.
+    _split_entry_points(sub, node, data_inits)
     # Eliminate goto in favor of structured control flow.
     sub.body, used_dispatch = structure_gotos(sub.body)
     # ``structure_gotos`` only reports a *top-level* dispatch; a dispatch
@@ -1215,6 +1235,54 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
                 type=IRType(cpp="int", fortran="integer", is_integer=True),
             )
         )
+
+
+def _split_entry_points(
+    sub: IRSubprogram, node: Node, data_inits: list[IRStatement]
+) -> None:
+    """Turn each ``ENTRY`` marker in ``sub.body`` into a standalone
+    subprogram on ``sub.entry_points``, and strip the markers from the
+    primary body.
+
+    An alternate entry shares the unit's storage and starts at its own
+    statement; the equivalent standalone routine runs the tail of the body
+    from that point (plus the unit's DATA initializers, which every entry
+    would have applied at load time).  Each entry carries its own dummy
+    arguments; the rest of the unit's variables remain ordinary locals."""
+    positions = [
+        i for i, st in enumerate(sub.body) if isinstance(st, IREntry)
+    ]
+    if not positions:
+        return
+    for idx in positions:
+        marker = sub.body[idx]
+        assert isinstance(marker, IREntry)
+        tail = [st for st in sub.body[idx + 1 :] if not isinstance(st, IREntry)]
+        entry = IRSubprogram(
+            name=marker.name,
+            display_name=marker.name,
+            kind=sub.kind,
+            locals=copy.deepcopy(sub.locals),
+            body=copy.deepcopy(data_inits) + copy.deepcopy(tail),
+            source=sub.source,
+            common_uses=list(sub.common_uses),
+            used_modules=list(sub.used_modules),
+            parent_module=sub.parent_module,
+        )
+        entry.body, used_dispatch = structure_gotos(entry.body)
+        if used_dispatch or _references_name(entry.body, "_pc"):
+            entry.locals.append(
+                IRLocal(
+                    name="_pc",
+                    type=IRType(cpp="int", fortran="integer", is_integer=True),
+                )
+            )
+        _separate_parameters(entry, list(marker.arg_names), node)
+        if sub.kind == "function":
+            _lift_function_return(entry, None, node)
+        sub.entry_points.append(entry)
+    # The primary keeps the whole body, minus the (transient) markers.
+    sub.body = [st for st in sub.body if not isinstance(st, IREntry)]
 
 
 def _references_name(body: list[IRStatement], name: str) -> bool:
@@ -2075,6 +2143,11 @@ def _lower_action_statement(stmt: Node) -> IRStatement | None:
         or stmt.find_first("DataStmt") is not None
     ):
         return IRComment(comments=[])
+    # ENTRY is a standalone statement (not an ActionStmt); emit the
+    # transient marker the body split keys off.
+    entry = stmt.find_first("EntryStmt")
+    if entry is not None:
+        return _lower_entry_stmt(entry)
     action = stmt.find_first("ActionStmt")
     if action is None:
         return _unsupported(stmt, kind="Statement")
@@ -2143,7 +2216,23 @@ def _lower_action_inner(inner: Node) -> IRStatement | None:
             # CONTINUE is a no-op (often just a labeled loop terminator,
             # which the structured loop already absorbs).
             return IRComment(comments=[])
+        case "EntryStmt":
+            return _lower_entry_stmt(inner)
     return None
+
+
+def _lower_entry_stmt(node: Node) -> IRStatement:
+    """``ENTRY name(args)`` -> a transient marker; the body split turns
+    each into a standalone subprogram (statements from here onward)."""
+    name_node = node.first_child("Name")
+    name = _safe_name(name_node.fortran) if name_node and name_node.fortran else ""
+    args: list[str] = []
+    for da in node.children:
+        if da.kind == "DummyArg":
+            nm = da.first_child("Name")
+            if nm is not None and nm.fortran:
+                args.append(_safe_name(nm.fortran))
+    return IREntry(name=name, arg_names=tuple(args))
 
 
 def _lower_if_stmt(node: Node) -> IRStatement:
