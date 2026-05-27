@@ -377,7 +377,7 @@ std::cout << name << '\n';
 ```
 
 A substring is a 1-based inclusive slice; an omitted bound defaults to
-`1` / the declared length:
+`1` / the length (`fortran::len`, which works for any character base):
 
 ```fortran
 print *, s(1:5)
@@ -386,7 +386,18 @@ print *, s(7:)
 
 ```cpp
 std::cout << s(1, 5) << '\n';
-std::cout << s(7, s.length) << '\n';
+std::cout << s(7, fortran::len(s)) << '\n';
+```
+
+The base can be any character designator, not just a name — a substring
+of a character-array element (a "cell" element) composes:
+
+```fortran
+out(l)(c:c) = array(l)(c:c)
+```
+
+```cpp
+out(l)(c, c) = array(l)(c, c);   // each a(i) is a CharRef; (c,c) slices it
 ```
 
 **Design — `FortranString<N>` vs. `std::string`.** Fortran `CHARACTER` is
