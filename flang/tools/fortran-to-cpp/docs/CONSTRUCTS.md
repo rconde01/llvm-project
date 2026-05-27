@@ -40,6 +40,12 @@ block for brevity.
 - [DATA statements](#data-statements)
 - [Derived types](#derived-types)
 - [ENTRY](#entry)
+- [Assumed-size array dummies](#assumed-size-array-dummies)
+- [Sequence and storage association](#sequence-and-storage-association)
+- [Assumed-length CHARACTER dummies](#assumed-length-character-dummies)
+- [Assumed-length CHARACTER arrays (character cells)](#assumed-length-character-arrays-character-cells)
+- [Names that shadow a library routine](#names-that-shadow-a-library-routine)
+- [INCLUDE files](#include-files)
 
 ---
 
@@ -705,3 +711,207 @@ cleanly with everything else — state threading and goto-structuring just
 see ordinary routines. The cost is duplicated tail code and that SAVE
 state shared *across* entries of one unit is modeled per-routine rather
 than unit-wide.
+
+**Function entries.** When the unit is a *function*, every entry has its
+own result variable named after it, and the variables share storage, so
+an assignment to one entry's name can appear in code that belongs to
+another (or to the primary):
+
+```fortran
+real function area(r)
+  real :: r, pi
+  pi = 3.14159
+  area = pi * r * r
+  return
+entry circum(r)
+  circum = 2.0 * pi * r
+end function
+```
+
+```cpp
+float area(const float& r) {
+  float area_result{};
+  float circum{};            // sibling entry's result — a plain local here
+  float pi{};
+  pi = 3.14159f;
+  area_result = pi * r * r;
+  return area_result;
+  circum = 2.0f * pi * r;    // the entry's tail — dead code after the return
+  return area_result;
+}
+
+float circum(const float& r) {
+  float circum_result{};
+  float area{};              // the primary's result — a plain local here
+  float pi{};
+  circum_result = 2.0f * pi * r;
+  return circum_result;
+}
+```
+
+Each function lifts *its own* name into the return value (`<name>_result`)
+and declares every other entry/primary result name as an ordinary local,
+so an assignment like `circum = ...` reached from `area` writes a variable
+rather than (illegally) the global function. (Note the per-entry
+limitation: setup that runs *before* an entry — here `pi = 3.14159` — is
+not replayed when that entry is called directly, matching the
+tail-duplication model.)
+
+---
+
+## Assumed-size array dummies
+
+`a(*)` is the classic FORTRAN 77 assumed-size dummy: the caller fixes the
+extent. It becomes a rank-1 `ArrayRef` (caller-sized), exactly like an
+adjustable-bound dummy.
+
+```fortran
+      subroutine sumit(a, n, s)
+      real a(*), s
+      integer n, i
+      s = 0.0
+      do 10 i = 1, n
+10    s = s + a(i)
+      end
+```
+
+```cpp
+void sumit(fortran::ArrayRef<float, 1> a, const std::int32_t& n, float& s) {
+  s = 0.0f;
+  for (i = 1; i <= n; ++i) {
+    s = s + a(i);
+  }
+}
+```
+
+`a(m,*)` (a leading explicit dimension plus a trailing assumed one) maps
+to the corresponding higher-rank `ArrayRef`.
+
+---
+
+## Sequence and storage association
+
+Fortran lets an actual argument associate with a dummy of a *different*
+shape as long as the storage lines up (column-major). The converter
+handles this with implicit conversions in the runtime, so the call simply
+type-checks; no copy is made.
+
+```fortran
+real :: m(3,4)
+call work(m, 12)       ! whole 2-D array -> work's  real v(*)
+```
+
+```cpp
+fortran::Array<float, 2> m{{3, 4}};
+work(m, 12);           // Array<float,2> -> ArrayRef<float,1> (flat view)
+```
+
+The same covers a **scalar** actual passed to an array dummy (it is that
+dummy's first element) and a higher-rank **view** passed to a rank-1
+dummy.
+
+**Design.** A rank-changing implicit conversion is normally a smell, but
+flang has already validated the association, so the converter only emits
+conversions Fortran sanctioned. Doing it in the runtime (a flatten-to-1-D
+`ArrayRef` constructor) keeps every call site unchanged and copy-free,
+versus rewriting each call to insert an explicit reshape.
+
+---
+
+## Assumed-length CHARACTER dummies
+
+A `CHARACTER*(*)` dummy has a caller-determined length. It becomes a
+`fortran::CharRef` — a non-owning character view (the string analog of
+`ArrayRef`):
+
+```fortran
+      subroutine ucase(in, out)
+      character*(*) in, out
+      out = in
+      end
+```
+
+```cpp
+void ucase(fortran::CharRef in, fortran::CharRef out) {
+  out = in;              // copies characters into the caller's storage
+}
+```
+
+A `CharRef` reads as a `std::string_view`, assigns with Fortran
+blank-pad/truncate semantics, and supports substring indexing
+`out(lo, hi)`. It is constructible from a `FortranString`, a `string_view`,
+a `std::string`, or a literal, so any character actual binds.
+
+**Design — `CharRef` vs. `std::string_view&` vs. `std::string`.** A
+mutable `std::string_view&` was the first attempt but is wrong twice over:
+it can't bind a non-lvalue actual (a literal or a concatenation), and a
+`string_view` is read-only so the callee can't write characters back.
+`std::string` would own/resize, mismodeling fixed-length semantics.
+`CharRef` is the minimal "writable view of N caller-owned characters", and
+using it for **read-only** assumed-length dummies too (not just writable
+ones) means substrings `s(lo:hi)` work uniformly — `std::string_view` has
+no `operator()(lo, hi)`.
+
+---
+
+## Assumed-length CHARACTER arrays (character cells)
+
+An assumed-length character *array* dummy — `CHARACTER*(*) cell(*)`, the
+SPICE "character cell" — can't be an `ArrayRef<std::string_view>`: the
+element length is a runtime value, not a C++ type. It becomes a
+`fortran::CharArrayRef`, whose indexing yields a `CharRef`:
+
+```fortran
+      subroutine first(cell, item)
+      character*(*) cell(*), item
+      cell(1) = item
+      end
+```
+
+```cpp
+void first(fortran::CharArrayRef cell, fortran::CharRef item) {
+  cell(1) = item;        // cell(1) is a CharRef -> writes element 1
+}
+```
+
+`CharArrayRef` carries a base pointer, the element length, the lower
+bound, and the count; `cell(i)` returns `CharRef(base + (i-lo)*len, len)`.
+It is constructible from a fixed-length character array
+(`Array<FortranString<N>, 1>`) or a single character scalar.
+
+---
+
+## Names that shadow a library routine
+
+A routine may have a local (or COMMON / SAVE) array whose name collides
+with a *different* global subprogram — e.g. a routine's local pool array
+`STPOOL(*,*)` versus the library's `STPOOL` function. In that routine,
+`stpool(i, j)` is array indexing, not a call.
+
+```fortran
+      common /pool/ stpool(2, mxpool)   ! a local pool array named STPOOL
+      ...
+      savep = stpool(forwrd, p)         ! indexing, even though a global
+                                        ! function STPOOL also exists
+```
+
+```cpp
+savep = stpool(forwrd, p);             // indexing the bound common array
+// NOT: stpool(state..., forwrd, p)    // would be a call to the library fn
+```
+
+**Design.** The lowering and state-plumbing passes treat a `name(...)` as
+a call only when `name` is a known subprogram **and** is not a local /
+dummy / common-bound name of the current routine. A data name shadows a
+like-named global in its own scope (Fortran's rule), so it never receives
+threaded state arguments.
+
+---
+
+## INCLUDE files
+
+A Fortran `INCLUDE 'foo.inc'` is expanded by flang during parsing (it
+resolves the path relative to the including file), so the converter sees
+the included declarations inline and needs no special handling — the
+`PARAMETER`s and COMMON layouts in a shared `.inc` flow through exactly as
+if written in place.
