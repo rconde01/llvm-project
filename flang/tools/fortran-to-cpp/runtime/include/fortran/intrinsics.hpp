@@ -126,6 +126,34 @@ template <typename T> T ibclr(T i, int pos) noexcept {
   return static_cast<T>(i & ~(T{1} << pos));
 }
 
+// ---- MIN / MAX ------------------------------------------------------------
+//
+// Fortran's MIN / MAX are generic and variadic.  Unlike ``std::min`` /
+// ``std::max`` they accept arguments of *different* arithmetic types (a
+// common case here is an ``index_t`` length from LEN/SIZE compared with an
+// ``int`` variable), so promote to the common type and compare there.
+
+template <typename A, typename B>
+constexpr std::common_type_t<A, B> min(A a, B b) noexcept {
+  using C = std::common_type_t<A, B>;
+  return static_cast<C>(b) < static_cast<C>(a) ? static_cast<C>(b)
+                                               : static_cast<C>(a);
+}
+template <typename A, typename B, typename... R>
+constexpr auto min(A a, B b, R... rest) noexcept {
+  return fortran::min(fortran::min(a, b), rest...);
+}
+template <typename A, typename B>
+constexpr std::common_type_t<A, B> max(A a, B b) noexcept {
+  using C = std::common_type_t<A, B>;
+  return static_cast<C>(a) < static_cast<C>(b) ? static_cast<C>(b)
+                                               : static_cast<C>(a);
+}
+template <typename A, typename B, typename... R>
+constexpr auto max(A a, B b, R... rest) noexcept {
+  return fortran::max(fortran::max(a, b), rest...);
+}
+
 // ---- Numeric inquiry intrinsics -------------------------------------------
 //
 // Each takes an argument used only for its *type* (the value is

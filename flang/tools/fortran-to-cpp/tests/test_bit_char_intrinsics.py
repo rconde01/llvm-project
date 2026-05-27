@@ -66,11 +66,12 @@ class IntrinsicEmitTests(unittest.TestCase):
         self.assertIn("fortran::ior(12, 10)", cpp)
         self.assertIn("fortran::ishft(1, 3)", cpp)
 
-    def test_variadic_max_uses_initializer_list(self) -> None:
+    def test_variadic_max_maps_to_fortran_min_max(self) -> None:
         cpp = _convert(INTR_F90)
-        # 3-arg max must use the braced form; 2-arg min stays plain.
-        self.assertIn("std::max({1, 2, 3})", cpp)
-        self.assertIn("std::min(4, 2)", cpp)
+        # MIN/MAX map to the variadic, mixed-type-tolerant fortran:: helpers
+        # (std::min/std::max require a fixed arity and identical types).
+        self.assertIn("fortran::max(1, 2, 3)", cpp)
+        self.assertIn("fortran::min(4, 2)", cpp)
 
 
 @unittest.skipUnless(

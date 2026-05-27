@@ -3906,7 +3906,7 @@ _INTRINSIC_MAP: dict[str, str] = {
     "asin": "fortran::asin", "acos": "fortran::acos", "atan": "fortran::atan",
     "atan2": "std::atan2", "sinh": "fortran::sinh", "cosh": "fortran::cosh",
     "tanh": "fortran::tanh", "floor": "std::floor", "ceiling": "std::ceil",
-    "min": "std::min", "max": "std::max",
+    "min": "fortran::min", "max": "fortran::max",
     # Bit-manipulation intrinsics.
     "iand": "fortran::iand", "ior": "fortran::ior", "ieor": "fortran::ieor",
     "ishft": "fortran::ishft", "btest": "fortran::btest",
@@ -3933,10 +3933,10 @@ _INTRINSIC_MAP: dict[str, str] = {
     "dasin": "fortran::asin", "dacos": "fortran::acos", "datan": "fortran::atan",
     "datan2": "std::atan2", "dsinh": "fortran::sinh",
     "dcosh": "fortran::cosh", "dtanh": "fortran::tanh",
-    "amax1": "std::max", "dmax1": "std::max", "max0": "std::max",
-    "amax0": "std::max",
-    "amin1": "std::min", "dmin1": "std::min", "min0": "std::min",
-    "amin0": "std::min",
+    "amax1": "fortran::max", "dmax1": "fortran::max", "max0": "fortran::max",
+    "amax0": "fortran::max",
+    "amin1": "fortran::min", "dmin1": "fortran::min", "min0": "fortran::min",
+    "amin0": "fortran::min",
     "dnint": "fortran::anint", "idnint": "fortran::nint",
     # Array intrinsics -> fortran:: runtime helpers (intrinsics.hpp).
     "size": "fortran::size", "lbound": "fortran::lbound",

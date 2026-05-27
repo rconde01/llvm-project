@@ -467,7 +467,12 @@ ArrayRef<T, R> seq_assoc(const ArrayRef<T, 1> &flat,
 /// dummy: the dummy is storage-associated with the array's first element.
 /// Returns a reference to that element (column-major origin = ``data()``),
 /// preserving const-ness and rank-agnostic across ``Array`` / ``ArrayRef``.
+/// A character *cell* (``CharArrayRef``) has its own overload below, since
+/// its ``data()`` is a raw ``char*`` and the first element is a whole cell.
+class CharArrayRef;  // defined below; excluded from the generic ``first``
+
 template <typename A>
+  requires(!std::is_same_v<std::remove_cvref_t<A>, CharArrayRef>)
 constexpr decltype(auto) first(A &&a) {
   return *a.data();
 }
@@ -542,6 +547,14 @@ private:
 /// array dummy: ``call s(cell(i))`` views the cell from element ``i`` on.
 inline CharArrayRef elem_tail(const CharArrayRef &cell, index_t i) noexcept {
   return cell.from_element(i);
+}
+
+/// Whole character-array actual passed to a *scalar* character dummy: the
+/// dummy is storage-associated with the array's first cell.  Overrides the
+/// generic ``first`` (whose ``*data()`` would yield a single ``char``) so
+/// the result is a ``CharRef`` over the whole first element.
+inline CharRef first(const CharArrayRef &cell) noexcept {
+  return cell(cell.lbound(1));
 }
 
 } // namespace fortran
