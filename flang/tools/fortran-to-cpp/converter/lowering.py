@@ -1903,10 +1903,27 @@ def _make_array_type(
                 is_logical=element_type.is_logical,
                 is_character=element_type.is_character,
             )
-        elif shape.kind in ("AssumedShapeSpec", "AssumedSizeSpec"):
-            # Unsupported for now; the user will get a TODO when the
-            # emitted code fails to compile.
-            extents.append(f"/* TODO: {shape.kind} */ 0")
+        elif shape.kind == "AssumedSizeSpec":
+            # ``a(m, n, *)`` — an assumed-size spec that *wraps* the leading
+            # explicit dimensions plus the trailing assumed one, so its rank
+            # is the number of those dimension children (not one).  Caller
+            # sized -> unknown extents.
+            ndims = max(
+                1,
+                sum(
+                    1
+                    for c in shape.children
+                    if c.kind in ("ExplicitShapeSpec", "AssumedImpliedSpec")
+                ),
+            )
+            for _ in range(ndims):
+                extents.append("/* assumed-size */ 0")
+                lowers.append("1")
+            all_static = False
+        elif shape.kind == "AssumedShapeSpec":
+            # One ``:`` of an assumed-shape dummy (``a(:,:)`` -> one spec
+            # per dimension); unknown extent.
+            extents.append("/* assumed-shape */ 0")
             lowers.append("1")
             all_static = False
         elif shape.kind == "ImpliedShapeSpec":
