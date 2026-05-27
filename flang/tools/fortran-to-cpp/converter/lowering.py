@@ -1317,11 +1317,20 @@ def _split_entry_points(
             add_result_locals(entry, marker.name)
             _lift_function_return(entry, None, node)
         sub.entry_points.append(entry)
-    # The primary keeps the whole body, minus the (transient) markers; its
-    # sibling-entry result names become locals here (its own is lifted by
-    # the caller's _lift_function_return).
+    # The primary normally keeps the whole body (entries' code is reachable
+    # by fall-through / GOTO into shared code, e.g. FELDG).  But when the
+    # primary's own section ends in an unconditional RETURN right before the
+    # first ENTRY, the following entry code is *unreachable* from the
+    # primary and belongs only to the entries (the ENCHAR/DECHAR pattern);
+    # keeping it would, e.g., make a parameter the primary only reads look
+    # written (a dead ``number = ...`` in DECHAR's code).  Drop it there.
+    first = positions[0]
+    head = [s for s in sub.body[:first] if not isinstance(s, IRComment)]
+    if head and isinstance(head[-1], IRReturn):
+        sub.body = sub.body[:first]
+    else:
+        sub.body = [st for st in sub.body if not isinstance(st, IREntry)]
     add_result_locals(sub, sub.name)
-    sub.body = [st for st in sub.body if not isinstance(st, IREntry)]
 
 
 def _references_name(body: list[IRStatement], name: str) -> bool:
