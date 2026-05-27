@@ -3699,6 +3699,9 @@ def _lower_int_literal(node: Node) -> IRLiteral:
     if not m:
         return IRLiteral(cpp_text=raw)
     value, kind = m.group(1), m.group(2)
+    # Fortran integer literals are decimal; strip any leading zeros so C++
+    # doesn't read ``08`` / ``09`` as a (invalid) octal constant.
+    value = str(int(value))
     k = int(kind) if kind else 4
     if k <= 4:
         return IRLiteral(cpp_text=value, cpp_type="std::int32_t")
