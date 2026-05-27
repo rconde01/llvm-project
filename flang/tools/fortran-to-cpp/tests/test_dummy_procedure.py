@@ -9,7 +9,14 @@ from __future__ import annotations
 
 import unittest
 
-from _support import convert, have_cxx, have_flang, run
+from _support import (
+    convert,
+    convert_project,
+    have_cxx,
+    have_flang,
+    run,
+    run_project,
+)
 
 
 DUMMY_PROC_F90 = """\
@@ -49,6 +56,55 @@ class DummyProcedureRunTests(unittest.TestCase):
     def test_calls_the_passed_function(self) -> None:
         # square(3) + square(3) = 9 + 9 = 18
         self.assertEqual(float(run(DUMMY_PROC_F90).strip()), 18.0)
+
+
+# A dummy procedure that the receiving routine only *forwards* (never calls
+# locally) gives the per-routine pass no argument count or types to work
+# from.  The whole-program signature inference recovers them from the actual
+# routine passed in — here a 3-argument callback whose third argument is a
+# ``double`` *output*, which a float-based wrapper could not bind.
+FORWARDED_PROC_F90 = """\
+      subroutine engine(refn, lo, hi, mid)
+      external refn
+      double precision lo, hi, mid
+      mid = 0.0d0
+      call refn(lo, hi, mid)
+      end
+
+      subroutine driver(refn, lo, hi, mid)
+      external refn
+      double precision lo, hi, mid
+      call engine(refn, lo, hi, mid)
+      end
+
+      subroutine average(a, b, m)
+      double precision a, b, m
+      m = (a + b) / 2.0d0
+      end
+
+      program p
+      external average
+      double precision m
+      call driver(average, 2.0d0, 6.0d0, m)
+      print *, m
+      end
+"""
+
+
+@unittest.skipUnless(have_flang(), "flang binary not available")
+class ForwardedDummyProcedureEmitTests(unittest.TestCase):
+    def test_signature_inferred_from_actual(self) -> None:
+        cpp = convert_project(FORWARDED_PROC_F90)
+        # The forwarder's callback type carries the actual's real types,
+        # not float — including the double& output parameter.
+        self.assertIn("std::function<void(const double&, const double&, double&)>", cpp)
+
+
+@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
+class ForwardedDummyProcedureRunTests(unittest.TestCase):
+    def test_output_argument_writes_through(self) -> None:
+        # average(2, 6) writes m = 4 through the double& output parameter.
+        self.assertEqual(float(run_project(FORWARDED_PROC_F90).strip()), 4.0)
 
 
 if __name__ == "__main__":

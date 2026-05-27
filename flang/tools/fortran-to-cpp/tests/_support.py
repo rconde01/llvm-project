@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 
 from converter import convert_file
+from converter.project import convert_files
 
 RUNTIME_INCLUDE = Path(__file__).resolve().parent.parent / "runtime" / "include"
 
@@ -72,6 +73,57 @@ def run(src: str, *, suffix: str = ".f90") -> str:
             raise AssertionError(
                 "compile failed:\n" + comp.stderr + "\n--- generated ---\n"
                 + cpp.read_text()
+            )
+        result = subprocess.run([str(exe)], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise AssertionError("run failed:\n" + result.stderr)
+        return result.stdout
+
+
+def convert_project(src: str, *, suffix: str = ".f90") -> str:
+    """Convert a snippet through the whole-program path and return all of
+    the generated C++ (header + source) concatenated.
+
+    Use this for features that only the cross-routine passes implement —
+    e.g. dummy-procedure signature inference — which ``convert`` (the
+    single-file path) does not run.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        src_path = Path(d) / ("in" + suffix)
+        src_path.write_text(src)
+        outputs = convert_files([src_path])
+        return "\n".join(outputs.values())
+
+
+def run_project(src: str, *, suffix: str = ".f90") -> str:
+    """Convert through the whole-program path, compile and run; return
+    stdout.  Writes every generated output (shared header + source) so the
+    source's ``#include`` of the header resolves."""
+    cxx = _cxx()
+    assert cxx is not None, "no C++ compiler"
+    with tempfile.TemporaryDirectory() as d:
+        src_path = Path(d) / ("in" + suffix)
+        src_path.write_text(src)
+        outputs = convert_files([src_path])
+        main_cpp: Path | None = None
+        for name, text in outputs.items():
+            if Path(name).suffix in (".hpp", ".h"):
+                (Path(d) / Path(name).name).write_text(text)  # shared header
+            else:
+                main_cpp = Path(d) / "out.cpp"
+                main_cpp.write_text(text)
+        assert main_cpp is not None, "no .cpp output produced"
+        exe = Path(d) / "out"
+        comp = subprocess.run(
+            [cxx, "-std=c++20", "-I", str(RUNTIME_INCLUDE), "-I", str(d),
+             str(main_cpp), "-o", str(exe)],
+            capture_output=True,
+            text=True,
+        )
+        if comp.returncode != 0:
+            raise AssertionError(
+                "compile failed:\n" + comp.stderr + "\n--- generated ---\n"
+                + main_cpp.read_text()
             )
         result = subprocess.run([str(exe)], capture_output=True, text=True)
         if result.returncode != 0:
