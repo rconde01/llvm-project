@@ -50,6 +50,17 @@ constexpr T &byref(T &&value) noexcept {
   return value;
 }
 
+// A decay copy of ``value`` (a prvalue of the bare value type).  Used at a
+// call site as ``byref(val(k))`` to bind a *constant* actual -- e.g. a
+// PARAMETER -- to a modifiable dummy: ``byref`` would otherwise preserve
+// the actual's const-ness.  The prvalue copy materializes a writable
+// temporary whose lifetime spans the enclosing call, reproducing Fortran's
+// copy-in (the write-back is discarded).
+template <class T>
+constexpr std::remove_cvref_t<T> val(T &&value) noexcept {
+  return static_cast<T &&>(value);
+}
+
 // ---- Elemental math intrinsics --------------------------------------------
 //
 // Fortran's math intrinsics are *elemental*: applied to an array they map

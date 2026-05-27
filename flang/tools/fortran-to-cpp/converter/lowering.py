@@ -686,26 +686,44 @@ def _materialize_value_args(tu: IRTranslationUnit) -> None:
             and p.intent != "in"
         )
 
-    def wrap(callee: str, args) -> list:
+    def wrap(callee: str, args, const_names: set[str]) -> list:
         out = []
         for i, a in enumerate(args):
             if isinstance(a, rvalue_nodes) and wants_ref(callee, i):
                 out.append(IRFunctionCall(callee="fortran::byref", args=(a,)))
+            elif (
+                isinstance(a, IRName)
+                and a.name in const_names
+                and wants_ref(callee, i)
+            ):
+                # A PARAMETER constant (a const local) passed to a modifiable
+                # dummy: bind a writable copy (Fortran copy-in; write-back
+                # discarded).  ``byref`` alone keeps the const, so copy first.
+                out.append(
+                    IRFunctionCall(
+                        callee="fortran::byref",
+                        args=(IRFunctionCall(callee="fortran::val", args=(a,)),),
+                    )
+                )
             else:
                 out.append(a)
         return out
 
-    def on_expr(e: IRExpr) -> IRExpr:
-        if isinstance(e, IRFunctionCall) and e.callee in by_name:
-            return IRFunctionCall(callee=e.callee, args=tuple(wrap(e.callee, e.args)))
-        return e
-
-    def on_stmt(s: IRStatement) -> IRStatement:
-        if isinstance(s, IRCall) and s.callee in by_name:
-            s.args = wrap(s.callee, s.args)
-        return s
-
     for sub in tu.subprograms:
+        const_names = {loc.name for loc in sub.locals if loc.is_parameter}
+
+        def on_expr(e: IRExpr) -> IRExpr:
+            if isinstance(e, IRFunctionCall) and e.callee in by_name:
+                return IRFunctionCall(
+                    callee=e.callee, args=tuple(wrap(e.callee, e.args, const_names))
+                )
+            return e
+
+        def on_stmt(s: IRStatement) -> IRStatement:
+            if isinstance(s, IRCall) and s.callee in by_name:
+                s.args = wrap(s.callee, s.args, const_names)
+            return s
+
         sub.body = [
             map_statement(st, on_stmt=on_stmt, on_expr=lambda e: map_expr(e, on_expr))
             for st in sub.body

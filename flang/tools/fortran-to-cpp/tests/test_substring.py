@@ -33,11 +33,32 @@ class SubstringEmitTests(unittest.TestCase):
         self.assertIn("s(7, fortran::len(s))", cpp)
 
 
+SUBSTRING_CMP_F90 = """\
+program p
+  character(len=11) :: s
+  s = "abcdeabcde "
+  if (s(1:5) == s(6:10)) then
+    print *, "eq"
+  else
+    print *, "ne"
+  end if
+  if (s(1:5) /= s(7:11)) then
+    print *, "ne2"
+  end if
+end program
+"""
+
+
 @unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
 class SubstringRunTests(unittest.TestCase):
     def test_substring_slices(self) -> None:
         lines = [l.strip() for l in run(SUBSTRING_F90).splitlines() if l.strip()]
         self.assertEqual(lines, ["hello", "world", "world"])
+
+    def test_substring_comparison(self) -> None:
+        # s(1:5)=="abcde"==s(6:10) -> eq; s(7:11)=="bcde " differs -> ne2.
+        lines = [l.strip() for l in run(SUBSTRING_CMP_F90).splitlines() if l.strip()]
+        self.assertEqual(lines, ["eq", "ne2"])
 
 
 if __name__ == "__main__":

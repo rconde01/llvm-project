@@ -206,6 +206,29 @@ public:
     friend std::ostream &operator<<(std::ostream &os, const Substring &s) {
       return os << s.view();
     }
+    /// List-directed read into a substring: take the next token (the
+    /// substring assignment pads/truncates to the slice width).
+    friend std::istream &operator>>(std::istream &is, Substring s) {
+      std::string token;
+      is >> token;
+      s = std::string_view{token};
+      return is;
+    }
+    /// Fortran character comparison (blank-padded), so a substring compares
+    /// against another substring, a FortranString, or a literal.  An exact
+    /// (Substring, Substring) overload plus a constrained template (the same
+    /// shape as CharRef's) avoids the C++20 reversed-candidate ambiguity
+    /// that a single string_view overload would create.  C++20 synthesizes
+    /// ``!=`` from these.
+    friend bool operator==(const Substring &a, const Substring &b) noexcept {
+      return detail::compare_padded(a.view(), b.view()) == 0;
+    }
+    template <typename S>
+      requires(std::is_convertible_v<const S &, std::string_view> &&
+               !std::is_same_v<std::remove_cvref_t<S>, Substring>)
+    friend bool operator==(const Substring &a, const S &b) noexcept {
+      return detail::compare_padded(a.view(), std::string_view(b)) == 0;
+    }
 
   private:
     char *base_;
@@ -448,6 +471,11 @@ public:
              !std::is_same_v<std::remove_cvref_t<S>, CharRef>)
   friend bool operator==(const CharRef &a, const S &b) noexcept {
     return detail::compare_padded(a.view(), std::string_view(b)) == 0;
+  }
+  /// Fortran character ordering (blank-padded lexicographic), so a CHARACTER
+  /// view participates in ``.LT.`` / ``.GT.`` comparisons.
+  friend bool operator<(const CharRef &a, const CharRef &b) noexcept {
+    return detail::compare_padded(a.view(), b.view()) < 0;
   }
 
 private:
