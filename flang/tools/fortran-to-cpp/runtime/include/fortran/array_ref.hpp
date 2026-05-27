@@ -495,11 +495,20 @@ public:
   CharArrayRef(ArrayRef<FortranString<N>, 1> a) noexcept
       : base_(reinterpret_cast<char *>(a.data())), elem_len_(N),
         lower_(a.lbound(1)), count_(a.size()) {}
+  /// From a single character scalar view (scalar/array storage assoc).
+  CharArrayRef(CharRef s) noexcept
+      : base_(s.data()), elem_len_(s.size()), lower_(1), count_(1) {}
 
   /// 1-based element ``x(i)`` as a writable character view.
   constexpr CharRef operator()(index_t i) const noexcept {
     return CharRef(base_ + (i - lower_) * static_cast<index_t>(elem_len_),
                    elem_len_);
+  }
+  /// Sequence association from element ``i`` onward (``call s(cell(i))``).
+  constexpr CharArrayRef from_element(index_t i) const noexcept {
+    const index_t off = i - lower_;
+    return CharArrayRef(base_ + off * static_cast<index_t>(elem_len_),
+                        elem_len_, 1, count_ - off);
   }
   constexpr index_t size() const noexcept { return count_; }
   constexpr index_t lbound(std::size_t = 1) const noexcept { return lower_; }
@@ -514,6 +523,12 @@ private:
   index_t lower_;
   index_t count_;
 };
+
+/// Sequence association of a character-cell element actual to a character
+/// array dummy: ``call s(cell(i))`` views the cell from element ``i`` on.
+inline CharArrayRef elem_tail(const CharArrayRef &cell, index_t i) noexcept {
+  return cell.from_element(i);
+}
 
 } // namespace fortran
 
