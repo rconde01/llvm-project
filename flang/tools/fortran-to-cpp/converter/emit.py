@@ -385,6 +385,19 @@ def _emit_local(
             }[storage]
     else:
         prefix = ""
+    # An assumed-length CHARACTER *array* local (an ENTRY-shared dummy of a
+    # sibling entry, not this entry's argument) is a character-array view,
+    # not an owning ``Array<std::string_view>`` — which isn't a real type.
+    # Emit a null ``CharArrayRef`` so element/substring access type-checks;
+    # the code that uses it is unreachable for this entry.
+    if (
+        loc.type.is_array
+        and loc.type.element_type_cpp == "std::string_view"
+        and loc.type.array_rank == 1
+    ):
+        out.write(f"{pad}{prefix}fortran::CharArrayRef {loc.name}{{}};")
+        _emit_trailing(out, loc.trailing_comments)
+        return
     if (
         loc.type.is_array
         and _is_scalar_constant(loc.initializer)

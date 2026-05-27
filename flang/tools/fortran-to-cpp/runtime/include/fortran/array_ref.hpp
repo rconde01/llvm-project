@@ -475,6 +475,11 @@ ArrayRef<T, R> seq_assoc(const ArrayRef<T, 1> &flat,
 /// bound, and count instead.
 class CharArrayRef {
 public:
+  /// Null view.  Arises for an assumed-length character array that is an
+  /// ENTRY-shared dummy of a *sibling* entry: the duplicated body declares
+  /// it as a local but the code that uses it is unreachable for this entry.
+  constexpr CharArrayRef() noexcept
+      : base_(nullptr), elem_len_(0), lower_(1), count_(0) {}
   constexpr CharArrayRef(char *base, std::size_t elem_len, index_t lower,
                          index_t count) noexcept
       : base_(base), elem_len_(elem_len), lower_(lower), count_(count) {}
