@@ -409,6 +409,28 @@ public:
   friend std::ostream &operator<<(std::ostream &os, const CharRef &s) {
     return os << s.view();
   }
+  /// List-directed read into a CHARACTER variable: take the next token.
+  friend std::istream &operator>>(std::istream &is, CharRef s) {
+    std::string token;
+    is >> token;
+    s = std::string_view{token};
+    return is;
+  }
+  /// Fortran character comparison (blank-padded).  ``==`` also yields
+  /// ``!=`` in C++20.  A constrained template takes the other operand by
+  /// an exact ``const S&`` (then views it), so it beats the std /
+  /// FortranString string_view operators that would otherwise tie through
+  /// CharRef's own string_view conversion; the (CharRef, CharRef) overload
+  /// handles two views.
+  friend bool operator==(const CharRef &a, const CharRef &b) noexcept {
+    return detail::compare_padded(a.view(), b.view()) == 0;
+  }
+  template <typename S>
+    requires(std::is_convertible_v<const S &, std::string_view> &&
+             !std::is_same_v<std::remove_cvref_t<S>, CharRef>)
+  friend bool operator==(const CharRef &a, const S &b) noexcept {
+    return detail::compare_padded(a.view(), std::string_view(b)) == 0;
+  }
 
 private:
   constexpr void assign_(std::string_view s) noexcept {

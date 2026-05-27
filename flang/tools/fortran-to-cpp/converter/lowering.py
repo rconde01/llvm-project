@@ -3483,7 +3483,10 @@ def _lower_substring(node: Node) -> IRExpr:
     if lo is None:
         lo = IRLiteral(cpp_text="1")
     if hi is None:
-        hi = IRRaw(f"{base.name}.length")
+        # Open upper bound ``s(lo:)`` -> to the end.  ``fortran::len``
+        # works whether ``s`` is a FortranString or a CharRef (both view
+        # as a string), unlike a static ``.length`` member.
+        hi = IRRaw(f"fortran::len({base.name})")
     return IRFunctionCall(callee=base.name, args=(lo, hi))
 
 
