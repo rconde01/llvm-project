@@ -507,6 +507,17 @@ def _infer_procedure_arities(tu: IRTranslationUnit) -> None:
     # (sub_name, param_name) -> inferred argument-type tuple.
     models: dict[tuple[str, str], tuple[str, ...]] = {}
 
+    def bump(key: tuple[str, str], cand: tuple[str, ...]) -> bool:
+        """Grow ``key``'s inferred signature towards ``cand``.  Monotonic:
+        a slot only ever gains arguments (the widest actual seen wins, ties
+        keep the incumbent), so the fixpoint always terminates even when
+        two incompatible actuals reach the same dummy-procedure slot."""
+        cur = models.get(key)
+        if cur is None or len(cand) > len(cur):
+            models[key] = cand
+            return True
+        return False
+
     changed = True
     while changed:
         changed = False
@@ -533,11 +544,9 @@ def _infer_procedure_arities(tu: IRTranslationUnit) -> None:
                             continue
                         cand = models.get((caller.name, fwd.name))
                         # Forwarding ties the two signatures together.
-                        if cand is None and qkey in models:
-                            models[(caller.name, fwd.name)] = models[qkey]
+                        if qkey in models and bump((caller.name, fwd.name), models[qkey]):
                             changed = True
-                    if cand is not None and models.get(qkey) != cand:
-                        models[qkey] = cand
+                    if cand is not None and bump(qkey, cand):
                         changed = True
 
             def on_stmt(s: IRStatement) -> IRStatement:
