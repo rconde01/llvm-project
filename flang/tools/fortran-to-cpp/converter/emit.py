@@ -437,7 +437,16 @@ def _emit_local(
         out.write(f"{pad}{prefix}{loc.type.cpp} {loc.name} = nullptr;")
         _emit_trailing(out, loc.trailing_comments)
         return
-    out.write(f"{pad}{prefix}{loc.type.cpp} {loc.name}")
+    # An assumed-length CHARACTER local (only arises for an ENTRY-shared
+    # dummy that isn't this entry's argument) is a character view, not a
+    # ``std::string_view`` value — emit it as ``CharRef`` so substring
+    # indexing ``s(i, j)`` and write-through still type-check.
+    cpp = (
+        "fortran::CharRef"
+        if not loc.type.is_array and loc.type.cpp == "std::string_view"
+        else loc.type.cpp
+    )
+    out.write(f"{pad}{prefix}{cpp} {loc.name}")
     if loc.initializer is not None:
         out.write(f" = {_render_expr(loc.initializer)}")
     else:

@@ -332,6 +332,9 @@ inline std::istream &operator>>(std::istream &is, FortranString<N> &s) {
 /// can do ``out = ...`` and have the characters reach the caller.
 class CharRef {
 public:
+  /// Null view — for a CHARACTER local that is only an alias for storage
+  /// belonging to another ENTRY's dummy (never used on a live path).
+  constexpr CharRef() noexcept : data_(nullptr), size_(0) {}
   constexpr CharRef(char *data, std::size_t size) noexcept
       : data_(data), size_(size) {}
   template <std::size_t N>

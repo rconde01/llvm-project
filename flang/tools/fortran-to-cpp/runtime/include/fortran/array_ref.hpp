@@ -94,20 +94,20 @@ public:
       : data_(other.data()), lower_(other.lower_bounds()),
         extents_(other.extents()), strides_(other.strides()) {}
 
-  /// Fortran storage association: a scalar actual passed to a rank-1
-  /// (assumed-size) dummy is that dummy's sole element.  Rank-1 only.
-  template <std::size_t R = Rank>
-    requires(R == 1)
-  ArrayRef(T &scalar) noexcept : ArrayRef(&scalar, extent_array{{1}}) {}
+  /// Fortran storage association: a scalar actual passed to an
+  /// (assumed-size) array dummy is that dummy's sole element — a view of
+  /// one element, every extent 1.
+  ArrayRef(T &scalar) noexcept
+      : ArrayRef(&scalar, lower_array_filled(1)) {}
 
   /// Same, for a ``const`` or rvalue scalar actual (an intent(in) value,
   /// a literal, or an expression) — read in the callee, valid for the
   /// call.  Disabled when the element is already ``const`` (the overload
   /// above covers it) to avoid a redeclaration.
-  template <std::size_t R = Rank>
-    requires(R == 1 && !std::is_const_v<T>)
+  template <typename U = T>
+    requires(!std::is_const_v<U>)
   ArrayRef(const T &scalar) noexcept
-      : ArrayRef(const_cast<T *>(&scalar), extent_array{{1}}) {}
+      : ArrayRef(const_cast<T *>(&scalar), lower_array_filled(1)) {}
 
   /// Sequence association from a higher-rank view: flatten to a 1-D view
   /// over the contiguous storage (extent = total element count).  Rank-1
