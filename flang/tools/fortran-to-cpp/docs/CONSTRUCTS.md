@@ -108,6 +108,10 @@ The FORTRAN 77 implicit rule (names starting `I`–`N` are integer, the
 rest real) is applied **only** to names flang left untyped — it is a
 last-resort fallback, not the primary source of types.
 
+Integer literals are decimal in Fortran but a leading zero makes C++ read
+them as octal, so `08` (invalid octal) is normalized to `8` during
+lowering; `1.0d0` double-precision literals become `1.0e0`.
+
 ---
 
 ## Counted DO loop
@@ -407,6 +411,25 @@ spaces, a longer value truncates, and the length is part of the type.
 wrong. The fixed-size type also lives inline in COMMON/derived-type
 structs with the right storage size.
 
+**Named-constant lengths.** The length need not be a literal — it is
+often a `PARAMETER`:
+
+```fortran
+integer, parameter :: nwc = 1024
+character*(nwc) :: rcbufc(bufszc)
+```
+
+```cpp
+fortran::Array<fortran::FortranString<1024>, 1> rcbufc{{bufszc}};
+```
+
+The declaration's syntax tree only carries the symbolic length `NWC`, so
+the element type is taken from flang's *resolved* symbol type
+(`CHARACTER(1024,1)`) rather than the raw spec; that substitution is what
+turns `nwc` into `1024`. Falling back to the raw spec would have yielded
+`FortranString<1>` and mismatched every call that passes `rcbufc` to a
+`CHARACTER*(NWC)` dummy.
+
 ---
 
 ## Subroutines, functions, and argument intent
@@ -543,6 +566,51 @@ The state-capturing wrapper is the deciding factor: because routines
 receive their COMMON/SAVE state as parameters, the actual passed to
 `apply` must close over that state, which only a lambda (erased into a
 `std::function`) can do.
+
+**Recovering the signature under an implicit interface.** FORTRAN 77 has
+no interface block for a dummy procedure, so the routine that *receives*
+one has no idea how many arguments it takes or of what type. The naive
+choice — `std::function<R(float, …)>` with the argument count guessed
+from how the dummy is called locally — fails in two ways for a procedure
+that is only *forwarded* (passed straight on to another routine without
+being called):
+
+* **arity**: the local-call count defaults to 1, but the real procedure
+  may take 0 arguments (a bailout predicate) or 5 (a refinement
+  callback);
+* **types**: a `double` / `logical` callback cannot be driven through a
+  `float`-typed wrapper — a `float` temporary will not bind to the
+  callback's `double&` output parameter.
+
+The actual procedures passed at the top of the call tree *are* known
+(every routine is visible once the whole program is lowered), so their
+real parameter types are propagated across the call graph to a fixpoint:
+
+* passing a known subprogram as an actual gives the receiving
+  dummy-procedure parameter that subprogram's exact parameter types;
+* *forwarding* a dummy procedure into another routine's slot ties the two
+  signatures together (a `std::function` actual binds only to an
+  identical `std::function` type).
+
+```fortran
+c     GFEVNT only forwards UDREFN and UDBAIL onward; it never calls them.
+      call gfevnt ( gfstep, gfrefn, ..., gfbail, result )
+```
+
+```cpp
+// Inferred from the actual routines, not guessed:
+//   gfrefn(t1, t2, s1, s2, t)  ->  void(const double&, const double&,
+//                                       const bool&, const bool&, double&)
+//   gfbail()                   ->  bool()
+gfevnt(..., [&](const double& _a0, const double& _a1, const bool& _a2,
+               const bool& _a3, double& _a4) { gfrefn(_a0,_a1,_a2,_a3,_a4); },
+       ..., [&]() { return gfbail(); }, result);
+```
+
+The fixpoint grows each slot monotonically (the widest actual wins, ties
+keep the incumbent) so it always terminates, even when two incompatible
+actuals reach the same slot. A dummy procedure never reached by a
+concrete actual keeps the `float`-based fallback.
 
 ---
 
@@ -921,6 +989,17 @@ void first(fortran::CharArrayRef cell, fortran::CharRef item) {
 bound, and the count; `cell(i)` returns `CharRef(base + (i-lo)*len, len)`.
 It is constructible from a fixed-length character array
 (`Array<FortranString<N>, 1>`) or a single character scalar.
+
+**As an ENTRY-shared local.** An assumed-length array can only ever be a
+dummy argument. But ENTRY tail-duplication (see *ENTRY*) copies the whole
+shared body into each entry, so a cell that is a dummy of *one* entry can
+be referenced in code duplicated into a *sibling* entry that does not
+declare it. There it is not a parameter, so it would be emitted as an
+(impossible) `Array<std::string_view, 1>` local. Instead it becomes a
+null `fortran::CharArrayRef` — the referencing code is unreachable for
+that entry (the entry returns first), so the view is never dereferenced;
+it only has to compile and bind to the `CharArrayRef` callees it is
+forwarded to.
 
 ---
 
