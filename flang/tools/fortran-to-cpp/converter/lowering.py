@@ -3278,14 +3278,12 @@ def _lower_do_construct(node: Node) -> IRStatement:
             return IRWhile(condition=condition, body=body)
         return _unsupported(node, kind="DoConstruct (unsupported loop control)")
 
-    name = bounds.find_first("Name")
-    var = _safe_name(name.fortran) if name and name.fortran else "i"
-    exprs = list(bounds.find_all("ScalarIntExpr")) or list(bounds.find_all("Expr"))
-    # Expect [lower, upper] or [lower, upper, step].
-    lo = _lower_expression(exprs[0]) if exprs else IRRaw("0")
-    hi = _lower_expression(exprs[1]) if len(exprs) > 1 else IRRaw("0")
-    step = _lower_expression(exprs[2]) if len(exprs) > 2 else None
-
+    # Take the bounds from the LoopBounds' *direct* Scalar children
+    # (index var, then lo / hi / step).  A recursive search would wrongly
+    # pick up a nested expression — e.g. the argument of a function-call
+    # bound ``do i = 1, lastnb(segid)`` would yield ``segid`` as a phantom
+    # step.
+    var, lo, hi, step = _lower_loop_bounds(bounds)
     body = _lower_block(body_block) if body_block else []
     return IRDo(var=var, lower=lo, upper=hi, step=step, body=body)
 
