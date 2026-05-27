@@ -89,6 +89,11 @@ public:
   constexpr FortranString(std::string_view s) noexcept { assign_(s); }
   constexpr FortranString(const char *s) noexcept
       : FortranString(std::string_view{s}) {}
+  // From an assumed-length character view (CharRef): copy with the usual
+  // pad/truncate, so a CHARACTER*(*) actual binds to a fixed-length
+  // ``CHARACTER*N`` dummy (storage association to the first N characters).
+  // Defined out-of-line below, once CharRef is complete.
+  constexpr FortranString(const CharRef &r) noexcept;
 
   // Element-by-element copy: same length is a trivial copy; different
   // length goes through assign_'s pad/truncate.
@@ -500,6 +505,12 @@ inline FortranString<N>::Substring::operator CharRef() const noexcept {
 template <std::size_t N>
 inline FortranString<N>::ConstSubstring::operator CharRef() const noexcept {
   return CharRef(const_cast<char *>(base_), size_);
+}
+
+// From a character view: pad/truncate-copy into the fixed-length string.
+template <std::size_t N>
+constexpr FortranString<N>::FortranString(const CharRef &r) noexcept {
+  assign_(r.view());
 }
 
 // ---- Character <-> integer intrinsics -------------------------------------

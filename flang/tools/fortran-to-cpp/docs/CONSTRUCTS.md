@@ -986,6 +986,19 @@ using it for **read-only** assumed-length dummies too (not just writable
 ones) means substrings `s(lo:hi)` work uniformly — `std::string_view` has
 no `operator()(lo, hi)`.
 
+The reverse association also occurs: a `CHARACTER*(*)` actual (a `CharRef`)
+passed to a *fixed*-length `CHARACTER*N` dummy. `FortranString<N>` is
+constructible from a `CharRef`, copying the first `N` characters
+(blank-padded), so the call binds:
+
+```fortran
+      if ( eqchr(type, 'C') ) ...     ! type is CHARACTER*(*); eqchr's dummies are CHARACTER*1
+```
+
+```cpp
+if (eqchr(type, "C"sv)) ...           // CharRef -> FortranString<1> (first character)
+```
+
 ---
 
 ## Assumed-length CHARACTER arrays (character cells)
