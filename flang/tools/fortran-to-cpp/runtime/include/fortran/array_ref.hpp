@@ -463,6 +463,15 @@ ArrayRef<T, R> seq_assoc(const ArrayRef<T, 1> &flat,
   return ArrayRef<T, R>(flat.data(), lower, extents);
 }
 
+/// Fortran sequence association of a whole-array actual to a *scalar*
+/// dummy: the dummy is storage-associated with the array's first element.
+/// Returns a reference to that element (column-major origin = ``data()``),
+/// preserving const-ness and rank-agnostic across ``Array`` / ``ArrayRef``.
+template <typename A>
+constexpr decltype(auto) first(A &&a) {
+  return *a.data();
+}
+
 // ---- Assumed-length CHARACTER array dummy ---------------------------------
 
 /// Non-owning view of a rank-1 array of characters whose element length

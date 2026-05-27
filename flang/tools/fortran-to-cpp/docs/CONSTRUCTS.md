@@ -912,12 +912,35 @@ dasadi(handle, 1, dir);           // const int& -> ArrayRef<int,1> (1-elem view)
 dasadi(handle, 1, count(i) + j);  // rvalue -> ArrayRef<int,1>
 ```
 
+The reverse direction — a whole **array** actual passed to a **scalar**
+dummy — also associates: the dummy is the array's first element. Here a
+runtime conversion is not enough (an `ArrayRef` does not implicitly become
+a `T&`), so the call site is rewritten to take the first element
+explicitly:
+
+```fortran
+      i = touchi(dladsc)         ! dladsc is integer(*); touchi(n) is scalar
+```
+
+```cpp
+i = touchi(fortran::first(dladsc));  // *dladsc.data() -- the first element
+```
+
+`fortran::first` returns a reference to the column-major origin
+(`*a.data()`), so it works for both owning `Array` and `ArrayRef` and
+preserves const-ness. (When the receiving routine then re-passes that
+scalar to an *array* dummy of its own — the SPICE "counter array" idiom —
+the scalar→array element-view constructor takes over; only the first
+element is visible, which matches the storage the scalar was bound to.)
+
 **Design.** A rank-changing implicit conversion is normally a smell, but
 flang has already validated the association, so the converter only emits
 conversions Fortran sanctioned. Doing it in the runtime (a flatten-to-1-D
 `ArrayRef` constructor, plus scalar→array element-view constructors) keeps
 every call site unchanged and copy-free, versus rewriting each call to
-insert an explicit reshape.
+insert an explicit reshape. The whole-array→scalar direction is the one
+case that must be rewritten at the call site, since no implicit conversion
+from a view to a scalar reference exists (nor should it).
 
 ---
 

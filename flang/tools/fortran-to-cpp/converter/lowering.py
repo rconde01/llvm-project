@@ -392,7 +392,9 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
     so call arguments still line up with the callee's Fortran dummies."""
     params_by_name = {s.name: s.parameters for s in tu.subprograms}
 
-    def reshape(callee: str, args: list[IRExpr]) -> list[IRExpr]:
+    def reshape(
+        callee: str, args: list[IRExpr], caller_arrays: set[str]
+    ) -> list[IRExpr]:
         params = params_by_name.get(callee)
         if not params:
             return args
@@ -400,9 +402,19 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
         for i, p in enumerate(params):
             if i >= len(out):
                 break
-            if not p.type.is_array:
-                continue
             actual = out[i]
+            if not p.type.is_array:
+                # Whole-array actual passed to a *scalar* dummy: the dummy
+                # is storage-associated with the array's first element.
+                if (
+                    not p.type.is_procedure
+                    and isinstance(actual, IRName)
+                    and actual.name in caller_arrays
+                ):
+                    out[i] = IRFunctionCall(
+                        callee="fortran::first", args=(actual,)
+                    )
+                continue
             if (
                 p.type.array_rank >= 2
                 and p.type.array_extent_exprs
@@ -431,24 +443,29 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
                 )
         return out
 
-    def fix_stmt(stmt: IRStatement) -> IRStatement:
-        if isinstance(stmt, IRCall):
-            return IRCall(
-                callee=stmt.callee,
-                args=reshape(stmt.callee, list(stmt.args)),
-                leading_comments=stmt.leading_comments,
-                trailing_comments=stmt.trailing_comments,
-            )
-        return stmt
-
-    def fix_expr(expr: IRExpr) -> IRExpr:
-        if isinstance(expr, IRFunctionCall):
-            return IRFunctionCall(
-                callee=expr.callee, args=tuple(reshape(expr.callee, list(expr.args)))
-            )
-        return expr
-
     for sub in tu.subprograms:
+        caller_arrays = {
+            loc.name for loc in sub.locals if loc.type.is_array
+        } | {p.name for p in sub.parameters if p.type.is_array}
+
+        def fix_stmt(stmt: IRStatement) -> IRStatement:
+            if isinstance(stmt, IRCall):
+                return IRCall(
+                    callee=stmt.callee,
+                    args=reshape(stmt.callee, list(stmt.args), caller_arrays),
+                    leading_comments=stmt.leading_comments,
+                    trailing_comments=stmt.trailing_comments,
+                )
+            return stmt
+
+        def fix_expr(expr: IRExpr) -> IRExpr:
+            if isinstance(expr, IRFunctionCall):
+                return IRFunctionCall(
+                    callee=expr.callee,
+                    args=tuple(reshape(expr.callee, list(expr.args), caller_arrays)),
+                )
+            return expr
+
         sub.body = [
             map_statement(
                 s, on_stmt=fix_stmt, on_expr=lambda e: map_expr(e, fix_expr)
