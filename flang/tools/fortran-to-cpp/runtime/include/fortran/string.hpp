@@ -92,8 +92,15 @@ public:
   // From an assumed-length character view (CharRef): copy with the usual
   // pad/truncate, so a CHARACTER*(*) actual binds to a fixed-length
   // ``CHARACTER*N`` dummy (storage association to the first N characters).
-  // Defined out-of-line below, once CharRef is complete.
-  constexpr FortranString(const CharRef &r) noexcept;
+  // Constrained to an *exact* CharRef (not merely convertible-to-CharRef)
+  // so a std::string / literal -- convertible to both CharRef and
+  // string_view -- still picks the string_view ctor unambiguously.  The
+  // body instantiates only at a call site, where CharRef is complete.
+  template <typename C>
+    requires std::is_same_v<std::remove_cvref_t<C>, CharRef>
+  constexpr FortranString(const C &r) noexcept {
+    assign_(r.view());
+  }
 
   // Element-by-element copy: same length is a trivial copy; different
   // length goes through assign_'s pad/truncate.
@@ -109,6 +116,15 @@ public:
   }
   constexpr FortranString &operator=(const char *s) noexcept {
     return *this = std::string_view{s};
+  }
+  // Assigning a character view (CharRef): an exact-CharRef constrained
+  // overload (see the ctor above) so it beats the string_view path for a
+  // CharRef without making a std::string assignment ambiguous.
+  template <typename C>
+    requires std::is_same_v<std::remove_cvref_t<C>, CharRef>
+  constexpr FortranString &operator=(const C &r) noexcept {
+    assign_(r.view());
+    return *this;
   }
   template <std::size_t M>
   constexpr FortranString &operator=(const FortranString<M> &other) noexcept {
@@ -507,11 +523,6 @@ inline FortranString<N>::ConstSubstring::operator CharRef() const noexcept {
   return CharRef(const_cast<char *>(base_), size_);
 }
 
-// From a character view: pad/truncate-copy into the fixed-length string.
-template <std::size_t N>
-constexpr FortranString<N>::FortranString(const CharRef &r) noexcept {
-  assign_(r.view());
-}
 
 // ---- Character <-> integer intrinsics -------------------------------------
 
