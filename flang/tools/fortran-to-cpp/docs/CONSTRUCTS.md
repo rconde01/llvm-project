@@ -806,15 +806,28 @@ fortran::Array<float, 2> m{{3, 4}};
 work(m, 12);           // Array<float,2> -> ArrayRef<float,1> (flat view)
 ```
 
-The same covers a **scalar** actual passed to an array dummy (it is that
-dummy's first element) and a higher-rank **view** passed to a rank-1
-dummy.
+The same covers a **scalar** actual passed to an array dummy of any rank
+(it is that dummy's sole element, every extent 1), a higher-rank **view**
+passed to a rank-1 dummy, and a **const / rvalue** scalar (an intent(in)
+value, a literal, or an expression like `count(type) + j`) — the latter
+binds for the duration of the call, like the scalar copy-in elsewhere:
+
+```fortran
+call dasadi(handle, 1, dir)       ! dir is a scalar; data dummy is  integer(*)
+call dasadi(handle, 1, count(i)+j)! an expression as the array actual
+```
+
+```cpp
+dasadi(handle, 1, dir);           // const int& -> ArrayRef<int,1> (1-elem view)
+dasadi(handle, 1, count(i) + j);  // rvalue -> ArrayRef<int,1>
+```
 
 **Design.** A rank-changing implicit conversion is normally a smell, but
 flang has already validated the association, so the converter only emits
 conversions Fortran sanctioned. Doing it in the runtime (a flatten-to-1-D
-`ArrayRef` constructor) keeps every call site unchanged and copy-free,
-versus rewriting each call to insert an explicit reshape.
+`ArrayRef` constructor, plus scalar→array element-view constructors) keeps
+every call site unchanged and copy-free, versus rewriting each call to
+insert an explicit reshape.
 
 ---
 
@@ -839,8 +852,13 @@ void ucase(fortran::CharRef in, fortran::CharRef out) {
 
 A `CharRef` reads as a `std::string_view`, assigns with Fortran
 blank-pad/truncate semantics, and supports substring indexing
-`out(lo, hi)`. It is constructible from a `FortranString`, a `string_view`,
-a `std::string`, or a literal, so any character actual binds.
+`out(lo, hi)`. It is constructible from a mutable or `const`
+`FortranString`, a `string_view`, a `std::string`, a literal, or a
+substring proxy (`s(i:j)` passed as an actual), so any character actual
+binds. An assumed-length CHARACTER *local* — which only arises for an
+ENTRY-shared dummy that isn't the current entry's argument — is likewise
+emitted as a (null-initialized) `CharRef` rather than a `std::string_view`
+value, so `s(i, j)` still type-checks there.
 
 **Design — `CharRef` vs. `std::string_view&` vs. `std::string`.** A
 mutable `std::string_view&` was the first attempt but is wrong twice over:
