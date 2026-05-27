@@ -1779,7 +1779,7 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
     type_node = decl.first_child("DeclarationTypeSpec")
     if type_node is None:
         return []
-    ir_type = lower_type_spec(type_node)
+    decl_ir_type = lower_type_spec(type_node)
 
     is_parameter = False
     is_save = False
@@ -1819,6 +1819,13 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
         name_node = entity.first_child("Name")
         if name_node is None or not name_node.fortran:
             continue
+        # Prefer flang's resolved symbol type when available: it substitutes
+        # named-constant lengths/kinds that the raw declaration AST leaves
+        # symbolic, e.g. ``CHARACTER*(NWC)`` -> ``CHARACTER(1024,1)``.
+        ir_type = (
+            _scalar_type_from_fortran(name_node.sym_type)
+            if name_node.sym_type else None
+        ) or decl_ir_type
         initializer = None
         init = entity.find_first("Initialization")
         if init is not None:
