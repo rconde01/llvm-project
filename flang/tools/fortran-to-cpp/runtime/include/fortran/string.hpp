@@ -362,29 +362,26 @@ public:
   CharRef(const char *s) noexcept
       : data_(const_cast<char *>(s)), size_(std::char_traits<char>::length(s)) {}
 
-  // Assignment writes through to the viewed storage (pad / truncate).  The
-  // user-declared copy-assignment likewise copies characters (not the
-  // view), so ``out = other`` behaves like Fortran character assignment.
-  constexpr CharRef &operator=(std::string_view s) noexcept {
-    const std::size_t take = std::min(s.size(), size_);
-    std::copy_n(s.data(), take, data_);
-    for (std::size_t i = take; i < size_; ++i) {
-      data_[i] = ' ';
-    }
+  // Assignment writes characters through to the viewed storage (pad /
+  // truncate), so ``out = rhs`` behaves like Fortran character assignment
+  // for every kind of right-hand side.  The copy-assignment likewise
+  // copies characters (not the view).  A single constrained template
+  // covers all string-viewable right-hand sides (FortranString, a
+  // substring, std::string, a literal, string_view); taking the RHS by an
+  // exact ``const S&`` makes it win over the copy-assignment for those
+  // types, so ``out = fortranstring`` isn't ambiguous (it would be if both
+  // an ``operator=(string_view)`` and ``operator=(const CharRef&)`` were
+  // viable through a conversion).
+  constexpr CharRef &operator=(const CharRef &o) noexcept {
+    assign_(o.view());
     return *this;
   }
-  constexpr CharRef &operator=(const char *s) noexcept {
-    return *this = std::string_view{s};
-  }
-  constexpr CharRef &operator=(const CharRef &o) noexcept {
-    return *this = o.view();
-  }
-  /// Exact overload for a FortranString actual: without it ``charref =
-  /// fortranstring`` is ambiguous, since FortranString converts to both
-  /// std::string_view and CharRef.
-  template <std::size_t N>
-  constexpr CharRef &operator=(const FortranString<N> &s) noexcept {
-    return *this = s.view();
+  template <typename S>
+    requires(std::is_convertible_v<const S &, std::string_view> &&
+             !std::is_same_v<std::remove_cvref_t<S>, CharRef>)
+  constexpr CharRef &operator=(const S &s) noexcept {
+    assign_(std::string_view(s));
+    return *this;
   }
 
   constexpr operator std::string_view() const noexcept {
@@ -414,6 +411,14 @@ public:
   }
 
 private:
+  constexpr void assign_(std::string_view s) noexcept {
+    const std::size_t take = std::min(s.size(), size_);
+    std::copy_n(s.data(), take, data_);
+    for (std::size_t i = take; i < size_; ++i) {
+      data_[i] = ' ';
+    }
+  }
+
   char *data_;
   std::size_t size_;
 };
