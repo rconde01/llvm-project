@@ -70,6 +70,8 @@ constexpr int compare_padded(std::string_view a,
 
 } // namespace detail
 
+class CharRef;  // a substring proxy converts to this (defined below)
+
 template <std::size_t N> class FortranString {
   static_assert(N >= 1, "FortranString length must be >= 1");
 
@@ -157,6 +159,8 @@ public:
       return std::string_view{base_, size_};
     }
     constexpr std::size_t size() const noexcept { return size_; }
+    /// Pass a substring as an assumed-length CHARACTER actual (-> CharRef).
+    operator CharRef() const noexcept;
 
     friend std::ostream &operator<<(std::ostream &os, const ConstSubstring &s) {
       return os << s.view();
@@ -196,6 +200,8 @@ public:
       return std::string_view{base_, size_};
     }
     constexpr std::size_t size() const noexcept { return size_; }
+    /// Pass a substring as an assumed-length CHARACTER actual (-> CharRef).
+    operator CharRef() const noexcept;
 
     friend std::ostream &operator<<(std::ostream &os, const Substring &s) {
       return os << s.view();
@@ -331,6 +337,12 @@ public:
   template <std::size_t N>
   constexpr CharRef(FortranString<N> &s) noexcept
       : data_(s.data()), size_(N) {}
+  /// A read-only (intent(in)) FortranString actual.  All assumed-length
+  /// dummies are CharRef, so a ``const`` character variable must bind too;
+  /// the callee only reads it.
+  template <std::size_t N>
+  constexpr CharRef(const FortranString<N> &s) noexcept
+      : data_(const_cast<char *>(s.data())), size_(N) {}
   /// View a read-only string (a literal, a concatenation temporary, or an
   /// intent(in) actual).  Valid for the duration of the call; the callee
   /// writes only when the actual is a genuine variable, so this covers the
@@ -402,6 +414,17 @@ private:
   char *data_;
   std::size_t size_;
 };
+
+// Substring proxies -> CharRef (a substring used as an assumed-length
+// CHARACTER actual).  Defined here, now that CharRef is complete.
+template <std::size_t N>
+inline FortranString<N>::Substring::operator CharRef() const noexcept {
+  return CharRef(base_, size_);
+}
+template <std::size_t N>
+inline FortranString<N>::ConstSubstring::operator CharRef() const noexcept {
+  return CharRef(const_cast<char *>(base_), size_);
+}
 
 // ---- Character <-> integer intrinsics -------------------------------------
 

@@ -95,11 +95,19 @@ public:
         extents_(other.extents()), strides_(other.strides()) {}
 
   /// Fortran storage association: a scalar actual passed to a rank-1
-  /// (assumed-size) dummy is that dummy's sole element.  Rank-1 only; for
-  /// a ``const`` element a literal/expression actual binds for the call.
+  /// (assumed-size) dummy is that dummy's sole element.  Rank-1 only.
   template <std::size_t R = Rank>
     requires(R == 1)
   ArrayRef(T &scalar) noexcept : ArrayRef(&scalar, extent_array{{1}}) {}
+
+  /// Same, for a ``const`` or rvalue scalar actual (an intent(in) value,
+  /// a literal, or an expression) — read in the callee, valid for the
+  /// call.  Disabled when the element is already ``const`` (the overload
+  /// above covers it) to avoid a redeclaration.
+  template <std::size_t R = Rank>
+    requires(R == 1 && !std::is_const_v<T>)
+  ArrayRef(const T &scalar) noexcept
+      : ArrayRef(const_cast<T *>(&scalar), extent_array{{1}}) {}
 
   /// Sequence association from a higher-rank view: flatten to a 1-D view
   /// over the contiguous storage (extent = total element count).  Rank-1
@@ -481,6 +489,12 @@ public:
   template <std::size_t N>
   CharArrayRef(FortranString<N> &s) noexcept
       : base_(s.data()), elem_len_(N), lower_(1), count_(1) {}
+  /// From a fixed-length character-array *view* (a char array forwarded
+  /// from one dummy to another).
+  template <std::size_t N>
+  CharArrayRef(ArrayRef<FortranString<N>, 1> a) noexcept
+      : base_(reinterpret_cast<char *>(a.data())), elem_len_(N),
+        lower_(a.lbound(1)), count_(a.size()) {}
 
   /// 1-based element ``x(i)`` as a writable character view.
   constexpr CharRef operator()(index_t i) const noexcept {
