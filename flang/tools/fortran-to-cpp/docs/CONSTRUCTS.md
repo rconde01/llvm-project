@@ -851,8 +851,11 @@ void ucase(fortran::CharRef in, fortran::CharRef out) {
 ```
 
 A `CharRef` reads as a `std::string_view`, assigns with Fortran
-blank-pad/truncate semantics, and supports substring indexing
-`out(lo, hi)`. It is constructible from a mutable or `const`
+blank-pad/truncate semantics, supports substring indexing `out(lo, hi)`
+(an open upper bound `s(lo:)` lowers to `s(lo, fortran::len(s))`, which
+works for a `CharRef` or a `FortranString`), blank-padded comparison
+(`==` / `!=`), and list-directed `>>` reads. It is constructible from a
+mutable or `const`
 `FortranString`, a `string_view`, a `std::string`, a literal, or a
 substring proxy (`s(i:j)` passed as an actual), so any character actual
 binds. An assumed-length CHARACTER *local* — which only arises for an
