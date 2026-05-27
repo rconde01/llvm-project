@@ -55,6 +55,7 @@ from .ir import (
     IRSelectCase,
     IRStatement,
     IRStop,
+    IRSubstr,
     IRTriplet,
     IRUnaryOp,
     IRUnsupported,
@@ -88,6 +89,12 @@ def map_expr(expr: IRExpr, fn: ExprFn) -> IRExpr:
         )
     elif isinstance(expr, IRMember):
         expr = IRMember(base=map_expr(expr.base, fn), field=expr.field)
+    elif isinstance(expr, IRSubstr):
+        expr = IRSubstr(
+            base=map_expr(expr.base, fn),
+            lo=map_expr(expr.lo, fn),
+            hi=map_expr(expr.hi, fn),
+        )
     elif isinstance(expr, IRCast):
         expr = IRCast(cpp_type=expr.cpp_type, operand=map_expr(expr.operand, fn))
     elif isinstance(expr, IRImpliedDo):

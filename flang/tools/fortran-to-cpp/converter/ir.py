@@ -128,6 +128,18 @@ class IRMember:
 
 
 @dataclass(frozen=True, slots=True)
+class IRSubstr:
+    """A character substring ``base(lo:hi)`` -> ``base(lo, hi)`` (the
+    runtime FortranString / CharRef 1-based inclusive slice).  ``base`` is
+    any character designator — a name, an array element ``a(i)``, a
+    component — so it composes (``a(i)(lo:hi)``)."""
+
+    base: "IRExpr"
+    lo: "IRExpr"
+    hi: "IRExpr"
+
+
+@dataclass(frozen=True, slots=True)
 class IRTriplet:
     """One ``lo:hi:stride`` subscript of an array section.
 

@@ -39,6 +39,7 @@ from .ir import (
     IRLocal,
     IRMember,
     IRName,
+    IRSubstr,
     IRPointerAssign,
     IRPrint,
     IRRaw,
@@ -932,6 +933,11 @@ def _render_expr(expr: IRExpr) -> str:
         return f"{expr.callee}({args})"
     if isinstance(expr, IRMember):
         return f"{_render_expr(expr.base)}.{expr.field}"
+    if isinstance(expr, IRSubstr):
+        return (
+            f"{_render_expr(expr.base)}"
+            f"({_render_expr(expr.lo)}, {_render_expr(expr.hi)})"
+        )
     if isinstance(expr, IRCast):
         return f"static_cast<{expr.cpp_type}>({_render_expr(expr.operand)})"
     if isinstance(expr, IRArrayConstructor):

@@ -76,6 +76,7 @@ from .ir import (
     IRSection,
     IRSelectCase,
     IRStop,
+    IRSubstr,
     IRTriplet,
     IRWhere,
     IRWhile,
@@ -3472,8 +3473,8 @@ def _lower_substring(node: Node) -> IRExpr:
     defaults ``hi`` to the string's declared length."""
     dataref = node.first_child("DataRef")
     base = _lower_expression(dataref) if dataref is not None else None
-    if not isinstance(base, IRName):
-        return _expr_raw(node)  # substring of a non-trivial designator: TODO
+    if base is None:
+        return _expr_raw(node)
     rng = node.first_child("SubstringRange")
     lo: IRExpr | None = None
     hi: IRExpr | None = None
@@ -3493,10 +3494,10 @@ def _lower_substring(node: Node) -> IRExpr:
         lo = IRLiteral(cpp_text="1")
     if hi is None:
         # Open upper bound ``s(lo:)`` -> to the end.  ``fortran::len``
-        # works whether ``s`` is a FortranString or a CharRef (both view
-        # as a string), unlike a static ``.length`` member.
-        hi = IRRaw(f"fortran::len({base.name})")
-    return IRFunctionCall(callee=base.name, args=(lo, hi))
+        # works whether the base is a FortranString, a CharRef, or a
+        # character-array element (all view as a string).
+        hi = IRFunctionCall(callee="fortran::len", args=(base,))
+    return IRSubstr(base=base, lo=lo, hi=hi)
 
 
 def _lower_array_constructor(node: Node) -> IRExpr:
