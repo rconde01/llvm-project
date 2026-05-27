@@ -974,11 +974,14 @@ def _separate_parameters(
     sub.parameters = [p for _, p in by_idx]
     # Drop scalar locals that are really EXTERNAL-procedure declarations
     # (a ``real f`` result-type decl shadowing the procedure ``f``).  Keep
-    # the function's own result variable (shares the unit's name) and
-    # statement functions (also ``is_proc`` to flang, but lowered here to a
-    # lambda local that must stay).
+    # the function's own result variable (shares the unit's name), the
+    # unit's ENTRY result variables (also ``is_proc`` to flang, but they
+    # are result storage shared across entries, not externals to call), and
+    # statement functions (lowered here to a lambda local that must stay).
     if node is not None:
-        externals = _external_procedure_names(node) - {sub.name}
+        externals = (
+            _external_procedure_names(node) - {sub.name} - _entry_names(node)
+        )
         remaining = [
             loc
             for loc in remaining
@@ -1040,6 +1043,16 @@ def _external_procedure_names(node: Node) -> set[str]:
             continue
         if getattr(n, "is_proc", False) and not n.is_object:
             out.add(_safe_name(n.fortran))
+    return out
+
+
+def _entry_names(node: Node) -> set[str]:
+    """The names introduced by this unit's ``ENTRY`` statements."""
+    out: set[str] = set()
+    for st in _unit_descendants(node, "EntryStmt"):
+        nm = st.first_child("Name")
+        if nm is not None and nm.fortran:
+            out.add(_safe_name(nm.fortran))
     return out
 
 
@@ -1254,9 +1267,31 @@ def _split_entry_points(
     ]
     if not positions:
         return
-    for idx in positions:
-        marker = sub.body[idx]
-        assert isinstance(marker, IREntry)
+    markers = [sub.body[i] for i in positions]
+    # In a multi-entry FUNCTION every entry (and the primary) has its own
+    # result variable named after it, and they share storage.  Each result
+    # name therefore appears as an assignable variable throughout the unit's
+    # body, including the parts that belong to other entries.  Declare every
+    # result name as a local in each generated function so an assignment to
+    # a *sibling* entry's name (``ZZUNPCK = .TRUE.`` reached from the
+    # primary) isn't mistaken for an assignment to the global function;
+    # each function still lifts its *own* name into the return value.
+    resolved = _resolved_types(node) if sub.kind == "function" else {}
+    result_names = (
+        {sub.name} | {m.name for m in markers} if sub.kind == "function" else set()
+    )
+
+    def add_result_locals(target: IRSubprogram, own: str) -> None:
+        present = {loc.name for loc in target.locals} | {
+            p.name for p in target.parameters
+        }
+        for rn in result_names:
+            if rn == own or rn in present:
+                continue
+            ty = resolved.get(rn) or _implicit_scalar_type(rn)
+            target.locals.insert(0, IRLocal(name=rn, type=ty))
+
+    for idx, marker in zip(positions, markers):
         tail = [st for st in sub.body[idx + 1 :] if not isinstance(st, IREntry)]
         entry = IRSubprogram(
             name=marker.name,
@@ -1279,9 +1314,13 @@ def _split_entry_points(
             )
         _separate_parameters(entry, list(marker.arg_names), node)
         if sub.kind == "function":
+            add_result_locals(entry, marker.name)
             _lift_function_return(entry, None, node)
         sub.entry_points.append(entry)
-    # The primary keeps the whole body, minus the (transient) markers.
+    # The primary keeps the whole body, minus the (transient) markers; its
+    # sibling-entry result names become locals here (its own is lifted by
+    # the caller's _lift_function_return).
+    add_result_locals(sub, sub.name)
     sub.body = [st for st in sub.body if not isinstance(st, IREntry)]
 
 
