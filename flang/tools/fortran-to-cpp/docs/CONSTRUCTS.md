@@ -712,6 +712,17 @@ see ordinary routines. The cost is duplicated tail code and that SAVE
 state shared *across* entries of one unit is modeled per-routine rather
 than unit-wide.
 
+The primary keeps the whole body because an entry's code is often reached
+by falling through (or a `GOTO` into shared code, as in `FELDG`). The one
+exception: when the primary's own section ends in an unconditional
+`RETURN` immediately before the first `ENTRY`, that following code is
+unreachable from the primary and belongs only to the entries — the
+`ENCHAR` / `DECHAR` pattern (one encodes, the entry decodes). Keeping it
+would make a parameter the primary only reads (`ENCHAR`'s `number`) look
+*written* by the dead `DECHAR` assignment, so intent inference would
+leave it mutable and a `const`/literal actual couldn't bind. In that case
+the primary is truncated at the first entry.
+
 **Function entries.** When the unit is a *function*, every entry has its
 own result variable named after it, and the variables share storage, so
 an assignment to one entry's name can appear in code that belongs to
