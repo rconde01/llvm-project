@@ -3801,7 +3801,10 @@ _INTRINSIC_MAP: dict[str, str] = {
     # Rounding / truncating conversions (plain int/real/dble are casts,
     # handled separately in _lower_conversion_intrinsic).
     "nint": "fortran::nint", "aint": "fortran::aint",
-    "anint": "fortran::anint",
+    "anint": "fortran::anint", "dint": "fortran::aint",
+    # Lexical (collating-sequence) string comparisons.
+    "llt": "fortran::llt", "lle": "fortran::lle",
+    "lgt": "fortran::lgt", "lge": "fortran::lge",
 }
 
 

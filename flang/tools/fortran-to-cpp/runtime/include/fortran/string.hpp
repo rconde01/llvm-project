@@ -319,6 +319,24 @@ inline std::istream &operator>>(std::istream &is, FortranString<N> &s) {
   return is;
 }
 
+// ---- Lexical string comparison intrinsics (LLT/LLE/LGT/LGE) ---------------
+//
+// Fortran's lexical-comparison intrinsics compare on the collating sequence
+// with blank padding to the longer operand.  Any character actual converts
+// to ``std::string_view``.
+inline bool llt(std::string_view a, std::string_view b) noexcept {
+  return detail::compare_padded(a, b) < 0;
+}
+inline bool lle(std::string_view a, std::string_view b) noexcept {
+  return detail::compare_padded(a, b) <= 0;
+}
+inline bool lgt(std::string_view a, std::string_view b) noexcept {
+  return detail::compare_padded(a, b) > 0;
+}
+inline bool lge(std::string_view a, std::string_view b) noexcept {
+  return detail::compare_padded(a, b) >= 0;
+}
+
 // ---- Writable assumed-length character dummy ------------------------------
 
 /// Non-owning, writable view of a character variable whose length the
