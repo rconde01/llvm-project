@@ -29,6 +29,7 @@ from .emit import emit_shared_header, emit_translation_unit
 from .ir import IRTranslationUnit
 from .lowering import (
     _drop_external_function_locals,
+    _infer_procedure_arities,
     _infer_readonly_scalar_params,
     _materialize_value_args,
     _reshape_sequence_associated_args,
@@ -111,6 +112,10 @@ def convert_files(
     # cross-file call signatures are visible.  (Before state plumbing, so
     # user args still align 1:1 with user params.)
     _materialize_value_args(combined)
+    # Resolve dummy-procedure argument counts across the whole call graph
+    # before state plumbing wraps procedure actuals in lambdas (the wrapper
+    # arity depends on the inferred counts).
+    _infer_procedure_arities(combined)
     plumb_state(combined)
 
     results: dict[Path, str] = {

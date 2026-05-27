@@ -597,6 +597,11 @@ class IRParameter:
     """True for OPTIONAL dummy args; emitted as ``std::optional<T>`` with
     a ``= std::nullopt`` default (intent(in) scalars)."""
 
+    def cpp_param_type(self) -> str:
+        """Just the C++ parameter *type* (the declaration without the
+        trailing parameter name)."""
+        return self.cpp_param_decl(with_default=False).rsplit(" ", 1)[0]
+
     def cpp_param_decl(self, *, with_default: bool = True) -> str:
         """C++ parameter declaration string.
 

@@ -532,14 +532,25 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
             return extra
 
         def proc_lambda(actual_name: str, arity: int) -> IRRaw:
-            """A state-capturing lambda forwarding ``arity`` scalar args to
-            ``actual_name`` (a procedure passed as an argument)."""
+            """A state-capturing lambda adapting ``actual_name`` (a procedure
+            passed as an argument) to a ``std::function`` dummy.  Its
+            parameters mirror the actual procedure's own parameter types so
+            that ``double`` / ``logical`` outputs bind correctly; captured
+            state is prepended to the forwarded call."""
             sargs = state_args(actual_name) or []
             forwarded = [e.name for e in sargs if isinstance(e, IRName)]
-            params = ", ".join(f"float _a{k}" for k in range(arity))
-            forwarded += [f"_a{k}" for k in range(arity)]
-            call = f"{actual_name}({', '.join(forwarded)})"
             actual = by_name.get(actual_name)
+            if actual is not None:
+                lam_params = [
+                    f"{pp.cpp_param_type()} _a{k}"
+                    for k, pp in enumerate(actual.parameters)
+                ]
+                forwarded += [f"_a{k}" for k in range(len(actual.parameters))]
+            else:
+                lam_params = [f"float _a{k}" for k in range(arity)]
+                forwarded += [f"_a{k}" for k in range(arity)]
+            params = ", ".join(lam_params)
+            call = f"{actual_name}({', '.join(forwarded)})"
             ret = "" if actual is not None and actual.kind != "function" else "return "
             return IRRaw(f"[&]({params}) {{ {ret}{call}; }}")
 

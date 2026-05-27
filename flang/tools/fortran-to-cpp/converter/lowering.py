@@ -25,6 +25,7 @@ Currently supported (v1):
 from __future__ import annotations
 
 import copy
+import dataclasses
 import re
 from typing import Iterable, Literal
 
@@ -454,6 +455,110 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
             )
             for s in sub.body
         ]
+
+
+def _set_proc_signature(p: IRParameter, arg_types: tuple[str, ...]) -> None:
+    """Rewrite a dummy-procedure parameter's ``std::function<R(...)>`` type
+    to take exactly ``arg_types``, keeping its result type R."""
+    cpp = p.type.cpp
+    ret = cpp[len("std::function<"): cpp.index("(")]
+    p.type = dataclasses.replace(
+        p.type,
+        cpp=f"std::function<{ret}({', '.join(arg_types)})>",
+        proc_arity=len(arg_types),
+    )
+
+
+def _infer_procedure_arities(tu: IRTranslationUnit) -> None:
+    """Whole-program inference of dummy-procedure *signatures*.
+
+    Under FORTRAN 77's implicit interface a routine has no signature for a
+    procedure passed to it, so the per-routine pass models every dummy
+    procedure as ``std::function<R(float, ...)>`` with an argument count
+    guessed from local calls (defaulting to 1).  That is wrong both in
+    arity — a forwarded procedure such as ``GFBAIL`` (0 args) or ``GFREFN``
+    (5 args) is never called locally — and in argument *types*: ``GFREFN``
+    takes ``double`` / ``logical`` arguments, not ``float``, so a
+    ``float``-typed wrapper cannot bind its ``double&`` outputs.
+
+    The actual procedures passed in are known subprograms, so propagate
+    their real parameter types across the call graph until stable:
+
+      * passing a known subprogram as an actual gives the receiving
+        dummy-procedure parameter that subprogram's exact parameter types;
+      * *forwarding* one routine's dummy procedure into another's slot ties
+        the two signatures together (a ``std::function`` actual binds only
+        to an identical ``std::function`` type).
+
+    A dummy procedure never reached by a concrete actual keeps its original
+    ``float``-based guess.
+    """
+    by_name = {s.name: s for s in tu.subprograms}
+
+    def proc_param(sub: IRSubprogram, name: str) -> IRParameter | None:
+        for p in sub.parameters:
+            if p.name == name and p.type.is_procedure:
+                return p
+        return None
+
+    def sig_of(actual: IRSubprogram) -> tuple[str, ...]:
+        return tuple(pp.cpp_param_type() for pp in actual.parameters)
+
+    # (sub_name, param_name) -> inferred argument-type tuple.
+    models: dict[tuple[str, str], tuple[str, ...]] = {}
+
+    changed = True
+    while changed:
+        changed = False
+        for caller in tu.subprograms:
+
+            def visit(callee_name: str, args) -> None:
+                nonlocal changed
+                callee = by_name.get(callee_name)
+                if callee is None:
+                    return
+                for i, a in enumerate(args):
+                    if i >= len(callee.parameters):
+                        break
+                    q = callee.parameters[i]
+                    if not q.type.is_procedure or not isinstance(a, IRName):
+                        continue
+                    qkey = (callee.name, q.name)
+                    actual = by_name.get(a.name)
+                    if actual is not None:
+                        cand = sig_of(actual)
+                    else:
+                        fwd = proc_param(caller, a.name)
+                        if fwd is None:
+                            continue
+                        cand = models.get((caller.name, fwd.name))
+                        # Forwarding ties the two signatures together.
+                        if cand is None and qkey in models:
+                            models[(caller.name, fwd.name)] = models[qkey]
+                            changed = True
+                    if cand is not None and models.get(qkey) != cand:
+                        models[qkey] = cand
+                        changed = True
+
+            def on_stmt(s: IRStatement) -> IRStatement:
+                if isinstance(s, IRCall):
+                    visit(s.callee, s.args)
+                return s
+
+            def on_expr(e: IRExpr) -> IRExpr:
+                if isinstance(e, IRFunctionCall):
+                    visit(e.callee, e.args)
+                return e
+
+            for s in caller.body:
+                map_statement(
+                    s, on_stmt=on_stmt, on_expr=lambda e: map_expr(e, on_expr)
+                )
+
+    for sub in tu.subprograms:
+        for p in sub.parameters:
+            if p.type.is_procedure and (sub.name, p.name) in models:
+                _set_proc_signature(p, models[(sub.name, p.name)])
 
 
 def _resolve_component_allocations(tu: IRTranslationUnit) -> None:
