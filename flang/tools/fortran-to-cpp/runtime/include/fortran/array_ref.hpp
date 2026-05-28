@@ -436,6 +436,30 @@ bool associated(const ArrayRef<T, R> &p) noexcept {
   return p.data() != nullptr;
 }
 
+/// Fortran storage association of a scalar actual to a dummy of a
+/// *different* arithmetic type passed under an implicit interface
+/// (``DOUBLE PRECISION`` actual, ``INTEGER`` dummy, and the like).  The
+/// dummy aliases the actual's storage rather than taking a converted
+/// value, so view the lvalue's bytes as the dummy's type.
+template <typename To, typename From>
+To &storage_ref(From &x) noexcept {
+  return *reinterpret_cast<To *>(&x);
+}
+
+/// Fortran storage association of a whole-array actual to a rank-1 dummy of
+/// a *different* element type (e.g. a ``DOUBLE PRECISION`` array passed to
+/// an ``INTEGER`` copy routine).  Reinterpret the contiguous storage as a
+/// flat view of the dummy's element type, rescaling the element count by
+/// the size ratio.
+template <typename To, typename Src>
+ArrayRef<To, 1> reinterpret_array(const Src &v) noexcept {
+  using From = std::remove_reference_t<decltype(*v.data())>;
+  auto bytes = static_cast<index_t>(v.size()) * static_cast<index_t>(sizeof(From));
+  auto base = reinterpret_cast<To *>(
+      const_cast<std::remove_const_t<From> *>(v.data()));
+  return ArrayRef<To, 1>(base, {bytes / static_cast<index_t>(sizeof(To))});
+}
+
 /// Fortran sequence association of an array *element* actual to an array
 /// dummy: ``call s(a(i,j))`` where ``s``'s dummy is an array views the
 /// storage from ``a(i,j)`` to the end of ``a`` (column-major).  The

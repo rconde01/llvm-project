@@ -494,6 +494,57 @@ def _propagate_state_parameters(tu: IRTranslationUnit) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _storage_pun(
+    arg: IRExpr, actual_ty: IRType | None, param
+) -> IRExpr | None:
+    """Fortran storage association across mismatched types: an actual whose
+    C++ type *cannot bind* to the dummy's reference/view (passing a
+    ``DOUBLE PRECISION`` actual to an ``INTEGER`` dummy under an implicit
+    interface, and the like).  Reinterpret the storage so the otherwise
+    non-compiling call type-checks, matching F77 by-reference semantics.
+
+    Returns the reinterpreting expression, or ``None`` when no pun is
+    needed.  Gated on the *would-otherwise-fail* cases only — a const-ref or
+    by-value dummy already converts implicitly, so those are left untouched
+    and no currently-compiling call site changes."""
+    if not isinstance(arg, IRName) or actual_ty is None:
+        return None
+    pty = param.type
+    if pty.is_procedure or param.optional:
+        return None
+
+    def _is_arith(t: IRType) -> bool:
+        return (t.is_integer or t.is_real) and t.cpp not in ("std::string_view",)
+
+    # Scalar pun: only a non-const reference dummy (intent out/inout) fails
+    # to bind a different arithmetic type; a const-ref/value dummy converts.
+    if (
+        not pty.is_array
+        and not actual_ty.is_array
+        and param.intent != "in"
+        and _is_arith(pty)
+        and _is_arith(actual_ty)
+        and pty.cpp != actual_ty.cpp
+    ):
+        return IRRaw(text=f"fortran::storage_ref<{pty.cpp}>({arg.name})")
+
+    # Array pun: a rank-1 element-type mismatch has no converting ctor (the
+    # ArrayRef converting ctor only adds ``const``), so it can't bind.
+    if (
+        pty.is_array
+        and actual_ty.is_array
+        and pty.array_rank == 1
+        and actual_ty.array_rank == 1
+        and pty.element_type_cpp not in ("", "std::string_view")
+        and actual_ty.element_type_cpp not in ("", "std::string_view")
+        and pty.element_type_cpp != actual_ty.element_type_cpp
+    ):
+        return IRRaw(
+            text=f"fortran::reinterpret_array<{pty.element_type_cpp}>({arg.name})"
+        )
+    return None
+
+
 def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
     by_name = {s.name: s for s in tu.subprograms}
     all_struct_types = (
@@ -515,6 +566,11 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
         # ``name(...)`` using one is indexing/substring, not a call, so it
         # must not have state arguments prepended.
         shadowed = _shadowed_names(caller)
+        # Resolved types of this caller's own data, for detecting a storage
+        # pun (a type-mismatched actual that can't bind the dummy).
+        caller_types = {p.name: p.type for p in caller.parameters}
+        for loc in caller.locals:
+            caller_types.setdefault(loc.name, loc.type)
 
         def state_args(callee_name: str) -> list[IRExpr] | None:
             """The state arguments to prepend at a call to ``callee_name``,
@@ -569,6 +625,11 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
                     and a.name in by_name
                 ):
                     out.append(proc_lambda(a.name, callee.parameters[i].type.proc_arity))
+                elif i < len(callee.parameters) and isinstance(a, IRName):
+                    pun = _storage_pun(
+                        a, caller_types.get(a.name), callee.parameters[i]
+                    )
+                    out.append(pun if pun is not None else a)
                 else:
                     out.append(a)
             return out
