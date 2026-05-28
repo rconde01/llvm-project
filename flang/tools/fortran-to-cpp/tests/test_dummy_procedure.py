@@ -108,6 +108,76 @@ class ForwardedDummyProcedureRunTests(unittest.TestCase):
         self.assertEqual(float(run_project(FORWARDED_PROC_F90).strip()), 4.0)
 
 
+# A *nested* dummy procedure — a callback whose own first argument is itself
+# a callback (the SPICE geometry-finder ``UDFUNB(UDFUNS, et, bool)`` shape).
+# ``solver`` calls ``ufb`` locally, so it learns ufb's nested type; ``driver``
+# only *forwards* ufb, so its signature must be carried back from solver's
+# slot — across the forwarding chain, and including the nested callback's own
+# refined argument types — for the forwarded call to type-check.  The outer
+# fixpoint re-runs inference until those refinements propagate.
+NESTED_PROC_F77 = """\
+      subroutine scalarf(et, val)
+      double precision et, val
+      val = et * 2.0d0
+      end
+
+      subroutine boolf(uf, et, bool)
+      external uf
+      double precision et, v
+      logical bool
+      call uf(et, v)
+      bool = v .gt. 0.0d0
+      end
+
+      subroutine solver(ufs, ufb, et, found)
+      external ufs, ufb
+      double precision et
+      logical found, b
+      call ufb(ufs, et, b)
+      found = b
+      end
+
+      subroutine driver(ufs, ufb, et, found)
+      external ufs, ufb
+      double precision et
+      logical found
+      call solver(ufs, ufb, et, found)
+      end
+
+      program p
+      external scalarf, boolf
+      double precision et
+      logical found
+      et = 3.0d0
+      call driver(scalarf, boolf, et, found)
+      print *, found
+      end
+"""
+
+
+@unittest.skipUnless(have_flang(), "flang binary not available")
+class NestedDummyProcedureEmitTests(unittest.TestCase):
+    def test_forwarded_nested_signature_matches(self) -> None:
+        cpp = convert_project(NESTED_PROC_F77, suffix=".f")
+        nested = (
+            "const std::function<void(const std::function<void(const double&, "
+            "double&)>&, const double&, bool&)>& ufb"
+        )
+        # Both the routine that *calls* ufb and the one that only forwards it
+        # land on the identical nested type (forward declaration + definition
+        # for each = 4), so the forwarded call binds.
+        self.assertEqual(cpp.count(nested), 4)
+        # The unrefined float-default nested form must not survive.
+        self.assertNotIn("std::function<void(const std::function<void(float)>", cpp)
+
+
+@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
+class NestedDummyProcedureRunTests(unittest.TestCase):
+    def test_nested_callback_runs(self) -> None:
+        # scalarf(3) = 6 > 0, so found is true.
+        self.assertIn(run_project(NESTED_PROC_F77, suffix=".f").strip().upper()[:1], ("T", "1"))
+
+
 # A dummy procedure of one ENTRY is referenced by code that, in another
 # entry's standalone body, falls *after* a RETURN (Fortran entries share a
 # single linear body).  That sibling entry doesn't receive the procedure as

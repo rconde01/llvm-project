@@ -492,10 +492,16 @@ def _set_proc_signature(p: IRParameter, arg_types: tuple[str, ...]) -> None:
     )
 
 
-def _callback_param_type(ty: IRType) -> str:
+def _callback_param_type(ty: IRType, *, const: bool = False) -> str:
     """How a value of type ``ty`` appears as a callback (``std::function``)
     parameter — a reference for scalars, the matching view for arrays and
-    assumed-length characters."""
+    assumed-length characters.
+
+    ``const`` qualifies a scalar reference (``const T&``) when the argument
+    the callback is invoked with is itself read-only: a const actual can't
+    bind a mutable ``T&``, and a read-only argument mirrors an intent(in)
+    callback parameter — matching the concrete procedures that flow into the
+    same slot (whose inputs are ``const T&`` too)."""
     if ty.is_procedure:
         # A procedure passed to a procedure (nested callback) — by const ref,
         # as dummy procedures are declared.
@@ -506,7 +512,7 @@ def _callback_param_type(ty: IRType) -> str:
         return f"fortran::ArrayRef<{ty.element_type_cpp}, {ty.array_rank}>"
     if ty.cpp == "std::string_view":
         return "fortran::CharRef"
-    return f"{ty.cpp}&"
+    return f"const {ty.cpp}&" if const else f"{ty.cpp}&"
 
 
 def _local_call_signature(
@@ -519,6 +525,9 @@ def _local_call_signature(
     name_type = {loc.name: loc.type for loc in sub.locals}
     for p in sub.parameters:
         name_type.setdefault(p.name, p.type)
+    # Read-only arguments (an intent(in) scalar parameter) must appear as
+    # ``const T&`` callback parameters or the call ``p(et, ...)`` can't bind.
+    readonly = {p.name for p in sub.parameters if p.intent == "in"}
 
     widest: list[IRExpr] | None = None
 
@@ -544,7 +553,11 @@ def _local_call_signature(
     types: list[str] = []
     for a in widest:
         if isinstance(a, IRName) and a.name in name_type:
-            types.append(_callback_param_type(name_type[a.name]))
+            types.append(
+                _callback_param_type(
+                    name_type[a.name], const=a.name in readonly
+                )
+            )
         elif (
             isinstance(a, IRFunctionCall)
             and a.callee in name_type
@@ -594,95 +607,146 @@ def _infer_procedure_arities(tu: IRTranslationUnit) -> None:
     def sig_of(actual: IRSubprogram) -> tuple[str, ...]:
         return tuple(pp.cpp_param_type() for pp in actual.parameters)
 
-    # (sub_name, param_name) -> inferred argument-type tuple.
-    models: dict[tuple[str, str], tuple[str, ...]] = {}
+    def build_local_sigs() -> dict[tuple[str, str], tuple[str, ...]]:
+        """How each routine calls its *own* dummy procedures locally.  A
+        forwarded-only procedure (passed on but never called here) has no
+        local signal, so this is the only signature a callee slot can offer
+        when no concrete actual reaches it.  Read from the live parameter
+        types, so nested callback types sharpen as the outer loop refines
+        them."""
+        d: dict[tuple[str, str], tuple[str, ...]] = {}
+        for sub in tu.subprograms:
+            for p in sub.parameters:
+                if p.type.is_procedure:
+                    ls = _local_call_signature(sub, p.name)
+                    if ls is not None:
+                        d[(sub.name, p.name)] = ls
+        return d
 
-    def bump(key: tuple[str, str], cand: tuple[str, ...]) -> bool:
-        """Grow ``key``'s inferred signature towards ``cand``.  Monotonic:
-        a slot only ever gains arguments (the widest actual seen wins, ties
-        keep the incumbent), so the fixpoint always terminates even when
-        two incompatible actuals reach the same dummy-procedure slot."""
-        cur = models.get(key)
-        if cur is None or len(cand) > len(cur):
-            models[key] = cand
-            return True
-        return False
+    def run_fixpoint(
+        local_sigs: dict[tuple[str, str], tuple[str, ...]],
+    ) -> dict[tuple[str, str], tuple[str, ...]]:
+        # (sub_name, param_name) -> inferred argument-type tuple.
+        models: dict[tuple[str, str], tuple[str, ...]] = {}
 
-    changed = True
-    while changed:
-        changed = False
-        for caller in tu.subprograms:
+        def bump(key: tuple[str, str], cand: tuple[str, ...]) -> bool:
+            """Grow ``key``'s inferred signature towards ``cand``.  Monotonic:
+            a slot only ever gains arguments (the widest actual seen wins,
+            ties keep the incumbent), so the fixpoint always terminates even
+            when two incompatible actuals reach the same slot."""
+            cur = models.get(key)
+            if cur is None or len(cand) > len(cur):
+                models[key] = cand
+                return True
+            return False
 
-            def visit(callee_name: str, args) -> None:
-                nonlocal changed
-                callee = by_name.get(callee_name)
-                if callee is None:
-                    return
-                for i, a in enumerate(args):
-                    if i >= len(callee.parameters):
-                        break
-                    q = callee.parameters[i]
-                    if not q.type.is_procedure or not isinstance(a, IRName):
-                        continue
-                    qkey = (callee.name, q.name)
-                    actual = by_name.get(a.name)
-                    if actual is not None:
-                        cand = sig_of(actual)
-                    else:
-                        fwd = proc_param(caller, a.name)
-                        if fwd is None:
+        changed = True
+        while changed:
+            changed = False
+            for caller in tu.subprograms:
+
+                def visit(callee_name: str, args) -> None:
+                    nonlocal changed
+                    callee = by_name.get(callee_name)
+                    if callee is None:
+                        return
+                    for i, a in enumerate(args):
+                        if i >= len(callee.parameters):
+                            break
+                        q = callee.parameters[i]
+                        if not q.type.is_procedure or not isinstance(a, IRName):
                             continue
-                        cand = models.get((caller.name, fwd.name))
-                        # Forwarding ties the two signatures together.
-                        if qkey in models and bump((caller.name, fwd.name), models[qkey]):
+                        qkey = (callee.name, q.name)
+                        actual = by_name.get(a.name)
+                        if actual is not None:
+                            cand = sig_of(actual)
+                        else:
+                            fwd = proc_param(caller, a.name)
+                            if fwd is None:
+                                continue
+                            cand = models.get((caller.name, fwd.name))
+                            # Forwarding ties the two signatures together:
+                            # the caller's dummy must match the callee's
+                            # slot.  Use the slot's model, or — for a slot no
+                            # concrete actual reaches — how the callee calls
+                            # it locally.
+                            qsig = models.get(qkey) or local_sigs.get(qkey)
+                            if qsig is not None and bump(
+                                (caller.name, fwd.name), qsig
+                            ):
+                                changed = True
+                        if cand is not None and bump(qkey, cand):
                             changed = True
-                    if cand is not None and bump(qkey, cand):
-                        changed = True
 
-            def on_stmt(s: IRStatement) -> IRStatement:
-                if isinstance(s, IRCall):
-                    visit(s.callee, s.args)
-                return s
+                def on_stmt(s: IRStatement) -> IRStatement:
+                    if isinstance(s, IRCall):
+                        visit(s.callee, s.args)
+                    return s
 
-            def on_expr(e: IRExpr) -> IRExpr:
-                if isinstance(e, IRFunctionCall):
-                    visit(e.callee, e.args)
-                return e
+                def on_expr(e: IRExpr) -> IRExpr:
+                    if isinstance(e, IRFunctionCall):
+                        visit(e.callee, e.args)
+                    return e
 
-            for s in caller.body:
-                map_statement(
-                    s, on_stmt=on_stmt, on_expr=lambda e: map_expr(e, on_expr)
-                )
+                for s in caller.body:
+                    map_statement(
+                        s, on_stmt=on_stmt, on_expr=lambda e: map_expr(e, on_expr)
+                    )
+        return models
 
-    # Reconcile each dummy procedure's signature with how its own routine
-    # calls it locally.  The cross-program model gets scalar argument intents
-    # right, but a *nested* procedure argument can stay at the float-default
-    # there while the local call shows its real (already-inferred) callback
-    # type; refine those procedure-typed positions.  A procedure with no model
-    # at all (uncalled / forwarded-only) is taken entirely from the local call.
-    for sub in tu.subprograms:
-        for p in sub.parameters:
-            if not p.type.is_procedure:
-                continue
-            key = (sub.name, p.name)
-            local = _local_call_signature(sub, p.name)
-            model = models.get(key)
-            if model is None:
-                sig = local
-            elif local is not None and len(local) == len(model):
-                merged = list(model)
-                for i in range(len(model)):
-                    if (
-                        "std::function" in local[i]
-                        and "std::function" in model[i]
-                        and local[i] != model[i]
-                    ):
-                        merged[i] = local[i]
-                sig = tuple(merged)
-            else:
-                sig = model
-            if sig is not None:
-                _set_proc_signature(p, sig)
+    def reconcile(
+        models: dict[tuple[str, str], tuple[str, ...]],
+        local_sigs: dict[tuple[str, str], tuple[str, ...]],
+    ) -> bool:
+        """Apply each dummy procedure's inferred signature to its parameter,
+        merging the cross-program model with the local call.  The model gets
+        scalar argument intents right; a *nested* procedure argument can stay
+        at the float-default there while the local call shows its real
+        (already-inferred) callback type, so prefer the local for those
+        positions.  A procedure with no model at all (uncalled /
+        forwarded-only) is taken entirely from the local call.  Returns
+        whether any parameter type actually changed."""
+        any_changed = False
+        for sub in tu.subprograms:
+            for p in sub.parameters:
+                if not p.type.is_procedure:
+                    continue
+                key = (sub.name, p.name)
+                local = local_sigs.get(key)
+                model = models.get(key)
+                if model is None:
+                    sig = local
+                elif local is not None and len(local) == len(model):
+                    merged = list(model)
+                    for i in range(len(model)):
+                        if (
+                            "std::function" in local[i]
+                            and "std::function" in model[i]
+                            and local[i] != model[i]
+                        ):
+                            merged[i] = local[i]
+                    sig = tuple(merged)
+                else:
+                    sig = model
+                if sig is not None:
+                    before = p.type.cpp
+                    _set_proc_signature(p, sig)
+                    if p.type.cpp != before:
+                        any_changed = True
+        return any_changed
+
+    # Outer fixpoint: a forwarded-only procedure's signature is captured from
+    # the slot it flows into, whose own nested callback types are still being
+    # sharpened.  Re-run until parameter types stop changing so a refinement
+    # discovered in one pass (e.g. a nested ``double&`` output) propagates
+    # back through the forwarding chain on the next.  Monotonic (arity only
+    # grows, ``float`` placeholders only sharpen to real callbacks), so it
+    # converges; the cap is a safety bound.
+    for _ in range(16):
+        local_sigs = build_local_sigs()
+        models = run_fixpoint(local_sigs)
+        if not reconcile(models, local_sigs):
+            break
 
 
 def _resolve_component_allocations(tu: IRTranslationUnit) -> None:
