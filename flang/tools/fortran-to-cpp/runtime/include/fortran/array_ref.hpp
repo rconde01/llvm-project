@@ -463,6 +463,15 @@ ArrayRef<T, R> seq_assoc(const ArrayRef<T, 1> &flat,
   return ArrayRef<T, R>(flat.data(), lower, extents);
 }
 
+/// Same, for a whole *owning* array actual (``Array<T,1>``): template
+/// deduction won't see the Array -> ArrayRef conversion through the
+/// ``ArrayRef<T,1>`` parameter, so accept the Array directly.
+template <std::size_t R, typename T>
+ArrayRef<T, R> seq_assoc(Array<T, 1> &a, const std::array<index_t, R> &lower,
+                         const std::array<index_t, R> &extents) {
+  return ArrayRef<T, R>(a.data(), lower, extents);
+}
+
 /// Fortran sequence association of a whole-array actual to a *scalar*
 /// dummy: the dummy is storage-associated with the array's first element.
 /// Returns a reference to that element (column-major origin = ``data()``),
