@@ -1242,11 +1242,26 @@ def _separate_parameters(
         externals = (
             _external_procedure_names(node) - {sub.name} - _entry_names(node)
         )
-        remaining = [
-            loc
-            for loc in remaining
-            if loc.name not in externals or isinstance(loc.initializer, IRLambda)
-        ]
+        sibling_proc_dummies = _entry_dummy_arg_names(node) - set(wanted)
+        kept: list[IRLocal] = []
+        for loc in remaining:
+            if loc.name not in externals or isinstance(loc.initializer, IRLambda):
+                kept.append(loc)
+                continue
+            # A dummy *procedure* of a sibling ENTRY that this function does
+            # not receive as a parameter is reached only in code guarded by
+            # an earlier RETURN.  Re-type its result decl as an empty
+            # ``std::function`` local so the (dead) call type-checks instead
+            # of naming an undeclared symbol.  A plain EXTERNAL called
+            # directly (not an entry dummy) is still dropped so the call
+            # resolves to the real global.
+            if loc.name in sibling_proc_dummies and _is_called(
+                sub.body, loc.name
+            ):
+                arity = _count_call_arity(sub.body, loc.name)
+                loc.type = _procedure_param(loc.name, loc.type, arity).type
+                kept.append(loc)
+        remaining = kept
     sub.locals = remaining
     _deref_optional_params(sub)
 
@@ -1314,6 +1329,43 @@ def _entry_names(node: Node) -> set[str]:
         if nm is not None and nm.fortran:
             out.add(_safe_name(nm.fortran))
     return out
+
+
+def _entry_dummy_arg_names(node: Node) -> set[str]:
+    """Every dummy-argument name across this unit's ``ENTRY`` statements.
+
+    Used to tell a sibling entry's dummy procedure (which a function not
+    listing it must still declare, for the RETURN-guarded dead call) apart
+    from a plain EXTERNAL that's called directly and should resolve to the
+    real global."""
+    out: set[str] = set()
+    for st in _unit_descendants(node, "EntryStmt"):
+        for da in st.children:
+            if da.kind == "DummyArg":
+                nm = da.first_child("Name")
+                if nm is not None and nm.fortran:
+                    out.add(_safe_name(nm.fortran))
+    return out
+
+
+def _is_called(body: list[IRStatement], name: str) -> bool:
+    """True if ``name`` is invoked as a function call or ``CALL`` statement
+    anywhere in ``body`` (unlike :func:`_count_call_arity`, no fallback)."""
+    hit = [False]
+
+    def see_expr(e: IRExpr) -> IRExpr:
+        if isinstance(e, IRFunctionCall) and e.callee == name:
+            hit[0] = True
+        return e
+
+    def see_stmt(s: IRStatement) -> IRStatement:
+        if isinstance(s, IRCall) and s.callee == name:
+            hit[0] = True
+        return s
+
+    for s in body:
+        map_statement(s, on_stmt=see_stmt, on_expr=lambda e: map_expr(e, see_expr))
+    return hit[0]
 
 
 def _count_call_arity(body: list[IRStatement], name: str) -> int:

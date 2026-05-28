@@ -49,6 +49,31 @@ def convert(src: str, *, suffix: str = ".f90") -> str:
         tmp.unlink(missing_ok=True)
 
 
+def compile_only(src: str, *, suffix: str = ".f90") -> None:
+    """Convert a snippet and syntax-check the C++ (no link/run).
+
+    Use for routines that have no ``program`` to execute but whose
+    generated C++ must still type-check.
+    """
+    cxx = _cxx()
+    assert cxx is not None, "no C++ compiler"
+    with tempfile.TemporaryDirectory() as d:
+        src_path = Path(d) / ("in" + suffix)
+        src_path.write_text(src)
+        cpp = Path(d) / "out.cpp"
+        cpp.write_text(convert_file(src_path))
+        comp = subprocess.run(
+            [cxx, "-std=c++20", "-fsyntax-only", "-I", str(RUNTIME_INCLUDE), str(cpp)],
+            capture_output=True,
+            text=True,
+        )
+        if comp.returncode != 0:
+            raise AssertionError(
+                "compile failed:\n" + comp.stderr + "\n--- generated ---\n"
+                + cpp.read_text()
+            )
+
+
 def run(src: str, *, suffix: str = ".f90") -> str:
     """Convert, compile and run a Fortran snippet; return its stdout.
 

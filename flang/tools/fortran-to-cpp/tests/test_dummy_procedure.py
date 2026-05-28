@@ -10,6 +10,7 @@ from __future__ import annotations
 import unittest
 
 from _support import (
+    compile_only,
     convert,
     convert_project,
     have_cxx,
@@ -105,6 +106,53 @@ class ForwardedDummyProcedureRunTests(unittest.TestCase):
     def test_output_argument_writes_through(self) -> None:
         # average(2, 6) writes m = 4 through the double& output parameter.
         self.assertEqual(float(run_project(FORWARDED_PROC_F90).strip()), 4.0)
+
+
+# A dummy procedure of one ENTRY is referenced by code that, in another
+# entry's standalone body, falls *after* a RETURN (Fortran entries share a
+# single linear body).  That sibling entry doesn't receive the procedure as
+# an argument, so the dead call would name an undeclared symbol.  The
+# converter declares an empty ``std::function`` local in each such entry so
+# the unreachable call still type-checks.
+ENTRY_SHARED_PROC_F77 = """\
+      subroutine multi(a, out)
+      real a, out, b, c
+      logical cmp
+      external cmp
+      out = a
+      return
+
+      entry first(b, out)
+      out = b + 1.0
+      return
+
+      entry second(cmp, c, out)
+      if (cmp(c)) then
+         out = -c
+      end if
+      return
+      end
+"""
+
+
+@unittest.skipUnless(have_flang(), "flang binary not available")
+class EntrySharedProcedureDummyTests(unittest.TestCase):
+    def test_sibling_entry_declares_proc_local(self) -> None:
+        cpp = convert(ENTRY_SHARED_PROC_F77, suffix=".f")
+        # ``second`` takes ``cmp`` as a parameter ...
+        self.assertIn(
+            "void second(const std::function<bool(float)>& cmp", cpp
+        )
+        # ... while ``first`` (which doesn't) declares it as an empty local
+        # for the RETURN-guarded dead call carried over from ``second``.
+        self.assertIn("std::function<bool(float)> cmp{};", cpp)
+
+
+@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
+class EntrySharedProcedureDummyCompileTests(unittest.TestCase):
+    def test_compiles(self) -> None:
+        # The dead ``cmp(c)`` in ``first`` must still type-check.
+        compile_only(ENTRY_SHARED_PROC_F77, suffix=".f")
 
 
 if __name__ == "__main__":
