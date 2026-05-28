@@ -1860,10 +1860,17 @@ def _lower_specification(spec_part: Node) -> list[IRLocal]:
     # only the constexpr form.
     params = _lower_parameter_statements(spec_part)
     param_names = {p.name for p in params}
-    decls = [loc for loc in out if loc.name not in param_names]
     # Statement functions become generic lambdas, declared last so they can
-    # capture the locals they reference.
-    return params + decls + _lower_statement_functions(spec_part)
+    # capture the locals they reference.  A preceding type declaration of the
+    # same name (``logical isquot`` before ``isquot(code) = ...``) only states
+    # the function's result type, not a variable, so drop that plain local —
+    # otherwise it conflicts with the lambda.
+    stmt_funcs = _lower_statement_functions(spec_part)
+    sf_names = {sf.name for sf in stmt_funcs}
+    decls = [
+        loc for loc in out if loc.name not in param_names and loc.name not in sf_names
+    ]
+    return params + decls + stmt_funcs
 
 
 def _lower_statement_functions(spec_part: Node) -> list[IRLocal]:
@@ -3352,6 +3359,7 @@ def _extract_format(node: Node) -> str | None:
 _INTRINSIC_SUBROUTINE_MAP: dict[str, str] = {
     "cpu_time": "fortran::cpu_time",
     "system_clock": "fortran::system_clock",
+    "date_and_time": "fortran::date_and_time",
 }
 
 
