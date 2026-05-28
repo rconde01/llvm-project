@@ -97,7 +97,7 @@ public:
   // string_view -- still picks the string_view ctor unambiguously.  The
   // body instantiates only at a call site, where CharRef is complete.
   template <typename C>
-    requires std::is_same_v<std::remove_cvref_t<C>, CharRef>
+    requires requires { typename std::remove_cvref_t<C>::fortran_char_view_proxy; }
   constexpr FortranString(const C &r) noexcept {
     assign_(r.view());
   }
@@ -121,7 +121,7 @@ public:
   // overload (see the ctor above) so it beats the string_view path for a
   // CharRef without making a std::string assignment ambiguous.
   template <typename C>
-    requires std::is_same_v<std::remove_cvref_t<C>, CharRef>
+    requires requires { typename std::remove_cvref_t<C>::fortran_char_view_proxy; }
   constexpr FortranString &operator=(const C &r) noexcept {
     assign_(r.view());
     return *this;
@@ -171,6 +171,7 @@ public:
   /// Yields a non-owning view of the inclusive 1-based subrange.
   class ConstSubstring {
   public:
+    using fortran_char_view_proxy = void;
     constexpr ConstSubstring(const char *base, std::size_t size) noexcept
         : base_(base), size_(size) {}
     constexpr operator std::string_view() const noexcept {
@@ -198,6 +199,7 @@ public:
   /// if longer).
   class Substring {
   public:
+    using fortran_char_view_proxy = void;
     constexpr Substring(char *base, std::size_t size) noexcept
         : base_(base), size_(size) {}
 
@@ -394,6 +396,10 @@ inline bool lge(std::string_view a, std::string_view b) noexcept {
 /// can do ``out = ...`` and have the characters reach the caller.
 class CharRef {
 public:
+  /// Marker: a non-owning character view that FortranString can copy from
+  /// (also CharRef and the substring proxies).  Used to constrain the
+  /// FortranString char-view constructor / assignment.
+  using fortran_char_view_proxy = void;
   /// Null view — for a CHARACTER local that is only an alias for storage
   /// belonging to another ENTRY's dummy (never used on a live path).
   constexpr CharRef() noexcept : data_(nullptr), size_(0) {}
@@ -600,6 +606,20 @@ struct std::formatter<fortran::FortranString<N>, char>
     : std::formatter<std::string_view, char> {
   template <typename FmtContext>
   auto format(const fortran::FortranString<N> &s, FmtContext &ctx) const {
+    return std::formatter<std::string_view, char>::format(s.view(), ctx);
+  }
+};
+
+// A character *view* — CharRef or a substring proxy — formats like its
+// string view.  A constrained partial specialization (on the marker the
+// view types carry) rather than per-type specializations, since the
+// substring proxies are nested types whose ``N`` can't be deduced through
+// ``std::formatter<FortranString<N>::Substring>``.
+template <typename V>
+  requires requires { typename V::fortran_char_view_proxy; }
+struct std::formatter<V, char> : std::formatter<std::string_view, char> {
+  template <typename FmtContext>
+  auto format(const V &s, FmtContext &ctx) const {
     return std::formatter<std::string_view, char>::format(s.view(), ctx);
   }
 };

@@ -526,6 +526,12 @@ public:
   /// From a single character scalar view (scalar/array storage assoc).
   CharArrayRef(CharRef s) noexcept
       : base_(s.data()), elem_len_(s.size()), lower_(1), count_(1) {}
+  /// From a character literal / value passed to a character-array dummy
+  /// (``call s(cell, ..., ' ')``): a one-element cell over the (read-only)
+  /// characters, valid for the duration of the call.
+  CharArrayRef(std::string_view s) noexcept
+      : base_(const_cast<char *>(s.data())), elem_len_(s.size()), lower_(1),
+        count_(1) {}
 
   /// 1-based element ``x(i)`` as a writable character view.
   constexpr CharRef operator()(index_t i) const noexcept {
