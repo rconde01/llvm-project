@@ -496,6 +496,10 @@ def _callback_param_type(ty: IRType) -> str:
     """How a value of type ``ty`` appears as a callback (``std::function``)
     parameter — a reference for scalars, the matching view for arrays and
     assumed-length characters."""
+    if ty.is_procedure:
+        # A procedure passed to a procedure (nested callback) — by const ref,
+        # as dummy procedures are declared.
+        return f"const {ty.cpp}&"
     if ty.is_array:
         if ty.element_type_cpp == "std::string_view" and ty.array_rank == 1:
             return "fortran::CharArrayRef"
@@ -650,20 +654,33 @@ def _infer_procedure_arities(tu: IRTranslationUnit) -> None:
                     s, on_stmt=on_stmt, on_expr=lambda e: map_expr(e, on_expr)
                 )
 
+    # Reconcile each dummy procedure's signature with how its own routine
+    # calls it locally.  The cross-program model gets scalar argument intents
+    # right, but a *nested* procedure argument can stay at the float-default
+    # there while the local call shows its real (already-inferred) callback
+    # type; refine those procedure-typed positions.  A procedure with no model
+    # at all (uncalled / forwarded-only) is taken entirely from the local call.
     for sub in tu.subprograms:
         for p in sub.parameters:
-            if p.type.is_procedure and (sub.name, p.name) in models:
-                _set_proc_signature(p, models[(sub.name, p.name)])
-
-    # Fallback: a dummy procedure never reached by a concrete actual (an
-    # uncalled / forwarded-only routine) keeps the float-based guess for its
-    # *types* even once its arity is right.  Recover the types from how the
-    # routine calls it locally.
-    for sub in tu.subprograms:
-        for p in sub.parameters:
-            if not p.type.is_procedure or (sub.name, p.name) in models:
+            if not p.type.is_procedure:
                 continue
-            sig = _local_call_signature(sub, p.name)
+            key = (sub.name, p.name)
+            local = _local_call_signature(sub, p.name)
+            model = models.get(key)
+            if model is None:
+                sig = local
+            elif local is not None and len(local) == len(model):
+                merged = list(model)
+                for i in range(len(model)):
+                    if (
+                        "std::function" in local[i]
+                        and "std::function" in model[i]
+                        and local[i] != model[i]
+                    ):
+                        merged[i] = local[i]
+                sig = tuple(merged)
+            else:
+                sig = model
             if sig is not None:
                 _set_proc_signature(p, sig)
 
