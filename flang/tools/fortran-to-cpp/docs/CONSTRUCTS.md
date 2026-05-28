@@ -1073,3 +1073,45 @@ resolves the path relative to the including file), so the converter sees
 the included declarations inline and needs no special handling — the
 `PARAMETER`s and COMMON layouts in a shared `.inc` flow through exactly as
 if written in place.
+
+---
+
+## Command-line and environment intrinsics
+
+The toolkit's command-line programs reach the process environment through
+de-facto-standard vendor intrinsics: `IARGC` / `NARGS` / `GETARG` (command
+arguments), `GETENVQQ` (environment variables), and `SYSTEMQQ` / `SYSTEM`
+(run a shell command). These map to `fortran::` runtime helpers.
+
+```fortran
+      n = iargc()
+      call getarg(1, arg, status)
+```
+
+```cpp
+n = fortran::iargc();
+fortran::getarg(1, arg, status);
+```
+
+The command line is genuinely process-global, set once at start-up and
+only read afterward, so the generated `main` captures it and the runtime
+serves it — the one place a process-wide store is the right model rather
+than threaded state:
+
+```cpp
+int main(int argc, char** argv) {
+  fortran::set_command_args(argc, argv);
+  shellmain();
+  return 0;
+}
+```
+
+`IARGC()` returns the user-argument count (excluding the program name);
+`NARGS()` is the Compaq form that includes it. `GETARG(k, value, status)`
+copies the k-th argument (k = 0 is the program name) into `value` with
+Fortran blank-pad/truncate; `status` receives the length, or -1 if absent.
+
+**I/O unit expressions.** A unit need not be a literal or a bare variable
+— `READ (UNITS(NEST), …)` uses an array element. The unit is lowered as a
+full expression, so the subscript is preserved (`_units.in(units(nest))`)
+rather than collapsing to the bare array name.

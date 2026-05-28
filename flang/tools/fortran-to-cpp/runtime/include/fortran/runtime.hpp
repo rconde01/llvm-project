@@ -22,6 +22,7 @@
 #include "fortran/intrinsics.hpp"
 #include "fortran/io.hpp"
 #include "fortran/string.hpp"
+#include "fortran/system.hpp"
 #include "fortran/time.hpp"
 
 #endif // FORTRAN_RT_RUNTIME_HPP

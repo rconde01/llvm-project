@@ -674,6 +674,16 @@ def _materialize_value_args(tu: IRTranslationUnit) -> None:
     # are left alone: they already bind to a reference.
     rvalue_nodes = (IRLiteral, IRBinaryOp, IRUnaryOp, IRCast)
 
+    def is_value_call(a: IRExpr) -> bool:
+        """A call to a user *function* — its result is an rvalue, unlike an
+        array-element access (callee not a subprogram) or a reshape helper
+        (``fortran::first`` etc.) which yield references."""
+        return (
+            isinstance(a, IRFunctionCall)
+            and a.callee in by_name
+            and by_name[a.callee].kind == "function"
+        )
+
     def wants_ref(callee: str, i: int) -> bool:
         sub = by_name.get(callee)
         if sub is None or i >= len(sub.parameters):
@@ -689,7 +699,9 @@ def _materialize_value_args(tu: IRTranslationUnit) -> None:
     def wrap(callee: str, args, const_names: set[str]) -> list:
         out = []
         for i, a in enumerate(args):
-            if isinstance(a, rvalue_nodes) and wants_ref(callee, i):
+            if (isinstance(a, rvalue_nodes) or is_value_call(a)) and wants_ref(
+                callee, i
+            ):
                 out.append(IRFunctionCall(callee="fortran::byref", args=(a,)))
             elif (
                 isinstance(a, IRName)
@@ -3157,14 +3169,15 @@ def _unit_text(io_unit: Node | None) -> str | None:
         return None
     if io_unit.first_child("Variable") is not None:
         return None  # internal file (character variable)
-    lit = io_unit.find_first("IntLiteralConstant")
-    if lit is not None and lit.fortran:
-        return lit.fortran.split("_")[0]
-    # A bare scalar variable used as the unit (``write(lun, ...)``).
-    if io_unit.find_first("Add") is None and io_unit.find_first("Multiply") is None:
-        nm = io_unit.find_first("Name")
-        if nm is not None and nm.fortran:
-            return _safe_name(nm.fortran)
+    # Render the whole unit expression so a literal (``6``), a bare variable
+    # (``lun``), or an array element (``units(nest)``) all keep their full
+    # form — a bare ``find_first("Name")`` would drop array subscripts.
+    expr = io_unit.first_child("Expr")
+    if expr is not None:
+        return _render_expr_inline(_lower_expression(expr))
+    nm = io_unit.find_first("Name")
+    if nm is not None and nm.fortran:
+        return _safe_name(nm.fortran)
     return None
 
 
@@ -3365,6 +3378,10 @@ _INTRINSIC_SUBROUTINE_MAP: dict[str, str] = {
     "cpu_time": "fortran::cpu_time",
     "system_clock": "fortran::system_clock",
     "date_and_time": "fortran::date_and_time",
+    # Command-line / environment access used by the toolkit's CLI programs.
+    "getarg": "fortran::getarg",
+    "get_command_argument": "fortran::get_command_argument",
+    "system": "fortran::system",
 }
 
 
@@ -3938,6 +3955,10 @@ _INTRINSIC_MAP: dict[str, str] = {
     "atan2": "std::atan2", "sinh": "fortran::sinh", "cosh": "fortran::cosh",
     "tanh": "fortran::tanh", "floor": "std::floor", "ceiling": "std::ceil",
     "min": "fortran::min", "max": "fortran::max",
+    # Command-line / environment query intrinsics (functions).
+    "iargc": "fortran::iargc", "nargs": "fortran::nargs",
+    "getenvqq": "fortran::getenvqq", "systemqq": "fortran::systemqq",
+    "getlasterrorqq": "fortran::getlasterrorqq",
     # Bit-manipulation intrinsics.
     "iand": "fortran::iand", "ior": "fortran::ior", "ieor": "fortran::ieor",
     "ishft": "fortran::ishft", "btest": "fortran::btest",

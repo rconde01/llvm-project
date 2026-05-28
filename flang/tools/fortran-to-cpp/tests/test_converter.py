@@ -274,7 +274,7 @@ class EmitTests(unittest.TestCase):
         cpp = self._convert(HELLO_F90)
         self.assertIn("std::cout <<", cpp)
         self.assertIn('"hello, world"sv', cpp)
-        self.assertIn("int main()", cpp)
+        self.assertIn("int main(int argc, char** argv)", cpp)
         self.assertIn("hello()", cpp)
 
     def test_sum_to_n_translates_full_control_flow(self) -> None:

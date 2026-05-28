@@ -246,7 +246,8 @@ def _emit_cpp_main(out: StringIO, tu: IRTranslationUnit) -> None:
     if not main_progs:
         return
     main = main_progs[0]
-    out.write("\nint main() {\n")
+    out.write("\nint main(int argc, char** argv) {\n")
+    out.write("  fortran::set_command_args(argc, argv);\n")
     out.write(f"  {main.name}();\n")
     out.write("  return 0;\n")
     out.write("}\n")
