@@ -847,6 +847,40 @@ limitation: setup that runs *before* an entry — here `pi = 3.14159` — is
 not replayed when that entry is called directly, matching the
 tail-duplication model.)
 
+**Dummy procedures shared across entries.** A dummy *procedure* belongs to
+one entry's argument list but, through tail duplication, its call can land
+in a sibling entry's body — after a `RETURN`, so the call is dead, yet it
+must still type-check. The sibling doesn't receive the procedure as an
+argument, so naming it would be undeclared. Each such entry declares the
+procedure as an empty `std::function` local for the dead call:
+
+```fortran
+      entry first(b, out)
+      out = b + 1.0
+      return
+      entry second(cmp, c, out)   ! cmp is a LOGICAL dummy procedure
+      if (cmp(c)) out = -c
+      return
+```
+
+```cpp
+void first(const float& b, float& out) {
+  std::function<bool(float)> cmp{};   // sibling entry's proc dummy
+  out = b + 1.0f;
+  return;
+  if (cmp(c)) { out = -c; }           // dead, but type-checks
+}
+void second(const std::function<bool(float)>& cmp, const float& c, float& out) {
+  if (cmp(c)) { out = -c; }
+}
+```
+
+An `EXTERNAL` result-type declaration (`logical cmp`) would normally be
+dropped (it shadows the real procedure), but when the name is a dummy of a
+sibling entry it is instead re-typed as the empty `std::function` local. A
+plain `EXTERNAL` *called directly* — not an entry dummy — is still dropped
+so the call resolves to the real global.
+
 ---
 
 ## Assumed-size array dummies
@@ -941,6 +975,44 @@ every call site unchanged and copy-free, versus rewriting each call to
 insert an explicit reshape. The whole-array→scalar direction is the one
 case that must be rewritten at the call site, since no implicit conversion
 from a view to a scalar reference exists (nor should it).
+
+### Mismatched *types* (the implicit-interface pun)
+
+Without an interface block FORTRAN 77 also lets the actual and dummy
+*types* differ; the dummy then aliases the actual's storage rather than
+receiving a converted value. The classic case is `MOVED`, which copies a
+double-precision array by calling the integer copier `MOVEI` over twice as
+many elements, and routines that stash an integer id in a `DOUBLE
+PRECISION` local:
+
+```fortran
+      call movei(arrfrm, 2*ndim, arrto)   ! arrfrm/arrto are double precision
+      call zzbods2c(..., instid, found)   ! instid is double; code dummy is integer
+```
+
+```cpp
+movei(fortran::reinterpret_array<std::int32_t>(arrfrm), 2 * ndim,
+      fortran::reinterpret_array<std::int32_t>(arrto));
+zzbods2c(..., fortran::storage_ref<std::int32_t>(instid), found);
+```
+
+A C++ reference or `ArrayRef` view cannot bind a value of a different type,
+so the call site reinterprets the storage: `fortran::storage_ref<To>` for a
+scalar (`*reinterpret_cast<To*>(&x)`) and `fortran::reinterpret_array<To>`
+for a rank-1 array (a flat view of the same bytes, the element count
+rescaled by the size ratio). This matches Fortran's by-reference aliasing.
+
+**Design.** The rewrite is gated on the *would-otherwise-fail* cases only:
+a non-`const` reference dummy (intent out/inout) or an array-view dummy
+whose element type differs — neither has a binding. A `const`-ref or
+by-value dummy already converts implicitly (a genuine value conversion, as
+intended for ordinary numeric promotion), so it is left untouched. The gate
+guarantees no currently-compiling call site changes behavior; only calls
+that previously failed to compile gain the reinterpretation. (A read-only
+mismatched scalar dummy is the one residual gap: it value-converts silently
+rather than punning, which is correct for ordinary promotion but not for a
+deliberate same-storage pun — rare, and indistinguishable without an
+interface block.)
 
 ---
 
