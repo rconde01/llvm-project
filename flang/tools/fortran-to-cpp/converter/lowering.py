@@ -492,6 +492,69 @@ def _set_proc_signature(p: IRParameter, arg_types: tuple[str, ...]) -> None:
     )
 
 
+def _callback_param_type(ty: IRType) -> str:
+    """How a value of type ``ty`` appears as a callback (``std::function``)
+    parameter — a reference for scalars, the matching view for arrays and
+    assumed-length characters."""
+    if ty.is_array:
+        if ty.element_type_cpp == "std::string_view" and ty.array_rank == 1:
+            return "fortran::CharArrayRef"
+        return f"fortran::ArrayRef<{ty.element_type_cpp}, {ty.array_rank}>"
+    if ty.cpp == "std::string_view":
+        return "fortran::CharRef"
+    return f"{ty.cpp}&"
+
+
+def _local_call_signature(
+    sub: IRSubprogram, pname: str
+) -> tuple[str, ...] | None:
+    """Infer a dummy procedure's parameter types from how ``sub`` *calls*
+    it locally — the only signal when no concrete actual is ever passed
+    (an uncalled / forwarded-only routine).  Returns ``None`` if any
+    argument's type can't be resolved cheaply (then the default stands)."""
+    name_type = {loc.name: loc.type for loc in sub.locals}
+    for p in sub.parameters:
+        name_type.setdefault(p.name, p.type)
+
+    widest: list[IRExpr] | None = None
+
+    def consider(callee: str, args) -> None:
+        nonlocal widest
+        if callee == pname and (widest is None or len(args) > len(widest)):
+            widest = list(args)
+
+    def on_stmt(s: IRStatement) -> IRStatement:
+        if isinstance(s, IRCall):
+            consider(s.callee, s.args)
+        return s
+
+    def on_expr(e: IRExpr) -> IRExpr:
+        if isinstance(e, IRFunctionCall):
+            consider(e.callee, e.args)
+        return e
+
+    for s in sub.body:
+        map_statement(s, on_stmt=on_stmt, on_expr=lambda e: map_expr(e, on_expr))
+    if not widest:
+        return None
+    types: list[str] = []
+    for a in widest:
+        if isinstance(a, IRName) and a.name in name_type:
+            types.append(_callback_param_type(name_type[a.name]))
+        elif (
+            isinstance(a, IRFunctionCall)
+            and a.callee in name_type
+            and name_type[a.callee].is_array
+        ):
+            # ``buf(i)`` — a scalar element of a local array.
+            ty = name_type[a.callee]
+            elem = ty.element_type_cpp or ty.cpp
+            types.append("fortran::CharRef" if elem == "std::string_view" else f"{elem}&")
+        else:
+            return None  # unresolved argument — keep the default
+    return tuple(types)
+
+
 def _infer_procedure_arities(tu: IRTranslationUnit) -> None:
     """Whole-program inference of dummy-procedure *signatures*.
 
@@ -591,6 +654,18 @@ def _infer_procedure_arities(tu: IRTranslationUnit) -> None:
         for p in sub.parameters:
             if p.type.is_procedure and (sub.name, p.name) in models:
                 _set_proc_signature(p, models[(sub.name, p.name)])
+
+    # Fallback: a dummy procedure never reached by a concrete actual (an
+    # uncalled / forwarded-only routine) keeps the float-based guess for its
+    # *types* even once its arity is right.  Recover the types from how the
+    # routine calls it locally.
+    for sub in tu.subprograms:
+        for p in sub.parameters:
+            if not p.type.is_procedure or (sub.name, p.name) in models:
+                continue
+            sig = _local_call_signature(sub, p.name)
+            if sig is not None:
+                _set_proc_signature(p, sig)
 
 
 def _resolve_component_allocations(tu: IRTranslationUnit) -> None:
