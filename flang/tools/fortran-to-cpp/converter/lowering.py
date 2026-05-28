@@ -393,7 +393,7 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
     params_by_name = {s.name: s.parameters for s in tu.subprograms}
 
     def reshape(
-        callee: str, args: list[IRExpr], caller_arrays: set[str]
+        callee: str, args: list[IRExpr], caller_arrays: dict[str, int]
     ) -> list[IRExpr]:
         params = params_by_name.get(callee)
         if not params:
@@ -415,10 +415,13 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
                         callee="fortran::first", args=(actual,)
                     )
                 continue
+            actual_rank1 = _expr_rank(actual) == 1 or (
+                isinstance(actual, IRName) and caller_arrays.get(actual.name) == 1
+            )
             if (
                 p.type.array_rank >= 2
                 and p.type.array_extent_exprs
-                and _expr_rank(actual) == 1
+                and actual_rank1
             ):
                 rank = p.type.array_rank
                 lowers = p.type.array_lower_bound_exprs or ["1"] * rank
@@ -445,8 +448,11 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
 
     for sub in tu.subprograms:
         caller_arrays = {
-            loc.name for loc in sub.locals if loc.type.is_array
-        } | {p.name for p in sub.parameters if p.type.is_array}
+            loc.name: loc.type.array_rank for loc in sub.locals if loc.type.is_array
+        }
+        caller_arrays.update(
+            {p.name: p.type.array_rank for p in sub.parameters if p.type.is_array}
+        )
 
         def fix_stmt(stmt: IRStatement) -> IRStatement:
             if isinstance(stmt, IRCall):

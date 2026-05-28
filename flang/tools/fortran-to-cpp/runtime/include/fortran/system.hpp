@@ -67,17 +67,17 @@ inline int nargs() noexcept { return detail::argc_store(); }
 /// GETARG(k, value[, status]): the k-th command argument (k = 0 is the
 /// program name) copied into ``value`` with Fortran blank-pad / truncate.
 /// ``status`` receives the argument length, or -1 when it is absent.
-template <typename S>
-void getarg(int k, S &&value, int &status) noexcept {
+template <typename S, typename I>
+void getarg(int k, S &&value, I &status) noexcept {
   const int a = detail::argc_store();
   char **v = detail::argv_store();
   if (v != nullptr && k >= 0 && k < a) {
     std::string_view s{v[k]};
     value = s;
-    status = static_cast<int>(s.size());
+    status = static_cast<I>(s.size());
   } else {
     value = std::string_view{""};
-    status = -1;
+    status = static_cast<I>(-1);
   }
 }
 template <typename S> void getarg(int k, S &&value) noexcept {
@@ -86,10 +86,10 @@ template <typename S> void getarg(int k, S &&value) noexcept {
 }
 
 /// GET_COMMAND_ARGUMENT(k, value[, length[, status]]): the F2003 form.
-template <typename S>
-void get_command_argument(int k, S &&value, int &length, int &status) noexcept {
+template <typename S, typename L, typename I>
+void get_command_argument(int k, S &&value, L &length, I &status) noexcept {
   getarg(k, static_cast<S &&>(value), length);
-  status = length >= 0 ? 0 : 1;
+  status = static_cast<I>(length >= 0 ? 0 : 1);
 }
 
 /// GETENVQQ(name, value): set ``value`` to the named environment variable
