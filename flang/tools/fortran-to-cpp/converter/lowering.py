@@ -492,43 +492,6 @@ def _set_proc_signature(p: IRParameter, arg_types: tuple[str, ...]) -> None:
     )
 
 
-def _proc_param_arg_types(cpp: str) -> tuple[str, ...]:
-    """Split a dummy-procedure parameter's ``std::function<R(a, b, ...)>``
-    type into its argument-type tuple ``(a, b, ...)``.
-
-    Top-level commas only — commas inside a nested ``std::function<...>`` (a
-    callback-of-callback) or its own ``(...)`` are not separators."""
-    if "(" not in cpp:
-        return ()
-    open_paren = cpp.index("(")
-    depth = 0
-    close = len(cpp)
-    for j in range(open_paren, len(cpp)):
-        if cpp[j] == "(":
-            depth += 1
-        elif cpp[j] == ")":
-            depth -= 1
-            if depth == 0:
-                close = j
-                break
-    inner = cpp[open_paren + 1 : close]
-    if not inner.strip():
-        return ()
-    args: list[str] = []
-    d = 0
-    start = 0
-    for k, ch in enumerate(inner):
-        if ch in "<(":
-            d += 1
-        elif ch in ">)":
-            d -= 1
-        elif ch == "," and d == 0:
-            args.append(inner[start:k].strip())
-            start = k + 1
-    args.append(inner[start:].strip())
-    return tuple(args)
-
-
 def _callback_param_type(ty: IRType, *, const: bool = False) -> str:
     """How a value of type ``ty`` appears as a callback (``std::function``)
     parameter — a reference for scalars, the matching view for arrays and
@@ -703,19 +666,14 @@ def _infer_procedure_arities(tu: IRTranslationUnit) -> None:
                                 continue
                             cand = models.get((caller.name, fwd.name))
                             # Forwarding ties the two signatures together:
-                            # the caller's dummy must match the callee's slot.
-                            # Prefer the slot's model, then how the callee
-                            # calls it locally, then the slot's own parameter
-                            # type — which already carries the per-routine
-                            # argument count even when the local call uses
-                            # expression actuals (``CALL UF(X-DX, V)``) that
-                            # the local-signature pass can't resolve.
-                            qsig = (
-                                models.get(qkey)
-                                or local_sigs.get(qkey)
-                                or _proc_param_arg_types(q.type.cpp)
-                            )
-                            if qsig and bump((caller.name, fwd.name), qsig):
+                            # the caller's dummy must match the callee's
+                            # slot.  Use the slot's model, or — for a slot no
+                            # concrete actual reaches — how the callee calls
+                            # it locally.
+                            qsig = models.get(qkey) or local_sigs.get(qkey)
+                            if qsig is not None and bump(
+                                (caller.name, fwd.name), qsig
+                            ):
                                 changed = True
                         if cand is not None and bump(qkey, cand):
                             changed = True
