@@ -1208,8 +1208,13 @@ def _entry_names(node: Node) -> set[str]:
 
 def _count_call_arity(body: list[IRStatement], name: str) -> int:
     """Largest argument count among calls to ``name`` in ``body`` (both
-    function-call expressions and subroutine-call statements)."""
-    best = 1
+    function-call expressions and subroutine-call statements).
+
+    Returns the true maximum — which may be 0 for a dummy invoked only as
+    ``f()`` / ``CALL f`` — so a zero-argument procedure dummy isn't given a
+    spurious 1-argument signature.  Falls back to 1 only when ``name`` is
+    never called locally (and no actual procedure pins down its arity)."""
+    best = -1  # -1 = never seen called
 
     def see_expr(e: IRExpr) -> IRExpr:
         nonlocal best
@@ -1225,7 +1230,7 @@ def _count_call_arity(body: list[IRStatement], name: str) -> int:
 
     for s in body:
         map_statement(s, on_stmt=see_stmt, on_expr=lambda e: map_expr(e, see_expr))
-    return best
+    return best if best >= 0 else 1
 
 
 def _deref_optional_params(sub: IRSubprogram) -> None:
