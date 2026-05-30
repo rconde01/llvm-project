@@ -1,0 +1,5 @@
+test_array 2 0.0010959
+test_string 1 0.00248319
+test_equiv 1 0.00209558
+test_io 1 0.00210325
+---

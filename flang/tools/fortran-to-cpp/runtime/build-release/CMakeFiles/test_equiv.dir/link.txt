@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test_equiv.dir/tests/test_equiv.cpp.o -o test_equiv 

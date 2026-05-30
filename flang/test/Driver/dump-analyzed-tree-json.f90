@@ -1,8 +1,8 @@
 !----------
 ! RUN lines
 !----------
-! RUN: %flang_fc1 -fdebug-dump-parse-tree-json %s 2>&1 | FileCheck %s --check-prefix=SEMA_ON
-! RUN: %flang_fc1 -fdebug-dump-parse-tree-json-no-sema %s 2>&1 | FileCheck %s --check-prefix=SEMA_OFF
+! RUN: %flang_fc1 -fdebug-dump-analyzed-tree-json %s 2>&1 | FileCheck %s --check-prefix=SEMA_ON
+! RUN: %flang_fc1 -fdebug-dump-analyzed-tree-json-no-sema %s 2>&1 | FileCheck %s --check-prefix=SEMA_OFF
 
 ! Smoke test for the JSON parse tree dumper.  We do not pin the entire
 ! output; we just verify that the result is a single JSON object whose

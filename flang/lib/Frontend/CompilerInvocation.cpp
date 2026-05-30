@@ -673,8 +673,8 @@ static bool parseFrontendArgs(FrontendOptions &opts, llvm::opt::ArgList &args,
     case clang::options::OPT_fdebug_dump_parse_tree:
       opts.programAction = DebugDumpParseTree;
       break;
-    case clang::options::OPT_fdebug_dump_parse_tree_json:
-      opts.programAction = DebugDumpParseTreeJSON;
+    case clang::options::OPT_fdebug_dump_analyzed_tree_json:
+      opts.programAction = DebugDumpAnalyzedTreeJSON;
       break;
     case clang::options::OPT_fdebug_dump_pft:
       opts.programAction = DebugDumpPFT;
@@ -685,8 +685,8 @@ static bool parseFrontendArgs(FrontendOptions &opts, llvm::opt::ArgList &args,
     case clang::options::OPT_fdebug_dump_parse_tree_no_sema:
       opts.programAction = DebugDumpParseTreeNoSema;
       break;
-    case clang::options::OPT_fdebug_dump_parse_tree_json_no_sema:
-      opts.programAction = DebugDumpParseTreeJSONNoSema;
+    case clang::options::OPT_fdebug_dump_analyzed_tree_json_no_sema:
+      opts.programAction = DebugDumpAnalyzedTreeJSONNoSema;
       break;
     case clang::options::OPT_fdebug_dump_provenance:
       opts.programAction = DebugDumpProvenance;

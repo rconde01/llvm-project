@@ -1,0 +1,122 @@
+Start testing: May 24 16:00 UTC
+----------------------------------------------------------
+1/4 Testing: test_array
+1/4 Test: test_array
+Command: "/home/user/llvm-project/flang/tools/fortran-to-cpp/runtime/build-release/test_array"
+Directory: /home/user/llvm-project/flang/tools/fortran-to-cpp/runtime/build-release
+"test_array" start time: May 24 16:00 UTC
+Output:
+----------------------------------------------------------
+  PASS  default_construction_is_empty
+  PASS  rank1_default_lower_bound_is_one
+  PASS  rank1_explicit_lower_bound
+  PASS  rank2_default_bounds
+  PASS  rank3_arbitrary_lower_bounds
+  PASS  rank1_indexing_roundtrip
+  PASS  rank2_indexing_is_column_major
+  PASS  rank2_indexing_with_offset_lower_bounds
+  PASS  rank3_indexing_roundtrip
+  PASS  is_move_constructible_but_not_copy_constructible
+  PASS  move_transfers_ownership
+  PASS  clone_produces_independent_copy
+  PASS  fill_sets_every_element
+  PASS  arrayref_view_of_owning_array
+  PASS  arrayref_const_view_of_const_array
+  PASS  arrayref_from_raw_buffer
+  PASS  arrayref_with_offset_lower_bounds
+  PASS  arrayref_is_contiguous_for_default_strides
+  PASS  arrayref_with_non_default_strides_is_not_contiguous
+  PASS  bounds_extent_is_inclusive
+
+20 passed, 0 failed (20 total)
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"test_array" end time: May 24 16:00 UTC
+"test_array" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/4 Testing: test_string
+2/4 Test: test_string
+Command: "/home/user/llvm-project/flang/tools/fortran-to-cpp/runtime/build-release/test_string"
+Directory: /home/user/llvm-project/flang/tools/fortran-to-cpp/runtime/build-release
+"test_string" start time: May 24 16:00 UTC
+Output:
+----------------------------------------------------------
+  PASS  default_is_all_blanks
+  PASS  length_is_part_of_the_type
+  PASS  shorter_string_is_blank_padded
+  PASS  longer_string_is_truncated
+  PASS  reassignment_overwrites_with_padding
+  PASS  assign_from_different_length_fortran_string
+  PASS  equality_is_blank_padded
+  PASS  equality_between_different_lengths
+  PASS  ordering_uses_padded_comparison
+  PASS  substring_read_view
+  PASS  substring_assignment_pads
+  PASS  substring_assignment_truncates
+  PASS  substring_full_range_round_trip
+  PASS  element_indexing_is_one_based
+  PASS  concatenation_returns_summed_length
+  PASS  concatenation_preserves_padding
+  PASS  implicit_conversion_to_string_view
+  PASS  can_pass_to_function_taking_string_view
+
+18 passed, 0 failed (18 total)
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"test_string" end time: May 24 16:00 UTC
+"test_string" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/4 Testing: test_equiv
+3/4 Test: test_equiv
+Command: "/home/user/llvm-project/flang/tools/fortran-to-cpp/runtime/build-release/test_equiv"
+Directory: /home/user/llvm-project/flang/tools/fortran-to-cpp/runtime/build-release
+"test_equiv" start time: May 24 16:00 UTC
+Output:
+----------------------------------------------------------
+  PASS  equiv_type_pun_float_to_int_and_back
+  PASS  equiv_slot_arithmetic_helpers
+  PASS  equiv_array_overlap_writes_through
+  PASS  bit_cast_round_trip
+
+4 passed, 0 failed (4 total)
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"test_equiv" end time: May 24 16:00 UTC
+"test_equiv" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/4 Testing: test_io
+4/4 Test: test_io
+Command: "/home/user/llvm-project/flang/tools/fortran-to-cpp/runtime/build-release/test_io"
+Directory: /home/user/llvm-project/flang/tools/fortran-to-cpp/runtime/build-release
+"test_io" start time: May 24 16:00 UTC
+Output:
+----------------------------------------------------------
+  PASS  fmt_G_uses_f_format_for_in_range
+  PASS  fmt_G_uses_e_format_for_out_of_range
+  PASS  fmt_G_handles_zero
+  PASS  fmt_F_with_scale_shifts_decimal
+  PASS  pad_to_advances_to_column
+  PASS  pad_to_does_nothing_when_already_past
+  PASS  skip_emits_blanks
+  PASS  force_sign_emits_plus_for_positive
+  PASS  no_sign_format_matches_default_d
+
+9 passed, 0 failed (9 total)
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"test_io" end time: May 24 16:00 UTC
+"test_io" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: May 24 16:00 UTC

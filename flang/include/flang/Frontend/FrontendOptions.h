@@ -74,7 +74,7 @@ enum ActionKind {
   DebugDumpParseTree,
 
   /// Parse, run semantics and then output the parse tree as JSON
-  DebugDumpParseTreeJSON,
+  DebugDumpAnalyzedTreeJSON,
 
   /// Parse, run semantics and then output the pre-fir parse tree
   DebugDumpPFT,
@@ -86,7 +86,7 @@ enum ActionKind {
   DebugDumpParseTreeNoSema,
 
   /// Parse and then output the parse tree as JSON, skip the semantic checks
-  DebugDumpParseTreeJSONNoSema,
+  DebugDumpAnalyzedTreeJSONNoSema,
 
   /// Dump provenance
   DebugDumpProvenance,

@@ -1,4 +1,4 @@
-//===-- include/flang/Parser/dump-parse-tree-json.h -------------*- C++ -*-===//
+//===-- include/flang/Parser/dump-analyzed-tree-json.h -------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef FORTRAN_PARSER_DUMP_PARSE_TREE_JSON_H_
-#define FORTRAN_PARSER_DUMP_PARSE_TREE_JSON_H_
+#ifndef FORTRAN_PARSER_DUMP_ANALYZED_TREE_JSON_H_
+#define FORTRAN_PARSER_DUMP_ANALYZED_TREE_JSON_H_
 
 #include "char-block.h"
 #include "dump-parse-tree.h"
@@ -31,7 +31,18 @@
 
 namespace Fortran::parser {
 
-// JSON dumper for the parse tree.
+// JSON dumper for the *analyzed* parse tree.
+//
+// Unlike the text dumper (``-fdebug-dump-parse-tree``), which emits parse
+// tree structure only, this dumper bundles the parse tree with the
+// resolved-symbol facts and analyzed-expression facts that semantics
+// computed — so a downstream tool reads structure and semantics in one
+// pass.  Each Name carries its resolved type/rank/shape, classification
+// (object/proc/assoc), and full attribute set; each node with an analyzed
+// ``typedExpr`` (Expr / Variable / DataStmtConstant / AllocateObject /
+// PointerObject) carries the expression's type, rank, category
+// (variable / constant / expression), and folded scalar-integer value
+// when applicable.
 //
 // Each parse tree node is emitted as a JSON object of the form:
 //   { "kind": "<name>",
@@ -46,9 +57,9 @@ namespace Fortran::parser {
 // UnlabeledStatement<T>, common::Indirection<T>, std::tuple, std::variant)
 // are not materialized as JSON nodes; their children appear directly as
 // children of the enclosing node.
-class ParseTreeJSONDumper {
+class AnalyzedTreeJSONDumper {
 public:
-  explicit ParseTreeJSONDumper(llvm::raw_ostream &out,
+  explicit AnalyzedTreeJSONDumper(llvm::raw_ostream &out,
       const AllCookedSources *allCooked = nullptr,
       const AnalyzedObjectsAsFortran *asFortran = nullptr)
       : out_(out), allCooked_{allCooked}, asFortran_{asFortran} {
@@ -502,7 +513,7 @@ template <typename T>
 llvm::raw_ostream &DumpTreeJSON(llvm::raw_ostream &out, const T &x,
     const AllCookedSources *allCooked = nullptr,
     const AnalyzedObjectsAsFortran *asFortran = nullptr) {
-  ParseTreeJSONDumper dumper{out, allCooked, asFortran};
+  AnalyzedTreeJSONDumper dumper{out, allCooked, asFortran};
   Walk(x, dumper);
   out << "\n";
   return out;
@@ -510,4 +521,4 @@ llvm::raw_ostream &DumpTreeJSON(llvm::raw_ostream &out, const T &x,
 
 } // namespace Fortran::parser
 
-#endif // FORTRAN_PARSER_DUMP_PARSE_TREE_JSON_H_
+#endif // FORTRAN_PARSER_DUMP_ANALYZED_TREE_JSON_H_

@@ -370,14 +370,21 @@ def fdebug_dump_parse_tree_no_sema : Flag<["-"], "fdebug-dump-parse-tree-no-sema
   HelpText<"Dump the parse tree (skips the semantic checks)">,
   DocBrief<[{Run the Parser and then output the parse tree. Semantic
 checks are disabled.}]>;
-def fdebug_dump_parse_tree_json : Flag<["-"], "fdebug-dump-parse-tree-json">, Group<Action_Group>,
-  HelpText<"Dump the parse tree as JSON">,
+def fdebug_dump_analyzed_tree_json : Flag<["-"], "fdebug-dump-analyzed-tree-json">, Group<Action_Group>,
+  HelpText<"Dump the analyzed parse tree (structure + resolved semantics) as JSON">,
   DocBrief<[{Run the Parser and the semantic checks, and then output the
-parse tree as a JSON document.}]>;
-def fdebug_dump_parse_tree_json_no_sema : Flag<["-"], "fdebug-dump-parse-tree-json-no-sema">, Group<Action_Group>,
-  HelpText<"Dump the parse tree as JSON (skips the semantic checks)">,
+parse tree as a JSON document with resolved-symbol and analyzed-expression
+facts attached to each node (declared/resolved types, ranks, shape, the
+full attribute set, expression category, folded scalar integer values).
+Bundles into one document what the text dump (-fdebug-dump-parse-tree)
+and the symbol dump (-fdebug-dump-symbols) emit separately, so downstream
+tools can read structure and semantics in a single pass.}]>;
+def fdebug_dump_analyzed_tree_json_no_sema : Flag<["-"], "fdebug-dump-analyzed-tree-json-no-sema">, Group<Action_Group>,
+  HelpText<"Dump the parse tree (structure only) as JSON; skips semantic checks">,
   DocBrief<[{Run the Parser and then output the parse tree as a JSON
-document. Semantic checks are disabled.}]>;
+document. With semantic checks disabled, no resolved-symbol or analyzed-
+expression facts are available, so the output is parse-tree structure
+only.}]>;
 def fdebug_dump_all : Flag<["-"], "fdebug-dump-all">, Group<Action_Group>,
   HelpText<"Dump symbols and the parse tree after the semantic checks">;
 def fdebug_dump_provenance : Flag<["-"], "fdebug-dump-provenance">, Group<Action_Group>,
