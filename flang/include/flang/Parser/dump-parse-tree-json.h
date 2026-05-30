@@ -136,7 +136,7 @@ public:
 
   // A Name carries the resolved semantic Symbol after analysis.  Emit its
   // resolved type (e.g. "REAL(8)", "INTEGER(4)", "TYPE(point)") and rank so
-  // the converter can read types directly — including those set by implicit
+  // consumers can read types directly — including those set by implicit
   // typing, custom IMPLICIT statements, KINDs, and host/use association —
   // rather than re-deriving them.
   bool Pre(const Name &x) {
@@ -154,7 +154,7 @@ public:
       }
       out_ << ",\"rank\":" << sym.Rank();
       EmitShape(sym);
-      // Classification facts so the converter need not guess whether a
+      // Classification facts so consumers need not guess whether a
       // ``name(...)`` is an array element or a function call, or whether a
       // referenced name is a local variable vs module/host state.
       if (sym.has<semantics::ObjectEntityDetails>()) {
@@ -257,7 +257,7 @@ private:
   };
 
   // Emit an explicit, constant-foldable array shape as
-  // ``"shape":[[lo,hi],...]`` so the converter can size arrays from the
+  // ``"shape":[[lo,hi],...]`` so consumers can size arrays from the
   // resolved symbol rather than re-reading DIMENSION/ArraySpec.  Folds
   // named-constant (PARAMETER) bounds; omitted when any bound is not a
   // compile-time constant.
