@@ -92,7 +92,17 @@ public:
       return std::cerr;
     }
     auto it{files_.find(unit)};
-    return it != files_.end() ? *it->second : std::cout;
+    if (it != files_.end()) {
+      return *it->second;
+    }
+    // A WRITE to a unit that was never explicitly OPENed defaults to a
+    // file named ``fort.<unit>`` in the current directory — same as
+    // gfortran / flang at runtime.  Without this fallback, every
+    // unattached write quietly went to ``stdout`` and stepped on the
+    // program's diagnostic output.
+    return *(files_[unit] = std::make_unique<std::fstream>(
+        "fort." + std::to_string(unit),
+        std::ios::in | std::ios::out | std::ios::trunc));
   }
 
   std::istream &in(int unit) {
@@ -100,7 +110,15 @@ public:
       return std::cin;
     }
     auto it{files_.find(unit)};
-    return it != files_.end() ? *it->second : std::cin;
+    if (it != files_.end()) {
+      return *it->second;
+    }
+    // Same fall-back as ``out``: a READ from an unattached unit opens
+    // ``fort.<unit>`` (an empty/new file if it doesn't already exist),
+    // matching gfortran / flang.
+    return *(files_[unit] = std::make_unique<std::fstream>(
+        "fort." + std::to_string(unit),
+        std::ios::in | std::ios::out));
   }
 
 private:
