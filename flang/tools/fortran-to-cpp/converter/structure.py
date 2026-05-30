@@ -41,7 +41,14 @@ from .ir import (
     IRWhile,
 )
 
-_PC = "_pc"  # dispatch state variable
+_PC = "_pc"  # dispatch state variable (outermost)
+
+
+def _pc_name(depth: int) -> str:
+    """Per-nesting-level state variable.  Each ``_dispatch`` call gets
+    its own name so an inner dispatch loop's ``_pc = DONE`` can't
+    accidentally terminate an outer dispatch."""
+    return _PC if depth == 0 else f"{_PC}{depth}"
 
 
 # ---------------------------------------------------------------------------
@@ -49,19 +56,22 @@ _PC = "_pc"  # dispatch state variable
 # ---------------------------------------------------------------------------
 
 
-def structure_gotos(body: list[IRStatement]) -> tuple[list[IRStatement], bool]:
+def structure_gotos(body: list[IRStatement], depth: int = 0) -> tuple[list[IRStatement], bool]:
     """Return ``(structured_body, used_dispatch)``.
 
     ``used_dispatch`` is True when a dispatch loop was emitted, so the
-    caller knows to declare the ``_pc`` state local."""
+    caller knows to declare the ``_pc`` state local.  ``depth`` is the
+    nesting level: the outermost call uses ``_pc``, each recursive
+    structuring of a child body uses ``_pc1``, ``_pc2``, ... so a
+    nested dispatch can't fall through and terminate an outer one."""
     if not _has_control(body):
         return body, False
     total: Counter = Counter()
     _collect_targets(body, total)
     fresh = _Fresh()
     flat: list[IRStatement] = []
-    _flatten(body, flat, fresh, [], total)
-    return _structure_flat(flat)
+    _flatten(body, flat, fresh, [], total, depth)
+    return _structure_flat(flat, depth)
 
 
 # ---------------------------------------------------------------------------
@@ -158,9 +168,10 @@ def _flatten(
     fresh: "_Fresh",
     loopctx: list[tuple[int, int]],
     total: Counter,
+    depth: int = 0,
 ) -> None:
     for s in stmts:
-        _flatten_one(s, out, fresh, loopctx, total)
+        _flatten_one(s, out, fresh, loopctx, total, depth)
 
 
 def _flatten_one(
@@ -169,6 +180,7 @@ def _flatten_one(
     fresh: "_Fresh",
     loopctx: list[tuple[int, int]],
     total: Counter,
+    depth: int = 0,
 ) -> None:
     if isinstance(s, (IRLabel, IRGoto)):
         out.append(s)
@@ -181,7 +193,10 @@ def _flatten_one(
         return
     if isinstance(s, (IRIf, IRDo, IRWhile, IRSelectCase, IRBlock)):
         if _self_contained(s, total):
-            out.append(_structure_in_place(s))
+            # Recurse one level deeper so any dispatch generated inside
+            # this construct uses a distinct state variable from the
+            # enclosing dispatch (depth ``depth``).
+            out.append(_structure_in_place(s, depth))
         else:
             _flatten_construct(s, out, fresh, loopctx, total)
         return
@@ -280,21 +295,27 @@ def _clause_cond(selector: IRExpr, clause: IRCaseClause) -> IRExpr:
     return cond
 
 
-def _structure_in_place(stmt: IRStatement) -> IRStatement:
-    """Recursively structure a self-contained construct's inner bodies."""
+def _structure_in_place(stmt: IRStatement, depth: int = 0) -> IRStatement:
+    """Recursively structure a self-contained construct's inner bodies.
+
+    ``depth`` is the surrounding dispatch nesting level; each child body
+    structured here is one level deeper, so its dispatch (if any) gets a
+    distinct state variable."""
+    child_depth = depth + 1
     if isinstance(stmt, IRIf):
         stmt.branches = [
-            (cond, structure_gotos(body)[0]) for cond, body in stmt.branches
+            (cond, structure_gotos(body, child_depth)[0])
+            for cond, body in stmt.branches
         ]
         if stmt.else_body is not None:
-            stmt.else_body = structure_gotos(stmt.else_body)[0]
+            stmt.else_body = structure_gotos(stmt.else_body, child_depth)[0]
     elif isinstance(stmt, (IRDo, IRWhile, IRBlock)):
-        stmt.body = structure_gotos(stmt.body)[0]
+        stmt.body = structure_gotos(stmt.body, child_depth)[0]
     elif isinstance(stmt, IRSelectCase):
         for c in stmt.clauses:
-            c.body = structure_gotos(c.body)[0]
+            c.body = structure_gotos(c.body, child_depth)[0]
         if stmt.default_body is not None:
-            stmt.default_body = structure_gotos(stmt.default_body)[0]
+            stmt.default_body = structure_gotos(stmt.default_body, child_depth)[0]
     return stmt
 
 
@@ -303,11 +324,11 @@ def _structure_in_place(stmt: IRStatement) -> IRStatement:
 # ---------------------------------------------------------------------------
 
 
-def _structure_flat(flat: list[IRStatement]) -> tuple[list[IRStatement], bool]:
+def _structure_flat(flat: list[IRStatement], depth: int = 0) -> tuple[list[IRStatement], bool]:
     pretty = _peephole(list(flat))
     if not any(isinstance(s, IRGoto) for s in pretty):
         return [s for s in pretty if not isinstance(s, IRLabel)], False
-    return _dispatch(flat), True
+    return _dispatch(flat, depth), True
 
 
 def _peephole(flat: list[IRStatement]) -> list[IRStatement]:
@@ -349,8 +370,11 @@ def _find_label(flat: list[IRStatement], label: int, start: int) -> int | None:
     return None
 
 
-def _dispatch(flat: list[IRStatement]) -> list[IRStatement]:
-    """Lower the flat list to a goto-free ``while``/``switch`` dispatch loop."""
+def _dispatch(flat: list[IRStatement], depth: int = 0) -> list[IRStatement]:
+    """Lower the flat list to a goto-free ``while``/``switch`` dispatch
+    loop.  ``depth`` selects the per-nesting-level state variable name
+    so nested dispatches don't alias each other."""
+    pc_name = _pc_name(depth)
     segments: list[tuple[int | None, list[IRStatement]]] = []
     cur: list[IRStatement] = []
     lbl: int | None = None
@@ -376,7 +400,7 @@ def _dispatch(flat: list[IRStatement]) -> list[IRStatement]:
 
     def set_pc(value: int) -> IRStatement:
         return IRAssignment(
-            target=IRName(name=_PC, fortran=_PC),
+            target=IRName(name=pc_name, fortran=pc_name),
             value=IRLiteral(cpp_text=str(value)),
         )
 
@@ -412,14 +436,14 @@ def _dispatch(flat: list[IRStatement]) -> list[IRStatement]:
 
     loop = IRWhile(
         condition=_binop(
-            "!=", IRName(name=_PC, fortran=_PC), IRLiteral(cpp_text=str(done))
+            "!=", IRName(name=pc_name, fortran=pc_name), IRLiteral(cpp_text=str(done))
         ),
-        body=[IRSelectCase(selector=IRName(name=_PC, fortran=_PC), clauses=clauses)],
+        body=[IRSelectCase(selector=IRName(name=pc_name, fortran=pc_name), clauses=clauses)],
     )
-    return [set_pc_initial(), loop]
+    return [set_pc_initial(pc_name), loop]
 
 
-def set_pc_initial() -> IRStatement:
+def set_pc_initial(pc_name: str = _PC) -> IRStatement:
     return IRAssignment(
-        target=IRName(name=_PC, fortran=_PC), value=IRLiteral(cpp_text="0")
+        target=IRName(name=pc_name, fortran=pc_name), value=IRLiteral(cpp_text="0")
     )

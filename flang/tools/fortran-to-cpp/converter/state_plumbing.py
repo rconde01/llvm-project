@@ -214,57 +214,61 @@ def _build_module_structs(tu: IRTranslationUnit) -> None:
 
 def _build_common_structs(tu: IRTranslationUnit) -> None:
     """A common block is shared storage declared (re-)independently in
-    each routine that uses it.  Routines may spell its slots with
-    different names and even tile them differently (one routine's
-    ``dl(16)`` is another's twelve scalars ``tlb,s,...``), so we model the
-    block by the *union* of the distinctly-named members across all
-    routines, typed from wherever each name is declared.  Crucially, a
-    routine binds (and has dropped from its locals) only the members *it
-    itself* declared in the block — never the whole union — so a routine
-    that never put name ``x`` in the block keeps its own local ``x``
-    instead of having it shadowed by another routine's common member."""
-    block_members: dict[str, list[str]] = {}
-    block_member_types: dict[str, dict[str, IRType]] = {}
-    # Per (sub index, block), this routine's own declared members.
-    own: dict[int, dict[str, list[str]]] = {}
+    each routine that uses it.  Fortran COMMON members are *positional*:
+    one routine's ``common /c/ umr`` and another's ``common /c/ dtr``
+    name the same first-slot storage, and a routine that lists more
+    members extends the layout with later slots.  We model the block by
+    its positional layout — the longest member list wins on length, and
+    each position takes the first declared name we see as its canonical
+    spelling.  A routine that uses an alternate name for a slot binds it
+    via ``auto& <its-name> = c.<canonical>;`` so reads/writes all hit the
+    same field.  Crucially, a routine binds (and has dropped from its
+    locals) only the slots *it itself* declared — never the whole union
+    — so a routine that never put a slot in the block keeps its own
+    local of that name instead of having it shadowed."""
+    # Per block: list of (canonical-name, IRType) at each position.
+    block_slots: dict[str, list[tuple[str, IRType | None]]] = {}
+    # Per (sub index, block): list of (local-name, position) the routine
+    # itself put in the block.
+    own: dict[int, dict[str, list[tuple[str, int]]]] = {}
     for idx, sub in enumerate(tu.subprograms):
         local_types = {loc.name: loc.type for loc in sub.locals}
         for use in sub.common_uses:
-            members = block_members.setdefault(use.block_name, [])
-            types = block_member_types.setdefault(use.block_name, {})
+            slots = block_slots.setdefault(use.block_name, [])
             mine = own.setdefault(idx, {}).setdefault(use.block_name, [])
-            for m in use.member_names:
-                mine.append(m)
-                if m not in members:
-                    members.append(m)
+            for pos, m in enumerate(use.member_names):
+                mine.append((m, pos))
                 lt = local_types.get(m)
-                if lt is not None and (
-                    m not in types
-                    # A CHARACTER declaration is authoritative: implicit
-                    # typing never yields character, so a routine that
-                    # spells a common slot CHARACTER pins its type over a
-                    # (possibly implicit) integer/real view elsewhere.
-                    or (lt.is_character and not types[m].is_character)
-                ):
-                    types[m] = lt
-    if not block_members:
+                if pos >= len(slots):
+                    slots.append((m, lt))
+                else:
+                    canon, canon_t = slots[pos]
+                    # Upgrade the slot's type when this routine's
+                    # declaration is more specific (CHARACTER over
+                    # implicit-typed real/integer).
+                    if lt is not None and (
+                        canon_t is None
+                        or (lt.is_character and not canon_t.is_character)
+                    ):
+                        slots[pos] = (canon, lt)
+    if not block_slots:
         return
 
     struct_for_block: dict[str, IRStateStruct] = {}
-    for block_name, members in block_members.items():
-        types = block_member_types.get(block_name, {})
+    # Per block: canonical-name list, indexable by position.
+    canon_for_block: dict[str, list[str]] = {}
+    for block_name, slots in block_slots.items():
         fields = [
             IRLocal(
-                name=m,
-                type=types.get(
-                    m, IRType(cpp="/* TODO: type */ double", fortran="?")
-                ),
+                name=canon,
+                type=t or IRType(cpp="/* TODO: type */ double", fortran="?"),
             )
-            for m in members
+            for canon, t in slots
         ]
         struct_for_block[block_name] = IRStateStruct(
             cpp_type=_common_struct_name(block_name), fields=fields
         )
+        canon_for_block[block_name] = [canon for canon, _ in slots]
     for struct in struct_for_block.values():
         tu.common_structs.append(struct)
 
@@ -272,21 +276,32 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
         param_names = {p.name for p in sub.parameters}
         for block_name, members in own.get(idx, {}).items():
             struct = struct_for_block[block_name]
+            canon = canon_for_block[block_name]
             # This routine's own common members are also declared as
             # locals in Fortran; drop those (only the ones *this* routine
             # put in the block — a like-named local elsewhere stays).
-            member_set = set(members)
+            member_set = {m for m, _ in members}
             sub.locals = [
                 loc for loc in sub.locals if loc.name not in member_set
             ]
-            # A member shadowed by a dummy argument of the same name can't
-            # reference the common entity here, so skip it.
+            # Bind each local name to its slot's canonical field.  Use a
+            # plain name when they match, the tuple form otherwise so the
+            # routine reads/writes via its own spelling but storage is
+            # the shared field.  Skip slots shadowed by a same-named
+            # dummy argument — that local can't refer to the common.
+            bound: list[str | tuple[str, str]] = []
+            for local_name, pos in members:
+                if local_name in param_names:
+                    continue
+                field = canon[pos]
+                bound.append(local_name if local_name == field
+                             else (local_name, field))
             _attach_state(
                 sub,
                 struct_type=struct.cpp_type,
                 param_name=_common_param_name(block_name),
                 owned_by="__common_" + block_name,
-                bound_fields=[m for m in members if m not in param_names],
+                bound_fields=bound,
             )
 
 

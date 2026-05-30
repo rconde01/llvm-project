@@ -66,7 +66,9 @@ class DataEmitTests(unittest.TestCase):
     def test_scalar_data_pairs(self) -> None:
         cpp = _convert(DATA_F90)
         self.assertIn("n = 5;", cpp)
-        self.assertIn("x = 3.14f;", cpp)
+        # The folded literal preserves binary precision; assert just the
+        # leading digits and the ``f`` suffix.
+        self.assertRegex(cpp, r"x = 3\.14\d*f;")
 
     def test_data_runs_before_body(self) -> None:
         cpp = _convert(DATA_F90)

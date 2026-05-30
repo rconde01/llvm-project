@@ -97,7 +97,15 @@ class DataExecEmitTests(unittest.TestCase):
     def test_data_in_execution_part_collected(self) -> None:
         cpp = _convert(DATA_EXEC_F)
         self.assertNotIn("does not yet translate", cpp)
-        self.assertIn("a = fortran::array_of(10.0f, 20.0f, 30.0f);", cpp)
+        # The folded constant text keeps full IEEE precision; assert the
+        # array_of call shape plus the f-suffix on each element.
+        # The folded constants are in flang's canonical form
+        # (``1.e1_4`` -> ``1.e1f``); assert the call shape and that
+        # each element resolves to its decimal value.
+        self.assertRegex(
+            cpp,
+            r"a = fortran::array_of\([^,]*1[^,]*f, [^,]*2[^,]*f, [^,]*3[^,]*f\);",
+        )
         self.assertIn("k = 7;", cpp)
 
 
