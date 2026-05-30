@@ -1,0 +1,338 @@
+//===-- fortran/io.hpp - Format-fidelity helpers ----------------*- C++ -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// fortran::io
+//
+// Helper functions for Fortran edit descriptors that can **not** be
+// expressed directly in ``std::format``.  Generated code uses
+// ``std::format`` inline whenever the format spec is expressible —
+// the emitter only falls through to these helpers for the genuinely
+// awkward cases:
+//
+//   G       — general numeric format
+//   P       — scale factor
+//   T, TL,  — absolute / left / right tab control
+//   TR
+//   S, SP,  — sign control (always show, never show)
+//   SS
+//   BN, BZ  — input blank interpretation
+//   $       — non-advancing output (extension)
+//
+// Goal: when a Fortran ``WRITE`` does **not** need any of these, the
+// generated code reads as plain C++ — no ``fortran::io`` mention at
+// all.  See ../README.md (rule R8 and decision D5) for the policy.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef FORTRAN_RT_IO_HPP
+#define FORTRAN_RT_IO_HPP
+
+#include "array_ref.hpp" // index_t + array-like views for formatted array I/O
+
+#include <cmath>
+#include <cctype>
+#include <cstddef>
+#include <cstdint>
+#include <format>
+#include <fstream>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+
+namespace fortran::io {
+
+// ---------------------------------------------------------------------------
+// Connected file units.
+//
+// Fortran file units are global per-image state; per decision D2.b the
+// converter threads a ``Units`` table through the call graph as ordinary
+// caller-owned state (no globals), so independent program instances and
+// threads stay isolated.  Preconnected units map to the standard streams
+// (5 = stdin, 6 = stdout, 0 = stderr); OPEN'd units are backed by an
+// ``std::fstream``.
+// ---------------------------------------------------------------------------
+class Units {
+public:
+  void open(int unit, std::string_view file,
+            std::string_view status = "unknown") {
+    std::ios_base::openmode mode{};
+    // STATUS: OLD -> read an existing file; NEW/REPLACE -> truncate;
+    // otherwise read+write, creating if needed.
+    if (iequals(status, "old")) {
+      mode = std::ios::in;
+    } else if (iequals(status, "new") || iequals(status, "replace")) {
+      mode = std::ios::out | std::ios::trunc;
+    } else {
+      mode = std::ios::in | std::ios::out;
+    }
+    auto fs{std::make_unique<std::fstream>(std::string{file}, mode)};
+    if (!fs->is_open() && (mode & std::ios::in) && !(mode & std::ios::out)) {
+      // Fall back to creating the file for read/write.
+      fs = std::make_unique<std::fstream>(
+          std::string{file}, std::ios::in | std::ios::out | std::ios::trunc);
+    }
+    files_[unit] = std::move(fs);
+  }
+
+  void close(int unit) { files_.erase(unit); }
+
+  std::ostream &out(int unit) {
+    if (unit == 6) {
+      return std::cout;
+    }
+    if (unit == 0) {
+      return std::cerr;
+    }
+    auto it{files_.find(unit)};
+    return it != files_.end() ? *it->second : std::cout;
+  }
+
+  std::istream &in(int unit) {
+    if (unit == 5) {
+      return std::cin;
+    }
+    auto it{files_.find(unit)};
+    return it != files_.end() ? *it->second : std::cin;
+  }
+
+private:
+  static bool iequals(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) {
+      return false;
+    }
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      if (std::tolower(static_cast<unsigned char>(a[i])) !=
+          std::tolower(static_cast<unsigned char>(b[i]))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  std::map<int, std::unique_ptr<std::fstream>> files_;
+};
+
+// ---------------------------------------------------------------------------
+// G edit descriptor — "general" numeric format.
+//
+// Fortran's ``Gw.dEe``:
+//   * If the magnitude of the value fits in a "reasonable" range for
+//     ``d`` significant digits, format like ``Fw.d`` with trailing
+//     blanks for the exponent field.
+//   * Otherwise, format like ``Ew.dEe``.
+// The exact pivot is defined by the standard (F2018 §13.7.5.3.3):
+//   use F-format when 0.1 <= |x| < 10^d, else E-format.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// E edit descriptor — scientific notation, Fortran style.
+//
+// Fortran's ``Ew.d`` normalizes the mantissa to the range [0.1, 1.0)
+// and prints a leading "0.", e.g. ``E12.4`` of 3.14159 is
+// "  0.3142E+01" — distinct from C++'s ``{:e}`` which normalizes to
+// [1, 10) ("3.1416e+00").  We therefore hand-format to match Fortran.
+//
+//   w = total field width, d = digits after the decimal point,
+//   e = exponent digit count (default 2).
+// ---------------------------------------------------------------------------
+
+inline std::string fmt_E(double value, int w, int d,
+                         std::optional<int> e = std::nullopt) {
+  const int edigits = e.value_or(2);
+  const bool neg = std::signbit(value);
+  double a = std::abs(value);
+
+  int exp = 0;
+  if (a != 0.0) {
+    exp = static_cast<int>(std::floor(std::log10(a))) + 1;  // 0.x * 10^exp
+    a /= std::pow(10.0, exp);
+    // Guard against rounding pushing the mantissa to 1.0.
+    if (a >= 1.0) {
+      a /= 10.0;
+      ++exp;
+    }
+  }
+  // Mantissa with d digits after the implicit "0.".
+  std::string mant = std::format("{:.{}f}", a, d);  // "0.3142"
+  // Exponent field: sign + edigits digits.
+  std::string exp_str = std::format("{:0{}d}", std::abs(exp), edigits);
+  std::string body = (neg ? "-" : "") + mant + "E" +
+                     (exp < 0 ? "-" : "+") + exp_str;
+  // Right-justify into width w.
+  if (static_cast<int>(body.size()) < w) {
+    body.insert(body.begin(), w - body.size(), ' ');
+  }
+  return body;
+}
+
+inline std::string fmt_G(double value, int w, int d,
+                         std::optional<int> e = std::nullopt) {
+  using std::abs;
+  const double a = abs(value);
+  bool use_f = false;
+  // 0.1 <= a < 10^d  →  F format.  Treat 0 as in-range.
+  if (a == 0.0) {
+    use_f = true;
+  } else if (a >= 0.1 && a < std::pow(10.0, d)) {
+    use_f = true;
+  }
+  if (use_f) {
+    // F-format with the standard's blank-exponent trailing space:
+    //   Gw.d -> Fw.(d-k-1) followed by (e+2) blanks, where k is the
+    //   number of digits before the decimal point.  We compute k
+    //   from the rounded value to match flang.
+    int k;
+    if (a == 0.0) {
+      k = 1;
+    } else {
+      k = static_cast<int>(std::floor(std::log10(a))) + 1;
+      if (k < 1) k = 1;
+    }
+    const int fdigits = d - k;
+    const int blanks = (e.value_or(2)) + 2;
+    std::string body = std::format("{0:{1}.{2}f}", value,
+                                   w - blanks, fdigits < 0 ? 0 : fdigits);
+    body.append(static_cast<std::size_t>(blanks), ' ');
+    return body;
+  }
+  // Otherwise E-format with the same width and d digits.
+  const int eDigits = e.value_or(2);
+  // std::format spec: ``{:>{}.{}e}`` produces 'd.dddde[+/-]ee'.
+  std::string body =
+      std::format("{0:>{1}.{2}e}", value, w, d > 0 ? d - 1 : 0);
+  (void)eDigits;  // std::format always uses at least 2 exponent digits.
+  return body;
+}
+
+// ---------------------------------------------------------------------------
+// P scale factor — multiplies the value by 10^scale before applying an
+// F or E edit descriptor.  Fortran's ``kP, Fw.d`` etc.  The scale is
+// part of the FORMAT processor state; we model it as an explicit
+// helper called once per affected descriptor.
+// ---------------------------------------------------------------------------
+
+inline std::string fmt_F_with_scale(double value, int scale, int w, int d) {
+  return std::format("{0:{1}.{2}f}", value * std::pow(10.0, scale), w, d);
+}
+
+inline std::string fmt_E_with_scale(double value, int scale, int w, int d) {
+  return std::format("{0:>{1}.{2}e}", value * std::pow(10.0, scale), w,
+                     d > 0 ? d - 1 : 0);
+}
+
+// ---------------------------------------------------------------------------
+// Tab controls.
+//
+// In Fortran a FORMAT string drives a record buffer; T<n> repositions
+// the cursor.  ``pad_to`` advances ``out`` to (1-based) column ``col``
+// by emitting blanks (or truncating, though that case is unusual).
+// ---------------------------------------------------------------------------
+
+/// Advance ``buf`` to 1-based column ``col`` by padding with blanks.
+inline void pad_to(std::string &buf, int col) {
+  const std::size_t target = col > 0 ? static_cast<std::size_t>(col - 1) : 0;
+  if (buf.size() < target) {
+    buf.append(target - buf.size(), ' ');
+  }
+}
+
+/// Move cursor right by ``n`` columns.  Equivalent to TR<n> or to
+/// the Fortran ``X`` edit descriptor when ``n`` blanks of spacing
+/// are needed and a plain ``" "`` literal would be less readable.
+inline std::string skip(int n) {
+  return std::string(n > 0 ? static_cast<std::size_t>(n) : 0, ' ');
+}
+
+// ---------------------------------------------------------------------------
+// Sign control — Fortran ``S``, ``SP`` (always print +), ``SS`` (never
+// print +).  std::format only supports the SP case (via the ``+`` sign
+// flag), so SS — usually the implicit default anyway — and the
+// "restore default" S are handled here.
+// ---------------------------------------------------------------------------
+
+inline std::string fmt_int_force_sign(long long value, int w) {
+  return std::format("{0:+{1}d}", value, w);  // SP
+}
+inline std::string fmt_int_no_sign(long long value, int w) {
+  // SS: never show '+', and never show ' ' either; only '-' for negatives.
+  return std::format("{0:{1}d}", value, w);
+}
+
+// ---------------------------------------------------------------------------
+// Formatted output of a whole array / section: one edit descriptor repeats
+// over every element, e.g. ``write(u, '(9e13.4)') a(1:9)``.  Each ``fmt_X``
+// gains an array overload that maps the scalar formatter over the elements
+// (column-major) and concatenates the fixed-width fields.
+// ---------------------------------------------------------------------------
+
+namespace detail {
+template <typename A>
+concept FormatArray = requires(const A &a, index_t k) {
+  a.size();
+  a.linear_at(k);
+};
+} // namespace detail
+
+template <detail::FormatArray A>
+std::string fmt_E(const A &a, int w, int d, std::optional<int> e = std::nullopt) {
+  std::string out;
+  for (index_t i = 0; i < a.size(); ++i)
+    out += fmt_E(static_cast<double>(a.linear_at(i)), w, d, e);
+  return out;
+}
+template <detail::FormatArray A>
+std::string fmt_G(const A &a, int w, int d, std::optional<int> e = std::nullopt) {
+  std::string out;
+  for (index_t i = 0; i < a.size(); ++i)
+    out += fmt_G(static_cast<double>(a.linear_at(i)), w, d, e);
+  return out;
+}
+template <detail::FormatArray A>
+std::string fmt_E_with_scale(const A &a, int scale, int w, int d) {
+  std::string out;
+  for (index_t i = 0; i < a.size(); ++i)
+    out += fmt_E_with_scale(static_cast<double>(a.linear_at(i)), scale, w, d);
+  return out;
+}
+template <detail::FormatArray A>
+std::string fmt_F_with_scale(const A &a, int scale, int w, int d) {
+  std::string out;
+  for (index_t i = 0; i < a.size(); ++i)
+    out += fmt_F_with_scale(static_cast<double>(a.linear_at(i)), scale, w, d);
+  return out;
+}
+template <detail::FormatArray A>
+std::string fmt_int_force_sign(const A &a, int w) {
+  std::string out;
+  for (index_t i = 0; i < a.size(); ++i)
+    out += fmt_int_force_sign(static_cast<long long>(a.linear_at(i)), w);
+  return out;
+}
+template <detail::FormatArray A>
+std::string fmt_int_no_sign(const A &a, int w) {
+  std::string out;
+  for (index_t i = 0; i < a.size(); ++i)
+    out += fmt_int_no_sign(static_cast<long long>(a.linear_at(i)), w);
+  return out;
+}
+
+} // namespace fortran::io
+
+namespace fortran {
+
+/// List-directed logical output character.  Fortran prints logicals as
+/// ``T`` / ``F`` rather than C++'s default ``1`` / ``0``; generated
+/// ``print *`` chains wrap logical items in this so the output matches.
+inline char logical_text(bool b) noexcept { return b ? 'T' : 'F'; }
+
+} // namespace fortran
+
+#endif // FORTRAN_RT_IO_HPP

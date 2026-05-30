@@ -1,0 +1,11 @@
+# Flang-generated module files leak into cwd when tests run with USE.
+*.mod
+
+# Python build/test debris
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+*.egg-info/
