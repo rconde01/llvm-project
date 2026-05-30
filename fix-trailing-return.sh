@@ -11,9 +11,16 @@
 #
 #     auto foo(double x) -> int;
 #
-# This is done with clang-tidy's `modernize-use-trailing-return-type` check,
-# which parses real C++ (so it won't corrupt templates, macros, pointers to
-# functions, etc. the way a regex would).
+# Non-void return types are handled by clang-tidy's
+# `modernize-use-trailing-return-type` check, which parses real C++ (so it
+# won't corrupt templates, macros, pointers to functions, etc. the way a regex
+# would).
+#
+# clang-tidy has a long-standing bug: it silently skips functions that return
+# `void`. Those are handled by a companion libclang/AST pass,
+# fix_trailing_return_void.py (kept next to this script). Install its one
+# dependency with `pip install libclang`. If it is unavailable the script still
+# runs the clang-tidy pass and warns that void functions were left alone.
 #
 # Usage:
 #   ./fix-trailing-return.sh [options] <root-dir>
@@ -137,6 +144,29 @@ export COMPILE_ARGS_STR="${COMPILE_ARGS[*]}"
 
 printf '%s\0' "${FILES[@]}" \
   | xargs -0 -P "$JOBS" -I{} bash -c 'run_one "$@"' _ {}
+
+echo "clang-tidy pass complete (non-void return types)."
+
+# ---- void pass: clang-tidy can't do it, so use the AST companion -----------
+VOID_PY="$(dirname "$(readlink -f "$0")")/fix_trailing_return_void.py"
+if [[ -f "$VOID_PY" ]] && python3 -c 'import clang.cindex' 2>/dev/null; then
+  echo "Running void pass (libclang AST)..."
+  PY_ARGS=()
+  [[ $DRY_RUN -eq 1 ]] && PY_ARGS+=( "--dry-run" )
+  PY_ARGS+=( "--std" "$STD" )
+  if [[ -n "$COMPILE_DB" ]]; then
+    PY_ARGS+=( "-p" "$COMPILE_DB" )
+  else
+    for inc in "${EXTRA_INCLUDES[@]:-}"; do
+      [[ -n "$inc" ]] && PY_ARGS+=( "-I" "$inc" )
+    done
+  fi
+  printf '%s\0' "${FILES[@]}" | xargs -0 python3 "$VOID_PY" "${PY_ARGS[@]}"
+else
+  echo "WARNING: void pass skipped (missing $VOID_PY or python 'clang' module)."
+  echo "         void-returning functions were NOT converted."
+  echo "         Install with: pip install libclang"
+fi
 
 echo "Done."
 if [[ $DRY_RUN -eq 0 ]]; then
