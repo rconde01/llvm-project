@@ -1411,13 +1411,17 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     _split_entry_points(sub, node, data_inits)
     # Eliminate goto in favor of structured control flow.
     sub.body, used_dispatch = structure_gotos(sub.body)
-    # ``structure_gotos`` only reports a *top-level* dispatch; a dispatch
-    # created inside a nested loop body still references ``_pc``, so scan
-    # the structured body to be sure the state local is declared.
-    if used_dispatch or _references_name(sub.body, "_pc"):
+    # ``structure_gotos`` only reports the *top-level* dispatch; nested
+    # dispatches use distinct state variables ``_pc1``, ``_pc2``, etc.
+    # Scan the structured body for every ``_pc*`` name actually emitted
+    # and declare a local for each.
+    pc_names = _pc_names_used(sub.body)
+    if used_dispatch:
+        pc_names.add("_pc")
+    for name in sorted(pc_names):
         sub.locals.append(
             IRLocal(
-                name="_pc",
+                name=name,
                 type=IRType(cpp="int", fortran="integer", is_integer=True),
             )
         )
@@ -1478,10 +1482,13 @@ def _split_entry_points(
             parent_module=sub.parent_module,
         )
         entry.body, used_dispatch = structure_gotos(entry.body)
-        if used_dispatch or _references_name(entry.body, "_pc"):
+        pc_names = _pc_names_used(entry.body)
+        if used_dispatch:
+            pc_names.add("_pc")
+        for name in sorted(pc_names):
             entry.locals.append(
                 IRLocal(
-                    name="_pc",
+                    name=name,
                     type=IRType(cpp="int", fortran="integer", is_integer=True),
                 )
             )
@@ -1517,6 +1524,25 @@ def _references_name(body: list[IRStatement], name: str) -> bool:
     for stmt in body:
         map_statement(stmt, on_expr=lambda e: map_expr(e, note))
     return found[0]
+
+
+_PC_NAME_RE = re.compile(r"^_pc\d*$")
+
+
+def _pc_names_used(body: list[IRStatement]) -> set[str]:
+    """Collect every ``_pc``/``_pcN`` dispatch state variable referenced
+    in ``body``.  Nested dispatch loops use distinct state variables so
+    each one needs its own local declaration."""
+    names: set[str] = set()
+
+    def note(expr: IRExpr) -> IRExpr:
+        if isinstance(expr, IRName) and _PC_NAME_RE.match(expr.name):
+            names.add(expr.name)
+        return expr
+
+    for stmt in body:
+        map_statement(stmt, on_expr=lambda e: map_expr(e, note))
+    return names
 
 
 _FTYPE_RE = re.compile(r"^\s*([A-Za-z ]+?)\s*(?:\(([^)]*)\))?\s*$")
@@ -1555,8 +1581,16 @@ def _scalar_type_from_fortran(spelling: str) -> IRType | None:
         return IRType(cpp=camelcase(name), fortran=spelling) if name else None
     if cat == "CHARACTER":
         # flang spells the length as ``CHARACTER(14_8,1)`` — the first
-        # selector is the length, possibly kind-suffixed (``14_8``).
-        length = _first_int(arg.split(",")[0]) if arg else None
+        # selector is the length, possibly kind-suffixed (``14_8``).  An
+        # assumed-length dummy is spelled ``CHARACTER(*,1)``.
+        first = arg.split(",")[0].strip() if arg else ""
+        if first == "*":
+            return IRType(
+                cpp="std::string_view",
+                fortran=spelling,
+                is_character=True,
+            )
+        length = _first_int(first)
         if length is not None:
             return IRType(
                 cpp=f"fortran::FortranString<{length}>",
@@ -1794,8 +1828,17 @@ def _lower_data_value(value_node: Node) -> list[IRExpr]:
     dc = value_node.first_child("DataStmtConstant")
     if dc is None:
         return [IRRaw("0")]
-    inner = next(iter(dc.children), None)
-    val = _lower_expression(inner) if inner is not None else IRRaw("0")
+    # flang's analyzer attaches the folded constant to ``DataStmtConstant``
+    # as its ``fortran`` field (e.g. ``"3.51e-1_4"``); the structural
+    # children (SignedRealLiteralConstant, etc.) carry no text.  Prefer
+    # the folded spelling, fall back to lowering the child for kinds we
+    # don't fold.
+    val: IRExpr
+    if dc.fortran:
+        val = IRLiteral(cpp_text=_format_data_constant(dc.fortran))
+    else:
+        inner = next(iter(dc.children), None)
+        val = _lower_expression(inner) if inner is not None else IRRaw("0")
     count = 1
     repeat = value_node.first_child("DataStmtRepeat")
     if repeat is not None:
@@ -1806,6 +1849,47 @@ def _lower_data_value(value_node: Node) -> list[IRExpr]:
             except ValueError:
                 count = 1
     return [val] * count
+
+
+def _format_data_constant(text: str) -> str:
+    """Render a flang-folded scalar constant (``"3.5e-1_4"``,
+    ``"42_4"``, ``"-1._8"``, ``'"hello"'``, ``".true._4"``) as C++
+    literal text.  The trailing ``_kind`` suffix encodes Fortran KIND
+    and is stripped; an ``f`` suffix is added for single-precision
+    reals.  String constants ``'"..."'`` and logicals (``.true._4``)
+    are passed through after kind-suffix stripping."""
+    s = text.strip()
+    # Character literals come quoted; emit them as ``std::string_view``
+    # so they assign cleanly into a ``FortranString<N>`` slot the same
+    # way other character expressions do.
+    if s.startswith('"'):
+        return s + "sv"
+    if s.startswith("'"):
+        # Normalize to double quotes for C++ (single quotes are character
+        # literals there) and append the sv suffix.
+        return '"' + s[1:-1].replace('"', '\\"') + '"sv'
+    # Logical literals: flang renders ``.true._4`` / ``.false._4``.
+    low = s.lower()
+    if low.startswith(".true.") or low.startswith(".false."):
+        return "true" if low.startswith(".true.") else "false"
+    kind: int | None = None
+    if "_" in s:
+        base, _, kbits = s.rpartition("_")
+        try:
+            kind = int(kbits)
+            s = base
+        except ValueError:
+            pass
+    is_real = ("." in s) or ("e" in s) or ("E" in s)
+    if is_real:
+        if kind is None or kind == 4:
+            return s + "f"
+        if kind == 8:
+            return s
+        if kind == 16:
+            return s + "L"
+        return s + "f"
+    return s
 
 
 def _lower_use_statements(spec_part: Node) -> list[str]:

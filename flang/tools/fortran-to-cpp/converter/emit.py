@@ -244,8 +244,9 @@ def _emit_includes(
     # for inline std::format calls).  Once the IR carries enough info
     # we can prune this on a per-translation-unit basis.
     includes = {"<algorithm>", "<cmath>", "<cstdint>", "<cstdlib>",
-                "<format>", "<functional>", "<iostream>", "<optional>",
-                "<sstream>", "<string_view>", '"fortran/runtime.hpp"'}
+                "<format>", "<functional>", "<iostream>", "<limits>",
+                "<optional>", "<sstream>", "<string_view>",
+                '"fortran/runtime.hpp"'}
     if shared_header is not None:
         # The shared header already pulls in runtime.hpp.
         includes.discard('"fortran/runtime.hpp"')
@@ -579,10 +580,31 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
             _emit_io_with_implied_do(out, stmt, write=False, indent=indent)
             return
         _emit_comment_block(out, stmt.leading_comments, indent=indent)
+        if not stmt.items:
+            # READ(unit, *) with no item list — Fortran reads-and-discards
+            # a whole record.  In C++ that means skip to and past the next
+            # newline on the stream.
+            out.write(
+                f"{pad}{stmt.stream}.ignore("
+                f"std::numeric_limits<std::streamsize>::max(), '\\n');"
+            )
+            _emit_trailing(out, stmt.trailing_comments)
+            return
         out.write(f"{pad}{stmt.stream}")
         for item in stmt.items:
             out.write(f" >> {_render_expr(item)}")
         out.write(";")
+        # List-directed READ is record-based: once the items are filled,
+        # the rest of the current record is discarded so the next READ
+        # starts on a new line.  C++ stream extraction does not advance
+        # past trailing data on the line, so do that explicitly.  Skip
+        # this for ``std::cin`` (interactive input has no useful trailing
+        # data and tests sometimes pipe items lazily across lines).
+        if stmt.stream != "std::cin":
+            out.write(
+                f"\n{pad}{stmt.stream}.ignore("
+                f"std::numeric_limits<std::streamsize>::max(), '\\n');"
+            )
         _emit_trailing(out, stmt.trailing_comments)
         return
     if isinstance(stmt, IRStop):

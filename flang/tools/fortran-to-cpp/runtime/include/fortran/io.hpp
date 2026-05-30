@@ -38,6 +38,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <format>
 #include <fstream>
 #include <iostream>
@@ -46,6 +47,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace fortran::io {
 
@@ -120,6 +122,20 @@ private:
 
 class Units {
 public:
+  Units() { register_flush_at_exit(); }
+
+  // Fortran STOP flushes all connected units before terminating, but the
+  // lowered ``std::exit`` skips local destructors so the buffered output
+  // of file-backed units would be lost.  An atexit handler that flushes
+  // every still-open file in this instance closes that gap.
+  void flush_all() noexcept {
+    for (auto &kv : files_) {
+      if (kv.second) {
+        kv.second->out().flush();
+      }
+    }
+  }
+
   void open(int unit, std::string_view file,
             std::string_view status = "unknown") {
     std::ios_base::openmode mode{};
@@ -132,11 +148,14 @@ public:
     } else {
       mode = std::ios::in | std::ios::out;
     }
-    auto fs{std::make_unique<std::fstream>(std::string{file}, mode)};
+    // Fortran CHARACTER variables are blank-padded to their declared length;
+    // OPEN(FILE=...) trims trailing blanks before resolving the path.
+    std::string path{trim_trailing_blanks(file)};
+    auto fs{std::make_unique<std::fstream>(path, mode)};
     if (!fs->is_open() && (mode & std::ios::in) && !(mode & std::ios::out)) {
       // Fall back to creating the file for read/write.
       fs = std::make_unique<std::fstream>(
-          std::string{file}, std::ios::in | std::ios::out | std::ios::trunc);
+          path, std::ios::in | std::ios::out | std::ios::trunc);
     }
     files_[unit] = std::make_unique<FortranFile>(std::move(fs));
   }
@@ -181,6 +200,37 @@ private:
     auto &slot{files_[unit]};
     slot = std::make_unique<FortranFile>(std::move(fs));
     return *slot;
+  }
+
+  // Hook a one-shot atexit that flushes this Units instance's files
+  // when ``std::exit`` is called past the main_program body.  We register
+  // a global tracker (a weak pointer set) so multiple Units instances
+  // are all visited; in practice there is only one — the main's local.
+  void register_flush_at_exit() {
+    static auto &registry = flush_registry();
+    static const bool installed = [] {
+      std::atexit([] {
+        for (Units *u : flush_registry()) {
+          if (u) u->flush_all();
+        }
+      });
+      return true;
+    }();
+    (void)installed;
+    registry.push_back(this);
+  }
+
+  static std::vector<Units *> &flush_registry() {
+    static std::vector<Units *> v;
+    return v;
+  }
+
+  static std::string_view trim_trailing_blanks(std::string_view s) {
+    std::size_t n{s.size()};
+    while (n > 0 && (s[n - 1] == ' ' || s[n - 1] == '\t')) {
+      --n;
+    }
+    return s.substr(0, n);
   }
 
   static bool iequals(std::string_view a, std::string_view b) {
