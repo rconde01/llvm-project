@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-void test_lambda_positive() {
+auto test_lambda_positive() -> void {
   auto l01 = [] {};
   // CHECK-MESSAGES-ALL: :[[@LINE-1]]:14: warning: use a trailing return type for this lambda [modernize-use-trailing-return-type]
   // CHECK-MESSAGES-NOAUTO: :[[@LINE-2]]:14: warning: use a trailing return type for this lambda [modernize-use-trailing-return-type]
@@ -67,15 +67,15 @@ void test_lambda_positive() {
 
 // In c++11 mode we can not write 'auto' type, see *-cxx14.cpp for fixes.
 template <template <typename> class C>
-void test_lambda_positive_template() {
+auto test_lambda_positive_template() -> void {
   auto l1 = []() { return C<int>{}; };
   // CHECK-MESSAGES-ALL: :[[@LINE-1]]:13: warning: use a trailing return type for this lambda [modernize-use-trailing-return-type]
   auto l2 = []() { return 0; };
   // CHECK-MESSAGES-ALL: :[[@LINE-1]]:13: warning: use a trailing return type for this lambda [modernize-use-trailing-return-type]
 }
 
-void test_lambda_negative() {
-  auto l1_good = [](int arg) -> int { return 0; };  
+auto test_lambda_negative() -> void {
+  auto l1_good = [](int arg) -> int { return 0; };
 }
 
 // this function is solely used to not to get "wrong config error" from the check.

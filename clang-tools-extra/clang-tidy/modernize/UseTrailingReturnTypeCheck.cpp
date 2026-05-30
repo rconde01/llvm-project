@@ -478,14 +478,19 @@ void UseTrailingReturnTypeCheck::storeOptions(
 }
 
 void UseTrailingReturnTypeCheck::registerMatchers(MatchFinder *Finder) {
-  auto F =
-      functionDecl(
-          unless(anyOf(
-              hasTrailingReturn(), returns(voidType()), cxxConversionDecl(),
-              cxxMethodDecl(
-                  anyOf(isImplicit(),
-                        hasParent(cxxRecordDecl(hasParent(lambdaExpr()))))))))
-          .bind("Func");
+  // Constructors, destructors and conversion operators have no explicit return
+  // type that could be moved into a trailing return type, so they are excluded.
+  // Note that constructors and destructors have an implicit 'void' return type,
+  // so they must be filtered out explicitly rather than relying on a
+  // 'returns(voidType())' exclusion (which would also wrongly skip ordinary
+  // functions returning 'void').
+  auto F = functionDecl(
+               unless(anyOf(hasTrailingReturn(), cxxConstructorDecl(),
+                            cxxDestructorDecl(), cxxConversionDecl(),
+                            cxxMethodDecl(anyOf(
+                                isImplicit(), hasParent(cxxRecordDecl(
+                                                  hasParent(lambdaExpr()))))))))
+               .bind("Func");
 
   if (TransformFunctions) {
     Finder->addMatcher(F, this);

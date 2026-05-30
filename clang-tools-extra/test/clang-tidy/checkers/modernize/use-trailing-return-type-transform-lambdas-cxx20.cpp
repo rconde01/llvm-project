@@ -7,7 +7,7 @@ template <typename T>
 concept floating_point = std::is_same<T, float>::value || std::is_same<T, double>::value || std::is_same<T, long double>::value;
 }
 
-void test_lambda_positive() {
+auto test_lambda_positive() -> void {
   auto l1 = []<typename T, typename U>(T x, U y) { return x + y; };
   // CHECK-MESSAGES: :[[@LINE-1]]:13: warning: use a trailing return type for this lambda [modernize-use-trailing-return-type]
   // CHECK-FIXES: auto l1 = []<typename T, typename U>(T x, U y) -> auto { return x + y; };

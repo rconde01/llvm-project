@@ -572,9 +572,15 @@ Changes in existing checks
   argument to a macro.
 
 - Improved :doc:`modernize-use-trailing-return-type
-  <clang-tidy/checks/modernize/use-trailing-return-type>` check by fixing
-  spurious ``missing '(' after '__has_feature'`` errors caused by builtin
-  macros appearing in the return type of a function.
+  <clang-tidy/checks/modernize/use-trailing-return-type>` check:
+
+  - Fixed spurious ``missing '(' after '__has_feature'`` errors caused by
+    builtin macros appearing in the return type of a function.
+
+  - Functions returning ``void`` are now rewritten (e.g. ``void f();`` becomes
+    ``auto f() -> void;``); they were previously skipped. Constructors and
+    destructors, which have an implicit ``void`` return type, are still left
+    untouched.
 
 - Improved :doc:`modernize-use-using
   <clang-tidy/checks/modernize/use-using>` check:

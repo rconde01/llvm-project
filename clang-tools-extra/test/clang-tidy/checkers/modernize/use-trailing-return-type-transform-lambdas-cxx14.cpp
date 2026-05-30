@@ -2,14 +2,14 @@
 #include <string>
 #include <vector>
 
-void test_lambda_positive() {
+auto test_lambda_positive() -> void {
   auto l1 = [](auto x) { return x; };
   // CHECK-MESSAGES: :[[@LINE-1]]:13: warning: use a trailing return type for this lambda [modernize-use-trailing-return-type]
   // CHECK-FIXES: auto l1 = [](auto x) -> auto { return x; };
 }
 
 template <template <typename> class C>
-void test_lambda_positive_template() {
+auto test_lambda_positive_template() -> void {
   auto l1 = []() { return C<int>{}; };
   // CHECK-MESSAGES: :[[@LINE-1]]:13: warning: use a trailing return type for this lambda [modernize-use-trailing-return-type]
   // CHECK-FIXES: auto l1 = []() -> auto { return C<int>{}; };

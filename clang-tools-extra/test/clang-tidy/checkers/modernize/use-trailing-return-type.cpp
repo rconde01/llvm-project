@@ -578,6 +578,48 @@ ostream& operator<<(ostream& ostream, int i);
 // CHECK-FIXES: ostream& operator<<(ostream& ostream, int i);
 
 //
+// Functions returning 'void' are rewritten as well.
+//
+
+void c();
+// CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use a trailing return type for this function [modernize-use-trailing-return-type]
+// CHECK-FIXES: auto c() -> void;
+void c(int arg);
+// CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use a trailing return type for this function [modernize-use-trailing-return-type]
+// CHECK-FIXES: auto c(int arg) -> void;
+void c(int arg) { return; }
+// CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use a trailing return type for this function [modernize-use-trailing-return-type]
+// CHECK-FIXES: auto c(int arg) -> void { return; }
+
+void cnoexcept() noexcept;
+// CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use a trailing return type for this function [modernize-use-trailing-return-type]
+// CHECK-FIXES: auto cnoexcept() noexcept -> void;
+
+static void cstatic();
+// CHECK-MESSAGES: :[[@LINE-1]]:13: warning: use a trailing return type for this function [modernize-use-trailing-return-type]
+// CHECK-FIXES: static auto cstatic() -> void;
+
+template <typename T> void ctemplate(T t);
+// CHECK-MESSAGES: :[[@LINE-1]]:28: warning: use a trailing return type for this function [modernize-use-trailing-return-type]
+// CHECK-FIXES: template <typename T> auto ctemplate(T t) -> void;
+
+struct VoidMembers {
+    void m();
+// CHECK-MESSAGES: :[[@LINE-1]]:10: warning: use a trailing return type for this function [modernize-use-trailing-return-type]
+// CHECK-FIXES: auto m() -> void;
+    static void sm();
+// CHECK-MESSAGES: :[[@LINE-1]]:17: warning: use a trailing return type for this function [modernize-use-trailing-return-type]
+// CHECK-FIXES: static auto sm() -> void;
+    virtual void vm() const noexcept;
+// CHECK-MESSAGES: :[[@LINE-1]]:18: warning: use a trailing return type for this function [modernize-use-trailing-return-type]
+// CHECK-FIXES: virtual auto vm() const noexcept -> void;
+};
+
+void VoidMembers::m() { return; }
+// CHECK-MESSAGES: :[[@LINE-1]]:19: warning: use a trailing return type for this function [modernize-use-trailing-return-type]
+// CHECK-FIXES: auto VoidMembers::m() -> void { return; }
+
+//
 // Samples which do not trigger the check
 //
 
@@ -590,9 +632,11 @@ template <typename T> auto f(T t) -> int;
 
 auto ff();
 
-void c();
-void c(int arg);
-void c(int arg) { return; }
+//
+// Constructors, destructors and conversion operators have no explicit return
+// type and must not be rewritten, even though constructors and destructors
+// have an implicit 'void' return type.
+//
 
 struct D2 : B {
     D2();
@@ -604,4 +648,15 @@ struct D2 : B {
 
     operator double();
 };
+
+// Constructors and destructors are excluded regardless of their form (defined
+// in-class, defaulted, deleted or defined out-of-line).
+struct SpecialMembers {
+    SpecialMembers() {}
+    SpecialMembers(const SpecialMembers &) = default;
+    SpecialMembers(SpecialMembers &&) = delete;
+    ~SpecialMembers();
+};
+
+SpecialMembers::~SpecialMembers() {}
 
