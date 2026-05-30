@@ -834,3 +834,46 @@ Some_struct g_s1{ .SomeMember = 1 };
 // CHECK-FIXES: Some_struct g_s1{ .some_member = 1 };
 Some_struct g_s2{.SomeMember=1};
 // CHECK-FIXES: Some_struct g_s2{.some_member=1};
+
+namespace pr40464 {
+// Renaming a variable that a lambda captures via a default capture must not
+// rewrite the default capture itself (e.g. turning `[&]` into `[columns]`),
+// which would change the capture semantics and break compilation.
+static bool implicitCapture() {
+  for (unsigned Columns = 1; Columns <= 10; ++Columns) {
+// CHECK-MESSAGES: :[[@LINE-1]]:17: warning: invalid case style for local variable 'Columns' [readability-identifier-naming]
+// CHECK-FIXES: for (unsigned columns = 1; columns <= 10; ++columns) {
+    if ([&] {
+// CHECK-FIXES: if ([&] {
+      for (unsigned I = 0; I < Columns - 1; ++I)
+// CHECK-MESSAGES: :[[@LINE-1]]:21: warning: invalid case style for local variable 'I' [readability-identifier-naming]
+// CHECK-FIXES: for (unsigned i = 0; i < columns - 1; ++i)
+        return false;
+      return true;
+    }())
+      continue;
+  }
+  return true;
+}
+
+// A by-value default capture must likewise be left untouched.
+static int implicitCaptureByValue() {
+  int Counter = 0;
+// CHECK-MESSAGES: :[[@LINE-1]]:7: warning: invalid case style for local variable 'Counter' [readability-identifier-naming]
+// CHECK-FIXES: int counter = 0;
+  return [=] { return Counter; }();
+// CHECK-FIXES: return [=] { return counter; }();
+}
+
+// Explicit captures, however, are real usages and should still be renamed.
+static int explicitCapture() {
+  int Counter = 0;
+// CHECK-MESSAGES: :[[@LINE-1]]:7: warning: invalid case style for local variable 'Counter' [readability-identifier-naming]
+// CHECK-FIXES: int counter = 0;
+  auto by_value = [Counter] { return Counter; };
+// CHECK-FIXES: auto by_value = [counter] { return counter; };
+  auto by_ref = [&Counter] { return Counter; };
+// CHECK-FIXES: auto by_ref = [&counter] { return counter; };
+  return by_value() + by_ref();
+}
+} // namespace pr40464
