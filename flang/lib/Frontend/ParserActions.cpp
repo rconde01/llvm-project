@@ -15,6 +15,7 @@
 #include "flang/Lower/Bridge.h"
 #include "flang/Lower/PFTBuilder.h"
 #include "flang/Parser/dump-parse-tree.h"
+#include "flang/Parser/dump-parse-tree-json.h"
 #include "flang/Parser/parsing.h"
 #include "flang/Parser/provenance.h"
 #include "flang/Parser/source.h"
@@ -39,6 +40,12 @@ void dumpTree(CompilerInstance &ci) {
   llvm::outs() << " Flang: parse tree dump ";
   llvm::outs() << "========================\n";
   parser::DumpTree(llvm::outs(), parseTree, &ci.getInvocation().getAsFortran());
+}
+
+void dumpTreeJSON(CompilerInstance &ci) {
+  auto &parseTree{ci.getParsing().parseTree()};
+  parser::DumpTreeJSON(llvm::outs(), parseTree, &ci.getAllCookedSources(),
+                       &ci.getInvocation().getAsFortran());
 }
 
 void dumpProvenance(CompilerInstance &ci) {

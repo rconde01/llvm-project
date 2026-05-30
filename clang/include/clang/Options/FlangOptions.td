@@ -370,6 +370,14 @@ def fdebug_dump_parse_tree_no_sema : Flag<["-"], "fdebug-dump-parse-tree-no-sema
   HelpText<"Dump the parse tree (skips the semantic checks)">,
   DocBrief<[{Run the Parser and then output the parse tree. Semantic
 checks are disabled.}]>;
+def fdebug_dump_parse_tree_json : Flag<["-"], "fdebug-dump-parse-tree-json">, Group<Action_Group>,
+  HelpText<"Dump the parse tree as JSON">,
+  DocBrief<[{Run the Parser and the semantic checks, and then output the
+parse tree as a JSON document.}]>;
+def fdebug_dump_parse_tree_json_no_sema : Flag<["-"], "fdebug-dump-parse-tree-json-no-sema">, Group<Action_Group>,
+  HelpText<"Dump the parse tree as JSON (skips the semantic checks)">,
+  DocBrief<[{Run the Parser and then output the parse tree as a JSON
+document. Semantic checks are disabled.}]>;
 def fdebug_dump_all : Flag<["-"], "fdebug-dump-all">, Group<Action_Group>,
   HelpText<"Dump symbols and the parse tree after the semantic checks">;
 def fdebug_dump_provenance : Flag<["-"], "fdebug-dump-provenance">, Group<Action_Group>,
