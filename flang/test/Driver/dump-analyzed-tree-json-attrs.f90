@@ -1,7 +1,7 @@
 !----------
 ! RUN lines
 !----------
-! RUN: %flang_fc1 -fdebug-dump-parse-tree-json %s 2>&1 | FileCheck %s
+! RUN: %flang_fc1 -fdebug-dump-analyzed-tree-json %s 2>&1 | FileCheck %s
 
 ! The JSON dumper emits each Name's resolved-symbol attribute set as a
 ! lowercase JSON string array under the "attrs" key.  Both the on-

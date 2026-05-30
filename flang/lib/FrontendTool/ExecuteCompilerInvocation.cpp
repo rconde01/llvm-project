@@ -67,14 +67,14 @@ createFrontendAction(CompilerInstance &ci) {
     return std::make_unique<DebugDumpSymbolsAction>();
   case DebugDumpParseTree:
     return std::make_unique<DebugDumpParseTreeAction>();
-  case DebugDumpParseTreeJSON:
-    return std::make_unique<DebugDumpParseTreeJSONAction>();
+  case DebugDumpAnalyzedTreeJSON:
+    return std::make_unique<DebugDumpAnalyzedTreeJSONAction>();
   case DebugDumpPFT:
     return std::make_unique<DebugDumpPFTAction>();
   case DebugDumpParseTreeNoSema:
     return std::make_unique<DebugDumpParseTreeNoSemaAction>();
-  case DebugDumpParseTreeJSONNoSema:
-    return std::make_unique<DebugDumpParseTreeJSONNoSemaAction>();
+  case DebugDumpAnalyzedTreeJSONNoSema:
+    return std::make_unique<DebugDumpAnalyzedTreeJSONNoSemaAction>();
   case DebugDumpAll:
     return std::make_unique<DebugDumpAllAction>();
   case DebugDumpProvenance:

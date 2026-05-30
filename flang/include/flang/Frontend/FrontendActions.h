@@ -76,7 +76,7 @@ class DebugDumpParseTreeNoSemaAction : public PrescanAndParseAction {
   void executeAction() override;
 };
 
-class DebugDumpParseTreeJSONNoSemaAction : public PrescanAndParseAction {
+class DebugDumpAnalyzedTreeJSONNoSemaAction : public PrescanAndParseAction {
   void executeAction() override;
 };
 
@@ -112,7 +112,7 @@ class DebugDumpParseTreeAction : public PrescanAndSemaAction {
   void executeAction() override;
 };
 
-class DebugDumpParseTreeJSONAction : public PrescanAndSemaAction {
+class DebugDumpAnalyzedTreeJSONAction : public PrescanAndSemaAction {
   void executeAction() override;
 };
 
