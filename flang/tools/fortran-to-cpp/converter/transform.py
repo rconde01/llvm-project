@@ -50,6 +50,8 @@ from .ir import (
     IRRaw,
     IRDirectRead,
     IRDirectWrite,
+    IRUnformattedDirectRead,
+    IRUnformattedDirectWrite,
     IRRead,
     IRGoto,
     IRReturn,
@@ -244,6 +246,22 @@ def _map_statement_children(
             rec=_e(stmt.rec, on_expr),
             items=[_e(a, on_expr) for a in stmt.items],
             format=stmt.format,
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    if isinstance(stmt, IRUnformattedDirectRead):
+        return IRUnformattedDirectRead(
+            unit_text=stmt.unit_text,
+            rec=_e(stmt.rec, on_expr),
+            items=[_e(a, on_expr) for a in stmt.items],
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    if isinstance(stmt, IRUnformattedDirectWrite):
+        return IRUnformattedDirectWrite(
+            unit_text=stmt.unit_text,
+            rec=_e(stmt.rec, on_expr),
+            items=[_e(a, on_expr) for a in stmt.items],
             leading_comments=stmt.leading_comments,
             trailing_comments=stmt.trailing_comments,
         )

@@ -66,7 +66,12 @@ from .ir import (
     IRDerivedType,
     IRDirectRead,
     IRDirectWrite,
+    IRUnformattedDirectRead,
+    IRUnformattedDirectWrite,
     IREntry,
+    IREquivGroup,
+    IREquivMember,
+    IRStateBinding,
     IRExit,
     IRGoto,
     IRImpliedDo,
@@ -333,6 +338,11 @@ def _infer_readonly_scalar_params(tu: IRTranslationUnit) -> None:
             elif isinstance(stmt, IRDirectRead):
                 for tgt, *_rest in stmt.fields:
                     r = root(tgt)
+                    if r is not None:
+                        _w.add(r)
+            elif isinstance(stmt, IRUnformattedDirectRead):
+                for it in stmt.items:
+                    r = root(it)
                     if r is not None:
                         _w.add(r)
             elif isinstance(stmt, IRCall):
@@ -1376,6 +1386,13 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
             spec_part = child
             sub.locals.extend(_lower_specification(child))
             sub.common_uses.extend(_lower_common_statements(child))
+            sub.equiv_groups.extend(
+                _lower_equivalence_statements(child, sub)
+            )
+            # Drop the equiv-aliased locals — they re-appear as typed
+            # proxies on each equiv struct, bound back to their original
+            # names at the top of the body so call sites stay readable.
+            _drop_equiv_aliased_locals(sub)
             sub.used_modules.extend(_lower_use_statements(child))
         elif child.kind == "ExecutionPart":
             sub.body.extend(_lower_execution(child))
@@ -1404,6 +1421,11 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     # variables (must precede array-assignment expansion, which keys off
     # which locals are arrays).
     _apply_implicit_typing(node, sub, resolved)
+    # Drop again now that implicit typing has run: it would re-add an
+    # equiv-aliased name because it sees the body referencing a "missing"
+    # local.  The equiv struct already provides storage; the alias is a
+    # binding, not a separate declaration.
+    _drop_equiv_aliased_locals(sub)
     # DATA initializations run after implicit typing so array-vs-scalar is
     # known, and before the executable body.  Collected unit-wide because
     # F77 allows DATA among executable statements, not just declarations.
@@ -1487,6 +1509,7 @@ def _split_entry_points(
             source=sub.source,
             common_uses=list(sub.common_uses),
             used_modules=list(sub.used_modules),
+            equiv_groups=copy.deepcopy(sub.equiv_groups),
             parent_module=sub.parent_module,
         )
         entry.body, used_dispatch = structure_gotos(entry.body)
@@ -2072,6 +2095,225 @@ def _lower_use_statements(spec_part: Node) -> list[str]:
         if name is not None and name.fortran:
             out.append(_safe_name(name.fortran))
     return out
+
+
+def _drop_equiv_aliased_locals(sub: "IRSubprogram") -> None:
+    """Remove every IRLocal that's been turned into an equivalence alias.
+
+    Two cases produced aliases:
+      * a member of a pun group -- its storage now lives in the equiv
+        struct;
+      * a same-type EQUIVALENCE rename -- its storage is the canonical
+        primary, reached via a state-binding (param == "").
+    Either way the original IRLocal is no longer the declaration site,
+    so drop it from ``sub.locals`` to keep emit from re-declaring it."""
+    pun_aliased = {m.name for g in sub.equiv_groups for m in g.members}
+    rename_aliased = {b.name for b in sub.state_bindings if not b.param}
+    aliased = pun_aliased | rename_aliased
+    if aliased:
+        sub.locals = [loc for loc in sub.locals if loc.name not in aliased]
+
+
+def _lower_equivalence_statements(
+    spec_part: Node, sub: "IRSubprogram"
+) -> list["IREquivGroup"]:
+    """Collect ``equivalence (a, b, ...)`` groups and lower them.
+
+    We distinguish two cases.  When every member of a group has the same
+    element type *and* the same byte size, the equivalence is just a
+    renaming for memory sharing -- no type punning is needed.  Lowering
+    keeps the first member's IRLocal as the canonical storage and adds a
+    reference-binding from each alias to it (zero memory overhead, no
+    proxy machinery).  When the members differ (a ``DOUBLE PRECISION``
+    array aliased to an ``INTEGER`` one -- SPICE's DAF type-pun pattern),
+    we build an :class:`IREquivGroup` whose emitted struct holds a single
+    shared byte buffer plus a typed proxy per member.
+
+    Only whole-object aliases of arithmetic scalars, 1-D static
+    arithmetic arrays, or CHARACTER variables are supported; anything
+    more elaborate (a partial subscript, COMMON-block placement,
+    higher-rank aliases) raises :class:`ConversionError`."""
+    out: list[IREquivGroup] = []
+    locals_by_name = {loc.name: loc for loc in sub.locals}
+    # ``EquivalenceStmt`` -> one or more ``EquivalenceSet`` children, each
+    # a group of objects that all share the same storage.  The dumper
+    # wraps each parenthesized ``(a, b, ...)`` group in EquivalenceSet so
+    # multi-group statements like ``EQUIVALENCE (A, B), (C, D)`` stay
+    # distinguishable.
+    for stmt in spec_part.find_all("EquivalenceStmt"):
+        for s_idx, eset in enumerate(stmt.children_of_kind("EquivalenceSet")):
+            objs = list(eset.children_of_kind("EquivalenceObject"))
+            if len(objs) < 2:
+                continue  # a single-member equivalence is a no-op
+            members: list[IREquivMember] = []
+            for obj in objs:
+                # An EquivalenceObject must designate a whole variable;
+                # an element subscript or substring is partial overlap and
+                # is not handled.
+                if obj.find_first("ArrayElement") is not None \
+                        or obj.find_first("Substring") is not None:
+                    raise ConversionError(
+                        "EQUIVALENCE",
+                        note="only whole-object aliases are supported "
+                        "(no element subscripts or substrings)",
+                        source=stmt.source.text if stmt.source else "",
+                    )
+                bare_name = obj.find_first("Name")
+                if bare_name is None or not bare_name.fortran:
+                    raise ConversionError(
+                        "EQUIVALENCE",
+                        note="malformed object (no resolvable name)",
+                        source=stmt.source.text if stmt.source else "",
+                    )
+                local_name = _safe_name(bare_name.fortran)
+                loc = locals_by_name.get(local_name)
+                if loc is None:
+                    raise ConversionError(
+                        "EQUIVALENCE",
+                        note=f"member {local_name!r} not found as a local",
+                        source=stmt.source.text if stmt.source else "",
+                    )
+                members.append(_equiv_member_from_local(loc, stmt))
+            # No-pun case: every member has the same C++ element type
+            # AND the same byte size (so reading via any name gives the
+            # same value).  Drop the aliases from locals and emit a
+            # reference-binding from each to the first -- no proxy or
+            # shared byte buffer needed.
+            if all(
+                m.cpp_elem_type == members[0].cpp_elem_type
+                and _member_byte_size(m) == _member_byte_size(members[0])
+                for m in members[1:]
+            ):
+                primary = members[0].name
+                for m in members[1:]:
+                    sub.state_bindings.append(
+                        IRStateBinding(name=m.name, param="", field=primary)
+                    )
+                    locals_by_name.pop(m.name, None)
+                continue
+            byte_size = max(_member_byte_size(m) for m in members)
+            alignment = max(m.alignment for m in members)
+            cpp_type = f"{camelcase(sub.display_name)}_Equiv{len(out) + 1}"
+            out.append(
+                IREquivGroup(
+                    cpp_type=cpp_type,
+                    byte_size=byte_size,
+                    alignment=alignment,
+                    members=members,
+                )
+            )
+    return out
+
+
+_EQUIV_ELEM_INFO: dict[str, tuple[str, int]] = {
+    # cpp scalar type -> (alignment-bytes, size-bytes)
+    "bool": (1, 1),
+    "char": (1, 1),
+    "std::int8_t": (1, 1),
+    "std::int16_t": (2, 2),
+    "std::int32_t": (4, 4),
+    "std::int64_t": (8, 8),
+    "float": (4, 4),
+    "double": (8, 8),
+}
+
+
+def _equiv_member_from_local(
+    loc: "IRLocal", stmt: Node
+) -> "IREquivMember":
+    """Build an :class:`IREquivMember` from a local declaration.
+
+    Supports a CHARACTER string, an arithmetic scalar, and an arithmetic
+    1-D static-bound array.  Rejects anything else with a
+    :class:`ConversionError` so unsupported shapes surface immediately.
+    """
+    t = loc.type
+    if t.is_character:
+        n = _character_length_from_cpp(t.cpp)
+        if n is None:
+            raise ConversionError(
+                "EQUIVALENCE",
+                note=(f"CHARACTER member {loc.name!r} has unsupported "
+                      "length spelling " + repr(t.cpp)),
+                source=stmt.source.text if stmt.source else "",
+            )
+        return IREquivMember(
+            name=loc.name,
+            cpp_elem_type="char",
+            count=n,
+            alignment=1,
+            is_character=True,
+        )
+    if t.is_array:
+        if not t.array_static or t.array_rank != 1:
+            raise ConversionError(
+                "EQUIVALENCE",
+                note=(f"array member {loc.name!r} must be a 1-D, "
+                      "static-bound array"),
+                source=stmt.source.text if stmt.source else "",
+            )
+        elem_cpp = t.element_type_cpp or t.cpp
+        info = _EQUIV_ELEM_INFO.get(elem_cpp)
+        if info is None:
+            raise ConversionError(
+                "EQUIVALENCE",
+                note=(f"array element type {elem_cpp!r} on member "
+                      f"{loc.name!r} is not supported"),
+                source=stmt.source.text if stmt.source else "",
+            )
+        align, _size = info
+        n = _array_static_extent(t)
+        if n is None:
+            raise ConversionError(
+                "EQUIVALENCE",
+                note=f"array member {loc.name!r} has dynamic bounds",
+                source=stmt.source.text if stmt.source else "",
+            )
+        return IREquivMember(
+            name=loc.name,
+            cpp_elem_type=elem_cpp,
+            count=n,
+            alignment=align,
+        )
+    # Arithmetic scalar.
+    info = _EQUIV_ELEM_INFO.get(t.cpp)
+    if info is None:
+        raise ConversionError(
+            "EQUIVALENCE",
+            note=(f"scalar member {loc.name!r} of C++ type {t.cpp!r} is "
+                  "not supported"),
+            source=stmt.source.text if stmt.source else "",
+        )
+    align, _size = info
+    return IREquivMember(
+        name=loc.name, cpp_elem_type=t.cpp, count=None, alignment=align
+    )
+
+
+def _character_length_from_cpp(cpp: str) -> int | None:
+    """``"fortran::FortranString<8>"`` -> ``8``."""
+    m = re.match(r"fortran::FortranString<\s*(\d+)\s*>", cpp)
+    return int(m.group(1)) if m is not None else None
+
+
+def _array_static_extent(t: "IRType") -> int | None:
+    """Pull the constant element count from a 1-D static Array IRType.
+
+    The extent lives on ``IRType.array_extent_exprs[0]`` as a rendered
+    C++ string; we only accept it when it parses as a plain integer."""
+    if not t.array_extent_exprs or len(t.array_extent_exprs) != 1:
+        return None
+    txt = t.array_extent_exprs[0].strip()
+    try:
+        return int(txt)
+    except ValueError:
+        return None
+
+
+def _member_byte_size(m: "IREquivMember") -> int:
+    info = _EQUIV_ELEM_INFO.get(m.cpp_elem_type, (1, 1))
+    elem_bytes = info[1]
+    return elem_bytes * (m.count if m.count is not None else 1)
 
 
 def _lower_common_statements(spec_part: Node) -> list[IRCommonUse]:
@@ -3345,13 +3587,16 @@ def _lower_io_implied_do(
     )
 
 
-def _lower_write(node: Node) -> "IRPrint | IRDirectWrite":
+def _lower_write(
+    node: Node,
+) -> "IRPrint | IRDirectWrite | IRUnformattedDirectWrite":
     """Lower ``write(unit, fmt[, REC=n]) items``.
 
     The unit selects the stream: ``*`` / ``6`` -> std::cout, ``0`` ->
-    std::cerr.  ``REC=`` makes it a direct-access record write (see
-    :class:`IRDirectWrite`); other (file) units write through the units
-    table.
+    std::cerr.  ``REC=`` makes it a direct-access record write -- with a
+    FORMAT it lowers to :class:`IRDirectWrite` (formatted text record);
+    without a FORMAT it lowers to :class:`IRUnformattedDirectWrite`
+    (raw-byte record).  Other (file) units write through the units table.
     """
     items: list[IRExpr] = []
     for sub in node.children:
@@ -3363,21 +3608,16 @@ def _lower_write(node: Node) -> "IRPrint | IRDirectWrite":
     fmt_str = _extract_format(node)
     rec_expr = _extract_rec(node)
     if rec_expr is not None:
-        # Direct-access write.  Unformatted (no FORMAT) is raw binary
-        # records, which we don't model -- fail loudly rather than emit a
-        # sequential write that silently ignores REC=.
-        if fmt_str is None:
-            raise ConversionError(
-                "unformatted direct-access WRITE",
-                note="binary record I/O is not supported",
-                source=node.source.text if node.source else "",
-            )
         unit_text = _unit_text(io_unit)
         if unit_text is None:
             raise ConversionError(
                 "direct-access WRITE",
                 note="unsupported unit for a REC= write",
                 source=node.source.text if node.source else "",
+            )
+        if fmt_str is None:
+            return IRUnformattedDirectWrite(
+                unit_text=unit_text, rec=rec_expr, items=items
             )
         return IRDirectWrite(
             unit_text=unit_text, rec=rec_expr, items=items, format=fmt_str
@@ -3392,37 +3632,49 @@ def _lower_write(node: Node) -> "IRPrint | IRDirectWrite":
     )
 
 
-def _lower_read(node: Node) -> "IRRead | IRDirectRead":
+def _lower_read(
+    node: Node,
+) -> "IRRead | IRDirectRead | IRUnformattedDirectRead":
     """Lower ``read *, items`` / ``read(unit, fmt[, REC=n]) items``.
 
-    With ``REC=`` (direct-access record number) plus a parseable format
-    spec, emit an :class:`IRDirectRead` that fetches the record and parses
-    fixed-width fields.  Otherwise lower to list-directed input (a ``>>``
-    chain; ``*`` / ``5`` -> std::cin).
+    ``REC=`` selects direct-access record I/O: with a parseable FORMAT,
+    :class:`IRDirectRead` slices fixed-width fields from a text record;
+    without a FORMAT, :class:`IRUnformattedDirectRead` deserializes the
+    items from a raw-byte record.  Otherwise (no REC=) this is
+    list-directed input -- a ``>>`` chain (``*`` / ``5`` -> std::cin).
     """
     rec_expr = _extract_rec(node)
     fmt_str = _extract_format(node)
     io_unit = node.first_child("IoUnit")
     if rec_expr is not None:
-        # Direct-access read.  Unformatted (no FORMAT) means raw binary
-        # records, which we don't model — fail loudly rather than fall
-        # through to a list-directed read that silently ignores REC=.
-        if fmt_str is None:
+        unit_text = _unit_text(io_unit)
+        if unit_text is None:
             raise ConversionError(
-                "unformatted direct-access READ",
-                note="binary record I/O is not supported",
+                "direct-access READ",
+                note="unsupported unit for a REC= read",
                 source=node.source.text if node.source else "",
             )
-        unit_text = _unit_text(io_unit)
-        fields = (
-            _build_direct_read_fields(node, fmt_str)
-            if unit_text is not None
-            else None
-        )
+        if fmt_str is None:
+            # Unformatted direct read: deserialize each item from raw bytes
+            # in declaration order.  Reuse list-directed item collection;
+            # InputImpliedDo would need IR-level expansion (out of scope
+            # for raw-byte items) so route it through ConversionError.
+            items = _lower_io_items(node, "InputItem", "InputImpliedDo")
+            from .ir import IRImpliedDo as _IRImpliedDo
+            if any(isinstance(it, _IRImpliedDo) for it in items):
+                raise ConversionError(
+                    "unformatted direct-access READ",
+                    note="implied-do items are not yet supported",
+                    source=node.source.text if node.source else "",
+                )
+            return IRUnformattedDirectRead(
+                unit_text=unit_text, rec=rec_expr, items=items
+            )
+        fields = _build_direct_read_fields(node, fmt_str)
         if fields is None:
             raise ConversionError(
                 "direct-access READ",
-                note="unsupported unit or FORMAT for a REC= read",
+                note="unsupported FORMAT for a REC= read",
                 source=node.source.text if node.source else "",
             )
         return IRDirectRead(unit_text=unit_text, rec=rec_expr, fields=fields)
@@ -3526,17 +3778,19 @@ def _array_size_from_sym(name: Node) -> int | None:
 
 
 def _lower_open(node: Node) -> IRStatement:
-    """``open(unit=u, file=f, status=s [,access='direct', recl=N])`` ->
-    ``_units.open(u, f, s [, access, recl])``.
+    """``open(unit=u, file=f, status=s [,access='direct', recl=N,
+    form='unformatted'])`` -> ``_units.open(u, f, s [, access, recl, form])``.
 
-    ACCESS='DIRECT' + RECL=N enables record-based reads via
-    ``_units.read_record`` (see io.hpp); FORM= is informational and
-    discarded — the runtime models only FORMATTED files."""
+    ACCESS='DIRECT' + RECL=N enables record-based I/O via
+    ``_units.read_record`` / ``read_record_raw`` (see io.hpp);
+    FORM='UNFORMATTED' switches the file to raw-byte mode so the items
+    pack with ``append_bytes`` / ``take_bytes``."""
     unit: IRExpr | None = None
     file: IRExpr | None = None
     status: IRExpr | None = None
     access: IRExpr | None = None
     recl: IRExpr | None = None
+    form: IRExpr | None = None
     for cs in node.children_of_kind("ConnectSpec"):
         if cs.first_child("FileUnitNumber") is not None:
             e = cs.find_first("Expr")
@@ -3559,23 +3813,31 @@ def _lower_open(node: Node) -> IRStatement:
             e = cs.find_first("Expr")
             if tag == "Kind = Access" and e is not None:
                 access = _lower_expression(e)
-            # FORM=, BLANK=, etc. are ignored — runtime is formatted-only.
+            elif tag == "Kind = Form" and e is not None:
+                form = _lower_expression(e)
+            # BLANK=, POSITION=, etc. are not yet modeled.
         elif cs.first_child("Scalar") is not None:
             e = cs.find_first("Expr")
             if e is not None:
                 file = _lower_expression(e)
     args: list[IRExpr] = [unit if unit is not None else IRRaw("0")]
-    if (
+    have_tail = (
         file is not None or status is not None
-        or access is not None or recl is not None
-    ):
+        or access is not None or recl is not None or form is not None
+    )
+    if have_tail:
         args.append(file if file is not None else IRRaw('""sv'))
-    if status is not None or access is not None or recl is not None:
+    if (
+        status is not None or access is not None
+        or recl is not None or form is not None
+    ):
         args.append(status if status is not None else IRRaw('"unknown"sv'))
-    if access is not None or recl is not None:
+    if access is not None or recl is not None or form is not None:
         args.append(access if access is not None else IRRaw('"sequential"sv'))
-    if recl is not None:
-        args.append(recl)
+    if recl is not None or form is not None:
+        args.append(recl if recl is not None else IRRaw("0"))
+    if form is not None:
+        args.append(form)
     return IRCall(callee="_units.open", args=args)
 
 

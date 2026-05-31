@@ -227,6 +227,27 @@ public:
   template <typename... A> bool Pre(const std::variant<A...> &) { return true; }
   template <typename... A> void Post(const std::variant<A...> &) {}
 
+  // ``EquivalenceStmt`` wraps ``std::list<std::list<EquivalenceObject>>``
+  // -- one inner list per parenthesized group like ``(A,B)``.  The
+  // default ``Walk(std::list, ...)`` iterates elements without emitting
+  // any boundary, so the dump would otherwise flatten ``(A,B),(C,D)``
+  // into four sibling objects.  Drive the walk ourselves: open one
+  // synthetic ``EquivalenceSet`` node per inner list and return false
+  // so the default descent is skipped.
+  bool Pre(const EquivalenceStmt &x) {
+    OpenNode("EquivalenceStmt");
+    for (const auto &group : x.v) {
+      OpenNode("EquivalenceSet");
+      for (const auto &obj : group) {
+        Walk(obj, *this);
+      }
+      CloseNode();
+    }
+    CloseNode();
+    return false; // closed already; skip default descent + Post
+  }
+  void Post(const EquivalenceStmt &) {}
+
   // Wrapper template nodes with no GetNodeName entry in ParseTreeDumper.
   template <typename A> bool Pre(const Scalar<A> &) {
     OpenNode("Scalar");

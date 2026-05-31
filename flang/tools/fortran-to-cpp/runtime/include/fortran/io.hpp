@@ -38,6 +38,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>      // memcpy for unformatted byte pack/unpack
 #include <algorithm>
 #include <cstdlib>
 #include <format>
@@ -48,6 +49,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>  // is_arithmetic_v / enable_if_t for byte helpers
+#include <vector>
 #include <vector>
 
 namespace fortran::io {
@@ -126,10 +129,16 @@ public:
   void set_direct_access(int recl) noexcept { recl_ = recl; }
   int recl() const noexcept { return recl_; }
 
+  // FORM='UNFORMATTED': mark this file as raw-byte I/O.  Records hold
+  // ``recl`` bytes exactly (no trailing newline, no text encoding).
+  void set_unformatted(bool u) noexcept { unformatted_ = u; }
+  bool unformatted() const noexcept { return unformatted_; }
+
 private:
   std::unique_ptr<std::fstream> source_;
   FortranListDirectedBuf filter_;
   int recl_{0};
+  bool unformatted_{false};
 };
 
 class Units {
@@ -166,7 +175,8 @@ public:
 
   void open(int unit, std::string_view file,
             std::string_view status = "unknown",
-            std::string_view access = "sequential", int recl = 0) {
+            std::string_view access = "sequential", int recl = 0,
+            std::string_view form = "formatted") {
     std::ios_base::openmode mode{};
     // STATUS: OLD -> read an existing file; NEW/REPLACE -> truncate;
     // otherwise read+write, creating if needed.
@@ -183,19 +193,27 @@ public:
     if (iequals(access, "direct")) {
       mode |= std::ios::in | std::ios::out;
     }
+    bool unformatted{iequals(form, "unformatted")};
+    if (unformatted) {
+      mode |= std::ios::binary;
+    }
     // Fortran CHARACTER variables are blank-padded to their declared length;
     // OPEN(FILE=...) trims trailing blanks before resolving the path.
     std::string path{trim_trailing_blanks(file)};
     auto fs{std::make_unique<std::fstream>(path, mode)};
     if (!fs->is_open() && (mode & std::ios::in) && !(mode & std::ios::out)) {
       // Fall back to creating the file for read/write.
-      fs = std::make_unique<std::fstream>(
-          path, std::ios::in | std::ios::out | std::ios::trunc);
+      auto fallback = std::ios::in | std::ios::out | std::ios::trunc;
+      if (unformatted) {
+        fallback |= std::ios::binary;
+      }
+      fs = std::make_unique<std::fstream>(path, fallback);
     }
     auto file_obj{std::make_unique<FortranFile>(std::move(fs))};
     if (iequals(access, "direct")) {
       file_obj->set_direct_access(recl);
     }
+    file_obj->set_unformatted(unformatted);
     files_[unit] = std::move(file_obj);
   }
 
@@ -245,6 +263,50 @@ public:
     content.push_back('\n');
     os.seekp(static_cast<std::streamoff>(recl) * (rec - 1));
     os.write(content.data(), recl);
+    os.flush();
+  }
+
+  // FORM='UNFORMATTED', ACCESS='DIRECT' record read.  Returns the raw
+  // ``recl`` bytes of record ``rec`` -- no newline framing, no character
+  // encoding -- so the caller can deserialize typed items (scalars,
+  // arrays, character variables) byte-for-byte the way Fortran wrote
+  // them.  The on-disk stride is exactly ``recl`` bytes.
+  std::vector<std::byte> read_record_raw(int unit, int rec) {
+    auto &file = ensure(unit);
+    int recl{file.recl()};
+    if (recl <= 0) {
+      return {};
+    }
+    std::streamoff stride{static_cast<std::streamoff>(recl)};
+    file.raw_in().clear();
+    file.raw_in().seekg(stride * (rec - 1));
+    std::vector<std::byte> buf(static_cast<std::size_t>(recl));
+    file.raw_in().read(reinterpret_cast<char *>(buf.data()), recl);
+    auto n = file.raw_in().gcount();
+    buf.resize(static_cast<std::size_t>(n));
+    return buf;
+  }
+
+  // FORM='UNFORMATTED', ACCESS='DIRECT' record write -- inverse of
+  // read_record_raw.  ``content`` is zero-padded (or truncated) to
+  // exactly ``recl`` bytes, placed at record ``rec``'s slot.
+  void write_record_raw(int unit, int rec,
+                        const std::vector<std::byte> &content) {
+    auto &file = ensure(unit);
+    int recl{file.recl()};
+    auto &os = file.out();
+    if (recl <= 0) {
+      os.write(reinterpret_cast<const char *>(content.data()),
+               static_cast<std::streamsize>(content.size()));
+      os.flush();
+      return;
+    }
+    std::vector<std::byte> rec_buf(static_cast<std::size_t>(recl),
+                                   std::byte{0});
+    std::size_t n = std::min(content.size(), rec_buf.size());
+    std::memcpy(rec_buf.data(), content.data(), n);
+    os.seekp(static_cast<std::streamoff>(recl) * (rec - 1));
+    os.write(reinterpret_cast<const char *>(rec_buf.data()), recl);
     os.flush();
   }
 
@@ -336,6 +398,157 @@ private:
 
   std::map<int, std::unique_ptr<FortranFile>> files_;
 };
+
+// ---------------------------------------------------------------------------
+// Byte pack / unpack for FORM='UNFORMATTED' direct-access I/O.
+//
+// A Fortran unformatted record is a raw byte image of the items in
+// declaration order: each scalar contributes its sizeof; each array
+// contributes its element-bytes column-major; each CHARACTER contributes
+// its declared length (no length tag).  We mirror that with two
+// overload sets:
+//
+//   append_bytes(buf, item)             — pack ``item`` onto ``buf``
+//   take_bytes(rec, offset, item)       — unpack into ``item``, advance
+//                                         and return the new offset
+//
+// The types we support are: arithmetic scalars (int/float/double/bool/
+// char), ``Array<T,R>``, ``ArrayRef<T,R>``, and ``FortranString<N>``.
+// All are detected by duck-typing so this header doesn't depend on
+// ``array.hpp`` / ``string.hpp``.
+// ---------------------------------------------------------------------------
+
+// Arithmetic scalars (int8..int64, float, double, bool).
+template <typename T,
+          std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+inline void append_bytes(std::vector<std::byte> &buf, const T &v) {
+  std::byte tmp[sizeof(T)];
+  std::memcpy(tmp, &v, sizeof(T));
+  buf.insert(buf.end(), tmp, tmp + sizeof(T));
+}
+
+template <typename T,
+          std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+inline std::size_t take_bytes(const std::vector<std::byte> &rec,
+                              std::size_t off, T &v) {
+  if (off + sizeof(T) > rec.size()) {
+    v = T{};
+    return rec.size();
+  }
+  std::memcpy(&v, rec.data() + off, sizeof(T));
+  return off + sizeof(T);
+}
+
+// Anything exposing both a callable ``data()`` and a callable ``size()``
+// over a trivially-copyable element type — covers ``Array<T,R>`` and
+// ``ArrayRef<T,R>`` (and any future contiguous view).  ``FortranString``
+// is intentionally excluded (it carries its length as a static
+// ``length`` constant, not a ``size()`` method) so it picks the
+// dedicated CHARACTER overload below.
+template <typename C>
+using _ab_elem_t = std::remove_reference_t<
+    decltype(*std::declval<C &>().data())>;
+
+template <typename C>
+using _ab_size_t = decltype(std::declval<const C &>().size());
+
+template <
+    typename C,
+    std::enable_if_t<
+        std::is_arithmetic_v<std::remove_const_t<_ab_elem_t<C>>> &&
+            std::is_integral_v<_ab_size_t<C>>,
+        int> = 0>
+inline void append_bytes(std::vector<std::byte> &buf, const C &c) {
+  using E = std::remove_const_t<_ab_elem_t<C>>;
+  const std::size_t n_bytes = static_cast<std::size_t>(c.size()) * sizeof(E);
+  const auto *p = reinterpret_cast<const std::byte *>(c.data());
+  buf.insert(buf.end(), p, p + n_bytes);
+}
+
+template <
+    typename C,
+    std::enable_if_t<
+        std::is_arithmetic_v<std::remove_const_t<_ab_elem_t<C>>> &&
+            std::is_integral_v<_ab_size_t<C>>,
+        int> = 0>
+inline std::size_t take_bytes(const std::vector<std::byte> &rec,
+                              std::size_t off, C &c) {
+  using E = std::remove_const_t<_ab_elem_t<C>>;
+  const std::size_t n_bytes = static_cast<std::size_t>(c.size()) * sizeof(E);
+  const std::size_t avail = off + n_bytes > rec.size()
+                                ? rec.size() - std::min(off, rec.size())
+                                : n_bytes;
+  if (avail > 0) {
+    std::memcpy(c.data(), rec.data() + off, avail);
+  }
+  return off + n_bytes;
+}
+
+// ``std::string_view`` (covers Fortran CHARACTER literals).
+inline void append_bytes(std::vector<std::byte> &buf, std::string_view s) {
+  const auto *p = reinterpret_cast<const std::byte *>(s.data());
+  buf.insert(buf.end(), p, p + s.size());
+}
+
+// ``EquivArray<T, N, Off>`` (and any byte-buffer view exposing
+// ``byte_data()`` + ``byte_size()``).  The bytes already live in the
+// shared equivalence buffer, so this just memcpys them out / in.
+template <typename E, typename = std::enable_if_t<
+                          std::is_same_v<
+                              decltype(std::declval<const E &>().byte_data()),
+                              const std::byte *> ||
+                          std::is_same_v<
+                              decltype(std::declval<const E &>().byte_data()),
+                              std::byte *>>>
+inline void append_bytes(std::vector<std::byte> &buf, const E &e) {
+  const auto *p = e.byte_data();
+  buf.insert(buf.end(), p, p + e.byte_size());
+}
+
+template <typename E, typename = std::enable_if_t<
+                          std::is_same_v<
+                              decltype(std::declval<E &>().byte_data()),
+                              std::byte *>>>
+inline std::size_t take_bytes(const std::vector<std::byte> &rec,
+                              std::size_t off, E &e) {
+  const std::size_t n = e.byte_size();
+  const std::size_t avail =
+      off + n > rec.size() ? rec.size() - std::min(off, rec.size()) : n;
+  if (avail > 0) {
+    std::memcpy(e.byte_data(), rec.data() + off, avail);
+  }
+  return off + n;
+}
+
+// CHARACTER variables (``FortranString<N>``).  Matched by a static
+// ``length`` constant + a ``char *`` data; explicitly excludes types
+// that also expose ``byte_data()`` (``EquivArray<T,N,Off>``, which has
+// both ``length`` and ``byte_data``) so dispatch is unambiguous.
+template <typename S, std::size_t = S::length,
+          typename = std::enable_if_t<
+              std::is_same_v<decltype(std::declval<S &>().data()), char *>>>
+inline void append_bytes(std::vector<std::byte> &buf, const S &s) {
+  const auto *p = reinterpret_cast<const std::byte *>(s.data());
+  buf.insert(buf.end(), p, p + S::length);
+}
+
+template <typename S, std::size_t = S::length,
+          typename = std::enable_if_t<
+              std::is_same_v<decltype(std::declval<S &>().data()), char *>>>
+inline std::size_t take_bytes(const std::vector<std::byte> &rec,
+                              std::size_t off, S &s) {
+  const std::size_t n = S::length;
+  const std::size_t avail =
+      off + n > rec.size() ? rec.size() - std::min(off, rec.size()) : n;
+  if (avail > 0) {
+    std::memcpy(s.data(), rec.data() + off, avail);
+  }
+  // Fortran pads any unfilled tail with blanks on a CHARACTER read.
+  for (std::size_t i = avail; i < n; ++i) {
+    s.data()[i] = ' ';
+  }
+  return off + n;
+}
 
 // ---------------------------------------------------------------------------
 // Fixed-width field parsing for formatted direct-access READ.

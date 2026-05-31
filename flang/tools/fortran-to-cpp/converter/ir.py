@@ -340,6 +340,37 @@ class IRDirectWrite:
 
 
 @dataclass(slots=True)
+class IRUnformattedDirectRead:
+    """``read(unit, REC=n) items`` — record-based *unformatted* read.
+
+    The whole record is fetched as raw bytes via ``read_record_raw`` and
+    each item is unpacked in declaration order with ``take_bytes`` — C++
+    overload resolution dispatches on each item's type (scalar /
+    Array<T,R> / FortranString<N>)."""
+
+    unit_text: str
+    rec: IRExpr
+    items: list[IRExpr] = field(default_factory=list)
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class IRUnformattedDirectWrite:
+    """``write(unit, REC=n) items`` — record-based *unformatted* write.
+
+    Each item is packed onto a byte buffer with ``append_bytes`` (C++
+    overload resolution per item type) and the buffer is placed at record
+    ``rec`` via ``write_record_raw`` (zero-padded or truncated to RECL)."""
+
+    unit_text: str
+    rec: IRExpr
+    items: list[IRExpr] = field(default_factory=list)
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class IRStop:
     """``stop`` / ``stop <code>`` / ``stop "msg"`` / ``error stop``.
 
@@ -576,6 +607,8 @@ IRStatement = Union[
     IRRead,
     IRDirectRead,
     IRDirectWrite,
+    IRUnformattedDirectRead,
+    IRUnformattedDirectWrite,
     IRStop,
     IRAllocate,
     IRDeallocate,
@@ -734,6 +767,45 @@ class IRStateBinding:
 
 
 @dataclass(slots=True)
+class IREquivMember:
+    """One member of an EQUIVALENCE class -- a Fortran name aliased over
+    the class's shared byte buffer.  ``cpp_elem_type`` is the C++ scalar
+    type (``double``, ``std::int32_t``, ...); ``count`` is the element
+    count (None for a scalar slot); ``alignment`` is the natural alignment
+    of the element type.  All members share offset 0 in this pass (the
+    common SPICE pattern); partial-overlap alignment with explicit element
+    indices is rejected during lowering."""
+
+    name: str
+    cpp_elem_type: str
+    count: int | None
+    alignment: int
+    is_character: bool = False
+
+
+@dataclass(slots=True)
+class IREquivGroup:
+    """One EQUIVALENCE class hoisted to a per-routine local struct.
+
+    Lowering builds one IREquivGroup per ``EQUIVALENCE (a, b, ...)``
+    statement, drops the affected IRLocal declarations, and inserts a
+    state-binding so the body keeps using the Fortran names (which now
+    refer to the typed proxies on the equiv struct).
+    """
+
+    cpp_type: str
+    """Generated C++ type name (e.g. ``"Foo_Equiv1"``)."""
+
+    byte_size: int
+    """Size of the shared byte buffer; max member byte-size."""
+
+    alignment: int
+    """``alignas(...)`` value -- max member element alignment."""
+
+    members: list[IREquivMember] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class IRStateParam:
     """A subprogram parameter for one piece of plumbed state."""
 
@@ -783,6 +855,11 @@ class IRSubprogram:
     """Per-routine workspace holding hoisted fixed-size local arrays
     (allocated once, threaded like other state).  None when the
     routine has no hoistable arrays (or is recursive)."""
+
+    equiv_groups: list["IREquivGroup"] = field(default_factory=list)
+    """EQUIVALENCE classes hoisted to per-routine locals.  One struct
+    per group, holding a shared byte buffer plus a typed proxy for each
+    aliased Fortran name (see :class:`IREquivGroup`)."""
 
     state_bindings: list["IRStateBinding"] = field(default_factory=list)
     """``auto& name = param.field;`` bindings emitted at the top of the
