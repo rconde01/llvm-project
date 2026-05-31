@@ -432,7 +432,12 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
     param_bindings = [b for b in sub.state_bindings if b.param]
     alias_bindings = [b for b in sub.state_bindings if not b.param]
     for b in param_bindings:
-        out.write(f"  auto& {b.name} = {b.param}.{b.field};\n")
+        if b.view is not None:
+            # Reshaped view of a shared COMMON field (storage association):
+            # an ArrayRef of this routine's own shape over the field bytes.
+            out.write(f"  auto {b.name} = {b.view};\n")
+        else:
+            out.write(f"  auto& {b.name} = {b.param}.{b.field};\n")
 
     for loc in other_locals:
         _emit_local(out, loc, indent=1)

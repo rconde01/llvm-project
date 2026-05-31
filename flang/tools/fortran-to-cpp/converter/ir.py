@@ -798,11 +798,20 @@ class IRStateStruct:
 
 @dataclass(slots=True)
 class IRStateBinding:
-    """A ``auto& <name> = <param>.<field>;`` reference binding."""
+    """A ``auto& <name> = <param>.<field>;`` reference binding.
+
+    When ``view`` is set, the binding instead reads ``auto <name> =
+    <view>;`` -- a by-value view expression rather than a reference to the
+    field.  Used for a COMMON member a routine declares with a *different
+    shape* than the block's canonical field (storage association): the view
+    is an ``ArrayRef`` of the routine's own rank/extents over the shared
+    field's storage.
+    """
 
     name: str
     param: str
     field: str
+    view: str | None = None
 
 
 @dataclass(slots=True)

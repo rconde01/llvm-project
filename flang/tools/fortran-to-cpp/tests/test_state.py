@@ -114,6 +114,34 @@ end program
 """
 
 
+# A COMMON array declared with a *different shape* in two routines
+# (storage association / reshape): ``/w/ a(6)`` vs ``/w/ b(2,3)`` over the
+# same 6-float storage (the IRI /BLWRK/ WA(216)-vs-WA(36,6) pattern).  The
+# second routine must view the shared storage with its own rank/extents
+# (column-major), not be bound by reference to the 1-D canonical field.
+COMMON_RESHAPE_F90 = """\
+subroutine setit()
+  common /w/ a(6)
+  real :: a
+  integer :: i
+  do i = 1, 6
+    a(i) = i + 0.5
+  end do
+end subroutine
+
+subroutine showit()
+  common /w/ b(2, 3)
+  real :: b
+  print *, b(1, 1), b(2, 1), b(1, 2), b(2, 3)
+end subroutine
+
+program demo
+  call setit()
+  call showit()
+end program
+"""
+
+
 @unittest.skipUnless(_have_flang(), "flang binary not available")
 class StateEmitTests(unittest.TestCase):
     def _convert(self, src: str) -> str:
@@ -159,6 +187,15 @@ class StateEmitTests(unittest.TestCase):
         # Members bound with auto&; body uses the bare names.
         self.assertIn("auto& x = state_common.x;", cpp)
         self.assertIn("x = 1.0f;", cpp)
+
+    def test_common_reshaped_member_uses_arrayref_view(self) -> None:
+        # showit declares /w/ as b(2,3); it must bind a rank-2 ArrayRef view
+        # over the shared storage, not an auto& to the 1-D canonical field.
+        cpp = self._convert(COMMON_RESHAPE_F90)
+        self.assertIn(
+            "auto b = fortran::ArrayRef<float, 2>(w_common.a.data(), {2, 3});",
+            cpp,
+        )
 
     def test_common_repeated_name_at_two_offsets_disambiguated(self) -> None:
         # K/IY at different positions in the two layouts must not produce
@@ -215,6 +252,14 @@ class StateRunTests(unittest.TestCase):
         self.assertIn("n= 1", lines[0])
         self.assertIn("n= 2", lines[1])
         self.assertIn("n= 3", lines[2])
+
+    def test_common_reshaped_member_runs(self) -> None:
+        # a(6) filled 1.5..6.5; the 2-D view (column-major) reads:
+        # b(1,1)=a(1)=1.5, b(2,1)=a(2)=2.5, b(1,2)=a(3)=3.5, b(2,3)=a(6)=6.5.
+        self.assertEqual(
+            self._run(COMMON_RESHAPE_F90).split(),
+            ["1.5", "2.5", "3.5", "6.5"],
+        )
 
     def test_common_repeated_name_runs(self) -> None:
         # With the duplicate member disambiguated, the program builds; K/IY

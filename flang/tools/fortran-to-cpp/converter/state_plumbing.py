@@ -125,7 +125,7 @@ def _attach_state(
     struct_type: str,
     param_name: str,
     owned_by: str,
-    bound_fields: list[str | tuple[str, str]],
+    bound_fields: list[str | tuple[str, str] | tuple[str, str, str]],
 ) -> None:
     """Give ``sub`` access to a state struct and bind the fields it uses.
 
@@ -155,13 +155,21 @@ def _attach_state(
                 )
             )
     for entry in bound_fields:
-        local_name, field_name = (entry, entry) if isinstance(entry, str) else entry
+        view: str | None = None
+        if isinstance(entry, str):
+            local_name = field_name = entry
+        elif len(entry) == 2:
+            local_name, field_name = entry
+        else:
+            local_name, field_name, view = entry
         if not any(
             b.name == local_name and b.param == param_name
             for b in sub.state_bindings
         ):
             sub.state_bindings.append(
-                IRStateBinding(name=local_name, param=param_name, field=field_name)
+                IRStateBinding(
+                    name=local_name, param=param_name, field=field_name, view=view
+                )
             )
 
 
@@ -243,8 +251,8 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
             slots = block_slots.setdefault(use.block_name, [])
             mine = own.setdefault(idx, {}).setdefault(use.block_name, [])
             for pos, m in enumerate(use.member_names):
-                mine.append((m, pos))
                 lt = local_types.get(m)
+                mine.append((m, pos, lt))
                 if pos >= len(slots):
                     slots.append((m, lt))
                 else:
@@ -263,6 +271,8 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
     struct_for_block: dict[str, IRStateStruct] = {}
     # Per block: canonical-name list, indexable by position.
     canon_for_block: dict[str, list[str]] = {}
+    # Per block: canonical IRType per position (for shape/type comparison).
+    canon_type_for_block: dict[str, list[IRType | None]] = {}
     for block_name, slots in block_slots.items():
         # The same source name can legitimately land at two *different*
         # positions when routines declare the block with different layouts
@@ -290,6 +300,7 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
             cpp_type=_common_struct_name(block_name), fields=fields
         )
         canon_for_block[block_name] = canon_names
+        canon_type_for_block[block_name] = [t for _, t in slots]
     for struct in struct_for_block.values():
         tu.common_structs.append(struct)
 
@@ -298,10 +309,12 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
         for block_name, members in own.get(idx, {}).items():
             struct = struct_for_block[block_name]
             canon = canon_for_block[block_name]
+            canon_types = canon_type_for_block[block_name]
+            param = _common_param_name(block_name)
             # This routine's own common members are also declared as
             # locals in Fortran; drop those (only the ones *this* routine
             # put in the block — a like-named local elsewhere stays).
-            member_set = {m for m, _ in members}
+            member_set = {m for m, _, _ in members}
             sub.locals = [
                 loc for loc in sub.locals if loc.name not in member_set
             ]
@@ -310,13 +323,17 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
             # routine reads/writes via its own spelling but storage is
             # the shared field.  Skip slots shadowed by a same-named
             # dummy argument — that local can't refer to the common.
-            bound: list[str | tuple[str, str]] = []
-            for local_name, pos in members:
+            bound: list[str | tuple[str, str] | tuple[str, str, str]] = []
+            for local_name, pos, lt in members:
                 if local_name in param_names:
                     continue
                 field = canon[pos]
-                bound.append(local_name if local_name == field
-                             else (local_name, field))
+                view = _common_reshape_view(lt, canon_types[pos], param, field)
+                if view is not None:
+                    bound.append((local_name, field, view))
+                else:
+                    bound.append(local_name if local_name == field
+                                 else (local_name, field))
             _attach_state(
                 sub,
                 struct_type=struct.cpp_type,
@@ -324,6 +341,48 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
                 owned_by="__common_" + block_name,
                 bound_fields=bound,
             )
+
+
+def _common_reshape_view(
+    member_type: IRType | None,
+    canon_type: IRType | None,
+    param: str,
+    field: str,
+) -> str | None:
+    """Build a reshaped ``ArrayRef`` view of a shared COMMON field when this
+    routine declares the member with a *different array shape* than the
+    block's canonical field (storage association -- IRI's ``/BLWRK/``
+    declares ``WA(216)`` in one routine and ``WA(36,6)`` in another over
+    the same storage).  Returns the view expression, or ``None`` when no
+    reshape is needed (the routine's shape matches the canonical field).
+
+    Phase 1 handles the same-element-type case: the view reinterprets the
+    canonical field's contiguous storage as the routine's own rank/extents.
+    Differing element *types* (a genuine type pun) are left to the plain
+    binding for now."""
+    if member_type is None or canon_type is None:
+        return None
+    if not (member_type.is_array and canon_type.is_array):
+        return None
+    # Only a same-element-type reshape is well-defined here (no aliasing
+    # pun): the storage is a contiguous run of the same scalar type.
+    if member_type.element_type_cpp != canon_type.element_type_cpp:
+        return None
+    same_shape = (
+        member_type.array_rank == canon_type.array_rank
+        and member_type.array_extent_exprs == canon_type.array_extent_exprs
+    )
+    if same_shape:
+        return None
+    extents = member_type.array_extent_exprs
+    if not extents or len(extents) != member_type.array_rank:
+        return None
+    elem = member_type.element_type_cpp
+    ext_list = ", ".join(extents)
+    return (
+        f"fortran::ArrayRef<{elem}, {member_type.array_rank}>("
+        f"{param}.{field}.data(), {{{ext_list}}})"
+    )
 
 
 def _common_struct_name(block_name: str) -> str:
