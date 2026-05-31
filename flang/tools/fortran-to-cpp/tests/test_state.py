@@ -84,6 +84,36 @@ end program
 """
 
 
+# The same COMMON block declared with different layouts in two routines,
+# where a name (K, IY) appears at *different positions* (IRI's igrf
+# ``/C1/`` pattern).  Each position is distinct storage, so the merged
+# struct must give the second occurrence a disambiguated field name rather
+# than emit a duplicate member (which fails to compile).
+COMMON_ALIAS_F90 = """\
+subroutine one()
+  common /c1/ p, q, k, iy
+  real :: p, q
+  integer :: k, iy
+  k = 1
+  iy = 2
+end subroutine
+
+subroutine two()
+  common /c1/ p, q, r, s, t, k, iy
+  real :: p, q, r, s, t
+  integer :: k, iy
+  k = 9
+  iy = 8
+  print *, k, iy
+end subroutine
+
+program demo
+  call one()
+  call two()
+end program
+"""
+
+
 @unittest.skipUnless(_have_flang(), "flang binary not available")
 class StateEmitTests(unittest.TestCase):
     def _convert(self, src: str) -> str:
@@ -130,6 +160,17 @@ class StateEmitTests(unittest.TestCase):
         self.assertIn("auto& x = state_common.x;", cpp)
         self.assertIn("x = 1.0f;", cpp)
 
+    def test_common_repeated_name_at_two_offsets_disambiguated(self) -> None:
+        # K/IY at different positions in the two layouts must not produce
+        # duplicate struct members; the second occurrence is renamed and
+        # routine ``two`` binds its K to that distinct field.
+        cpp = self._convert(COMMON_ALIAS_F90)
+        self.assertIn("struct C1Common {", cpp)
+        # Exactly one member literally named ``k`` (``std::int32_t k{};``);
+        # the second-offset occurrence is disambiguated (``k__p*``).
+        self.assertEqual(cpp.count("std::int32_t k{};"), 1)
+        self.assertIn("k__p", cpp)
+
 
 @unittest.skipUnless(
     _have_flang() and _have_cxx(), "need flang and a C++20 compiler"
@@ -174,6 +215,12 @@ class StateRunTests(unittest.TestCase):
         self.assertIn("n= 1", lines[0])
         self.assertIn("n= 2", lines[1])
         self.assertIn("n= 3", lines[2])
+
+    def test_common_repeated_name_runs(self) -> None:
+        # With the duplicate member disambiguated, the program builds; K/IY
+        # at the second layout's offsets read back the values ``two`` set.
+        out = self._run(COMMON_ALIAS_F90).split()
+        self.assertEqual(out, ["9", "8"])
 
     def test_common_block_shares_state(self) -> None:
         out = self._run(COMMON_F90)
