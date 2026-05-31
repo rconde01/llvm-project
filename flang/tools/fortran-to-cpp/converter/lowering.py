@@ -68,6 +68,8 @@ from .ir import (
     IRDirectWrite,
     IRUnformattedDirectRead,
     IRUnformattedDirectWrite,
+    IRInquire,
+    IRFilePosition,
     IREntry,
     IREquivGroup,
     IREquivMember,
@@ -343,6 +345,11 @@ def _infer_readonly_scalar_params(tu: IRTranslationUnit) -> None:
             elif isinstance(stmt, IRUnformattedDirectRead):
                 for it in stmt.items:
                     r = root(it)
+                    if r is not None:
+                        _w.add(r)
+            elif isinstance(stmt, IRInquire):
+                for _f, tgt in stmt.outputs:
+                    r = root(tgt)
                     if r is not None:
                         _w.add(r)
             elif isinstance(stmt, IRCall):
@@ -2145,19 +2152,31 @@ def _lower_equivalence_statements(
             objs = list(eset.children_of_kind("EquivalenceObject"))
             if len(objs) < 2:
                 continue  # a single-member equivalence is a no-op
-            members: list[IREquivMember] = []
+            # Decode each object into a (local_name, access_text,
+            # scalar_cpp_type, byte_size) descriptor.  A bare scalar / 1-D
+            # array uses its declaration as the access text; an
+            # ArrayElement with a constant subscript (``ptr(1)``) reduces
+            # to one element of the array -- ``access`` becomes
+            # ``"ptr(1)"`` and the descriptor describes that element's
+            # scalar type, leaving the parent array intact (it provides
+            # the actual storage; the alias is a reference to its slot).
+            descs: list[
+                tuple[str, str, str, int, "IREquivMember | None"]
+            ] = []
             for obj in objs:
-                # An EquivalenceObject must designate a whole variable;
-                # an element subscript or substring is partial overlap and
-                # is not handled.
-                if obj.find_first("ArrayElement") is not None \
-                        or obj.find_first("Substring") is not None:
+                if obj.find_first("Substring") is not None:
                     raise ConversionError(
                         "EQUIVALENCE",
-                        note="only whole-object aliases are supported "
-                        "(no element subscripts or substrings)",
+                        note="substring overlap is not supported",
                         source=stmt.source.text if stmt.source else "",
                     )
+                ae = obj.find_first("ArrayElement")
+                if ae is not None:
+                    desc = _equiv_element_alias_descriptor(
+                        ae, locals_by_name, stmt
+                    )
+                    descs.append(desc)
+                    continue
                 bare_name = obj.find_first("Name")
                 if bare_name is None or not bare_name.fortran:
                     raise ConversionError(
@@ -2173,24 +2192,59 @@ def _lower_equivalence_statements(
                         note=f"member {local_name!r} not found as a local",
                         source=stmt.source.text if stmt.source else "",
                     )
-                members.append(_equiv_member_from_local(loc, stmt))
-            # No-pun case: every member has the same C++ element type
-            # AND the same byte size (so reading via any name gives the
-            # same value).  Drop the aliases from locals and emit a
-            # reference-binding from each to the first -- no proxy or
-            # shared byte buffer needed.
-            if all(
-                m.cpp_elem_type == members[0].cpp_elem_type
-                and _member_byte_size(m) == _member_byte_size(members[0])
-                for m in members[1:]
-            ):
-                primary = members[0].name
-                for m in members[1:]:
+                m = _equiv_member_from_local(loc, stmt, sub.locals)
+                descs.append((m.name, m.name, m.cpp_elem_type,
+                              _member_byte_size(m), m))
+            # No-pun case: every descriptor is the same element type AND
+            # same byte size.  Pick a storage *anchor* whose access text
+            # is an existing storage slot we don't want to drop -- prefer
+            # an element designator (``ptr(1)`` -- ``ptr``'s storage
+            # already exists), then a whole-object designator (the
+            # straightforward rename).  Every bare-name alias that isn't
+            # the anchor's own local becomes ``auto& alias = <anchor
+            # access>;`` and its local is dropped.  The anchor itself
+            # (whether it's an array or a bare scalar) stays.
+            same_type_size = all(
+                d[2] == descs[0][2] and d[3] == descs[0][3] for d in descs[1:]
+            )
+            if same_type_size:
+                anchor_idx = next(
+                    (i for i, d in enumerate(descs) if d[0] != d[1]),
+                    0,
+                )
+                anchor_local = descs[anchor_idx][0]
+                anchor_access = descs[anchor_idx][1]
+                for i, (lname, access, _ty, _bs, _m) in enumerate(descs):
+                    if i == anchor_idx:
+                        continue
+                    if access != lname:
+                        # An element designator on a *different* array
+                        # that resolves to the same slot is a pun shape
+                        # we don't model -- fall through.
+                        break
+                    if lname == anchor_local:
+                        continue
                     sub.state_bindings.append(
-                        IRStateBinding(name=m.name, param="", field=primary)
+                        IRStateBinding(
+                            name=lname, param="", field=anchor_access
+                        )
                     )
-                    locals_by_name.pop(m.name, None)
-                continue
+                    locals_by_name.pop(lname, None)
+                else:
+                    continue
+            # Pun case: build an IREquivGroup over the shared bytes.
+            # Element-subscript aliases need a partial-buffer view we
+            # don't model; reject them so the gap is loud.
+            members = [d[4] for d in descs]
+            if any(m is None for m in members):
+                raise ConversionError(
+                    "EQUIVALENCE",
+                    note=(
+                        "element-subscript alias with a type-pun pattern "
+                        "is not supported"
+                    ),
+                    source=stmt.source.text if stmt.source else "",
+                )
             byte_size = max(_member_byte_size(m) for m in members)
             alignment = max(m.alignment for m in members)
             cpp_type = f"{camelcase(sub.display_name)}_Equiv{len(out) + 1}"
@@ -2218,8 +2272,82 @@ _EQUIV_ELEM_INFO: dict[str, tuple[str, int]] = {
 }
 
 
+def _equiv_element_alias_descriptor(
+    ae: Node,
+    locals_by_name: dict[str, "IRLocal"],
+    stmt: Node,
+) -> tuple[str, str, str, int, None]:
+    """For an ``EquivalenceObject`` shaped ``arr(idx)`` (an ArrayElement),
+    return ``(arr_name, "arr(idx)", elem_cpp_type, sizeof_elem, None)``.
+
+    ``arr`` must be a 1-D arithmetic array local (the storage we're
+    aliasing into), ``idx`` must be a single constant integer subscript
+    (Fortran 1-based).  The trailing ``None`` matches the descriptor
+    tuple shape used by whole-object descriptors (where the last slot
+    carries an IREquivMember the pun path can use)."""
+    name_node = ae.find_first("Name")
+    if name_node is None or not name_node.fortran:
+        raise ConversionError(
+            "EQUIVALENCE",
+            note="malformed array-element alias",
+            source=stmt.source.text if stmt.source else "",
+        )
+    arr_name = _safe_name(name_node.fortran)
+    loc = locals_by_name.get(arr_name)
+    if loc is None:
+        raise ConversionError(
+            "EQUIVALENCE",
+            note=f"array {arr_name!r} not found as a local",
+            source=stmt.source.text if stmt.source else "",
+        )
+    t = loc.type
+    if not (t.is_array and t.array_rank == 1):
+        raise ConversionError(
+            "EQUIVALENCE",
+            note=(
+                f"element alias {arr_name!r} requires a 1-D arithmetic "
+                "array; higher ranks are not supported"
+            ),
+            source=stmt.source.text if stmt.source else "",
+        )
+    elem_cpp = t.element_type_cpp or t.cpp
+    info = _EQUIV_ELEM_INFO.get(elem_cpp)
+    if info is None:
+        raise ConversionError(
+            "EQUIVALENCE",
+            note=f"element alias on type {elem_cpp!r} is not supported",
+            source=stmt.source.text if stmt.source else "",
+        )
+    _align, size = info
+    # Single constant subscript only.
+    subs = ae.children_of_kind("SectionSubscript")
+    if len(subs) != 1:
+        raise ConversionError(
+            "EQUIVALENCE",
+            note="element alias must have exactly one subscript",
+            source=stmt.source.text if stmt.source else "",
+        )
+    lit = subs[0].find_first("IntLiteralConstant")
+    if lit is None or not lit.fortran:
+        raise ConversionError(
+            "EQUIVALENCE",
+            note="element alias subscript must be a constant integer",
+            source=stmt.source.text if stmt.source else "",
+        )
+    try:
+        idx = int(lit.fortran.split("_")[0])
+    except ValueError:
+        raise ConversionError(
+            "EQUIVALENCE",
+            note=f"element alias subscript {lit.fortran!r} is not an integer",
+            source=stmt.source.text if stmt.source else "",
+        )
+    access = f"{arr_name}({idx})"
+    return (arr_name, access, elem_cpp, size, None)
+
+
 def _equiv_member_from_local(
-    loc: "IRLocal", stmt: Node
+    loc: "IRLocal", stmt: Node, locals_: list["IRLocal"]
 ) -> "IREquivMember":
     """Build an :class:`IREquivMember` from a local declaration.
 
@@ -2245,11 +2373,10 @@ def _equiv_member_from_local(
             is_character=True,
         )
     if t.is_array:
-        if not t.array_static or t.array_rank != 1:
+        if t.array_rank != 1:
             raise ConversionError(
                 "EQUIVALENCE",
-                note=(f"array member {loc.name!r} must be a 1-D, "
-                      "static-bound array"),
+                note=f"array member {loc.name!r} must be 1-D",
                 source=stmt.source.text if stmt.source else "",
             )
         elem_cpp = t.element_type_cpp or t.cpp
@@ -2262,11 +2389,15 @@ def _equiv_member_from_local(
                 source=stmt.source.text if stmt.source else "",
             )
         align, _size = info
-        n = _array_static_extent(t)
+        # ``_array_static_extent`` resolves a constant integer or a
+        # bare PARAMETER reference (the SPICE ``DPBUFR(DPBLEN)``
+        # pattern); a non-constant bound is unsupported.
+        n = _array_static_extent(t, locals_)
         if n is None:
             raise ConversionError(
                 "EQUIVALENCE",
-                note=f"array member {loc.name!r} has dynamic bounds",
+                note=(f"array member {loc.name!r} extent is not a "
+                      "compile-time integer constant"),
                 source=stmt.source.text if stmt.source else "",
             )
         return IREquivMember(
@@ -2296,18 +2427,88 @@ def _character_length_from_cpp(cpp: str) -> int | None:
     return int(m.group(1)) if m is not None else None
 
 
-def _array_static_extent(t: "IRType") -> int | None:
+def _array_static_extent(
+    t: "IRType", locals_: list["IRLocal"] | None = None
+) -> int | None:
     """Pull the constant element count from a 1-D static Array IRType.
 
     The extent lives on ``IRType.array_extent_exprs[0]`` as a rendered
-    C++ string; we only accept it when it parses as a plain integer."""
+    C++ string; we accept a plain integer, a bare PARAMETER name, or a
+    small arithmetic expression that folds through PARAMETER references
+    (the SPICE ``INBLEN = DPLEN/2 * 2`` pattern)."""
     if not t.array_extent_exprs or len(t.array_extent_exprs) != 1:
         return None
     txt = t.array_extent_exprs[0].strip()
     try:
         return int(txt)
     except ValueError:
+        pass
+    if locals_ is None:
         return None
+    params_by_name = {
+        loc.name: loc for loc in locals_ if loc.is_parameter
+    }
+    # Walk the PARAMETER's initializer expression tree, folding through
+    # references to other PARAMETERs.
+    if txt.isidentifier():
+        loc = params_by_name.get(txt)
+        if loc is None:
+            return None
+        return _fold_const_int(loc.initializer, params_by_name, set())
+    return None
+
+
+def _fold_const_int(
+    expr: "IRExpr | None",
+    params_by_name: dict[str, "IRLocal"],
+    seen: set[str],
+) -> int | None:
+    """Best-effort constant-fold ``expr`` to an int, following PARAMETER
+    references in ``params_by_name``.  Cycle-safe via ``seen``."""
+    if expr is None:
+        return None
+    if isinstance(expr, IRLiteral):
+        try:
+            return int(re.sub(r"[fLu]+$", "", expr.cpp_text))
+        except ValueError:
+            return None
+    if isinstance(expr, IRRaw):
+        try:
+            return int(re.sub(r"[fLu]+$", "", expr.text.strip()))
+        except ValueError:
+            return None
+    if isinstance(expr, IRName):
+        if expr.name in seen:
+            return None
+        loc = params_by_name.get(expr.name)
+        if loc is None:
+            return None
+        return _fold_const_int(
+            loc.initializer, params_by_name, seen | {expr.name}
+        )
+    if isinstance(expr, IRBinaryOp):
+        lhs = _fold_const_int(expr.lhs, params_by_name, seen)
+        rhs = _fold_const_int(expr.rhs, params_by_name, seen)
+        if lhs is None or rhs is None:
+            return None
+        try:
+            return {
+                "+": lambda: lhs + rhs,
+                "-": lambda: lhs - rhs,
+                "*": lambda: lhs * rhs,
+                "/": lambda: lhs // rhs if rhs != 0 else None,
+            }.get(expr.op, lambda: None)()
+        except Exception:
+            return None
+    if isinstance(expr, IRUnaryOp):
+        v = _fold_const_int(expr.operand, params_by_name, seen)
+        if v is None:
+            return None
+        if expr.op == "-":
+            return -v
+        if expr.op == "+":
+            return v
+    return None
 
 
 def _member_byte_size(m: "IREquivMember") -> int:
@@ -2947,6 +3148,12 @@ def _lower_action_inner(inner: Node) -> IRStatement | None:
             return _lower_open(inner)
         case "CloseStmt":
             return _lower_close(inner)
+        case "InquireStmt":
+            return _lower_inquire(inner)
+        case "BackspaceStmt":
+            return _lower_file_position(inner, "backspace")
+        case "RewindStmt":
+            return _lower_file_position(inner, "rewind")
         case "StopStmt":
             return _lower_stop(inner)
         case "AllocateStmt":
@@ -3598,12 +3805,11 @@ def _lower_write(
     without a FORMAT it lowers to :class:`IRUnformattedDirectWrite`
     (raw-byte record).  Other (file) units write through the units table.
     """
-    items: list[IRExpr] = []
-    for sub in node.children:
-        if sub.kind == "OutputItem":
-            expr = sub.find_first("Expr")
-            if expr is not None:
-                items.append(_lower_expression(expr))
+    # ``_lower_io_items`` already handles both plain items and
+    # OutputImpliedDo wrappers; using it here keeps the read- and
+    # write-sides symmetric and lets implied-do items reach IR for
+    # unformatted-direct write expansion.
+    items = _lower_io_items(node, "OutputItem", "OutputImpliedDo")
     io_unit = _find_io_unit(node)
     fmt_str = _extract_format(node)
     rec_expr = _extract_rec(node)
@@ -3656,17 +3862,10 @@ def _lower_read(
             )
         if fmt_str is None:
             # Unformatted direct read: deserialize each item from raw bytes
-            # in declaration order.  Reuse list-directed item collection;
-            # InputImpliedDo would need IR-level expansion (out of scope
-            # for raw-byte items) so route it through ConversionError.
+            # in declaration order.  Implied-do items lower to IRImpliedDo
+            # nodes the emitter unrolls as runtime for-loops calling
+            # ``take_bytes`` per element.
             items = _lower_io_items(node, "InputItem", "InputImpliedDo")
-            from .ir import IRImpliedDo as _IRImpliedDo
-            if any(isinstance(it, _IRImpliedDo) for it in items):
-                raise ConversionError(
-                    "unformatted direct-access READ",
-                    note="implied-do items are not yet supported",
-                    source=node.source.text if node.source else "",
-                )
             return IRUnformattedDirectRead(
                 unit_text=unit_text, rec=rec_expr, items=items
             )
@@ -3862,6 +4061,122 @@ def _lower_close(node: Node) -> IRStatement:
     e = fun.find_first("Expr") if fun is not None else None
     unit = _lower_expression(e) if e is not None else IRRaw("0")
     return IRCall(callee="_units.close", args=[unit])
+
+
+# Inquire-specifier Kind tag (``"Kind = Exist"``) -> InquireResult member
+# name on the runtime side.  Any spec whose tag isn't listed here raises
+# during lowering so we surface the gap loudly instead of silently
+# dropping an output assignment.
+_INQUIRE_FIELD: dict[str, str] = {
+    "Kind = Exist":   "exist",
+    "Kind = Opened":  "opened",
+    "Kind = Iostat":  "iostat",
+    "Kind = Number":  "number",
+    "Kind = Name":    "name",
+    "Kind = Named":   "opened",  # synonym for OPENED on a file selector
+    "Kind = Access":  "access",
+    "Kind = Form":    "form",
+    "Kind = Recl":    "recl",
+}
+
+
+def _lower_inquire(node: Node) -> IRStatement:
+    """``INQUIRE(UNIT=u, ...)`` / ``INQUIRE(FILE=f, ...)`` -- run the
+    appropriate ``_units.inquire_by_*`` call and assign each requested
+    spec into its target lvalue.
+
+    AST shape: ``InquireStmt`` has one ``InquireSpec`` per clause.  The
+    selector is either a ``FileUnitNumber`` (UNIT=) or a bare ``Scalar
+    > DefaultChar`` (FILE=).  The output clauses are ``LogVar`` /
+    ``IntVar`` / ``CharVar`` wrappers tagged with ``Kind = <Spec>``.
+    """
+    selector_kind: str | None = None
+    selector: IRExpr | None = None
+    outputs: list[tuple[str, IRExpr]] = []
+    for spec in node.children_of_kind("InquireSpec"):
+        fu = spec.first_child("FileUnitNumber")
+        if fu is not None:
+            e = fu.find_first("Expr")
+            if e is not None:
+                selector_kind = "unit"
+                selector = _lower_expression(e)
+                continue
+        # Bare ``Scalar > DefaultChar`` selector: the FILE= form.
+        bare_scalar = spec.first_child("Scalar")
+        if bare_scalar is not None and bare_scalar.first_child(
+            "DefaultChar"
+        ) is not None:
+            e = bare_scalar.find_first("Expr")
+            if e is not None:
+                selector_kind = "file"
+                selector = _lower_expression(e)
+                continue
+        # Output specifier: a *Var wrapper with a ``Kind = ...`` child.
+        var_wrap = (
+            spec.first_child("LogVar")
+            or spec.first_child("IntVar")
+            or spec.first_child("CharVar")
+        )
+        if var_wrap is None:
+            continue
+        tag = next(
+            (c.kind for c in var_wrap.children if c.kind.startswith("Kind = ")),
+            None,
+        )
+        field = _INQUIRE_FIELD.get(tag) if tag else None
+        if field is None:
+            raise ConversionError(
+                "INQUIRE",
+                note=f"unsupported specifier {tag!r}",
+                source=spec.source.text if spec.source else "",
+            )
+        var = var_wrap.find_first("Variable")
+        if var is None:
+            raise ConversionError(
+                "INQUIRE",
+                note=f"specifier {tag} has no target variable",
+                source=spec.source.text if spec.source else "",
+            )
+        outputs.append((field, _lower_expression(var)))
+    if selector_kind is None or selector is None:
+        raise ConversionError(
+            "INQUIRE",
+            note="missing UNIT= or FILE= selector",
+            source=node.source.text if node.source else "",
+        )
+    return IRInquire(
+        selector_kind=selector_kind, selector=selector, outputs=outputs
+    )
+
+
+def _lower_file_position(node: Node, op: str) -> IRStatement:
+    """``BACKSPACE(u)`` / ``REWIND(u)`` -> ``_units.<op>(u)``.
+
+    Both accept either a bare unit expression or a positional / keyword
+    spec containing the unit.  We accept the bare-unit and the
+    UnitNumber positional forms (the only shapes SPICE uses); a more
+    elaborate form (IOSTAT= / ERR= specs) would need extra IR fields."""
+    # Direct ``FileUnitNumber`` child (positional), or nested in a
+    # PositionSpec (keyword form).
+    fu = node.find_first("FileUnitNumber")
+    if fu is not None:
+        e = fu.find_first("Expr")
+        if e is not None:
+            return IRFilePosition(op=op, unit=_lower_expression(e))
+    # Bare unit expression (``REWIND lun``).
+    e = node.first_child("Expr")
+    if e is not None:
+        return IRFilePosition(op=op, unit=_lower_expression(e))
+    nm = node.find_first("Name")
+    if nm is not None and nm.fortran:
+        return IRFilePosition(
+            op=op, unit=IRRaw(_safe_name(nm.fortran))
+        )
+    raise ConversionError(
+        op.upper(),
+        note="unsupported positional spec (no unit found)",
+        source=node.source.text if node.source else "",
+    )
 
 
 def _internal_file_unit(io_unit: Node | None) -> IRExpr | None:
@@ -4080,8 +4395,16 @@ def _stream_for_unit(io_unit: Node | None) -> str:
 
 def _extract_format(node: Node) -> str | None:
     """Return the format string for a Print/Write, or None for the
-    list-directed (``*``) form."""
+    list-directed (``*``) form.  The positional form puts the Format as a
+    direct child; the keyword form (``READ(UNIT=u, FMT=100, ...)``) buries
+    it inside an IoControlSpec -- accept either."""
     fmt = node.first_child("Format")
+    if fmt is None:
+        for spec in node.children_of_kind("IoControlSpec"):
+            nested = spec.first_child("Format")
+            if nested is not None:
+                fmt = nested
+                break
     if fmt is None:
         return None
     if fmt.first_child("Star") is not None:

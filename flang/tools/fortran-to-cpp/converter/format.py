@@ -72,8 +72,11 @@ def _parse_body(body: str, actions: list[_Action], state: _State) -> None:
 
 
 def _split_top_level(body: str) -> list[str]:
-    """Split a format body on commas, respecting quoted literals and
-    parenthesized groups (commas inside ``(...)`` do not split)."""
+    """Split a format body on commas, respecting quoted literals,
+    parenthesized groups (commas inside ``(...)`` do not split), and
+    Hollerith descriptors (the old ``5HABCDE`` form, where the digit
+    count names the literal length and the next N source characters are
+    its text -- regardless of commas / parens inside)."""
     parts: list[str] = []
     buf: list[str] = []
     depth = 0
@@ -81,6 +84,27 @@ def _split_top_level(body: str) -> list[str]:
     n = len(body)
     while i < n:
         c = body[i]
+        # Hollerith: ``<digits>H`` consumes the next N source bytes as a
+        # literal token (emitted as a quoted string so _parse_token
+        # handles it via the literal-text branch).
+        if c.isdigit() and depth == 0:
+            j = i
+            while j < n and body[j].isdigit():
+                j += 1
+            if j < n and body[j] in ("H", "h"):
+                count = int(body[i:j])
+                start = j + 1
+                end = min(start + count, n)
+                text = body[start:end]
+                # Flush any pending content (rare; usually the H is the
+                # leading descriptor of a fresh token).
+                pending = "".join(buf).strip()
+                if pending:
+                    parts.append(pending)
+                buf = []
+                parts.append("'" + text.replace("'", "''") + "'")
+                i = end
+                continue
         if c in ("'", '"'):
             # Consume the whole quoted literal (with doubled-quote escapes).
             quote = c
@@ -174,6 +198,12 @@ def _parse_token(token: str, actions: list[_Action], state: _State) -> None:
         rest = sc.group("rest").strip()
         if rest:
             _parse_token(rest, actions, state)
+        return
+    if token == "$":
+        # Non-standard "suppress trailing newline" marker -- emitted
+        # code always writes a newline; treat ``$`` as a no-op for now.
+        # The output gains one extra blank line per affected prompt;
+        # known-cosmetic gap, not a correctness issue.
         return
     m = _DESCRIPTOR_RE.match(token)
     if not m:

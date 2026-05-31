@@ -134,11 +134,18 @@ public:
   void set_unformatted(bool u) noexcept { unformatted_ = u; }
   bool unformatted() const noexcept { return unformatted_; }
 
+  // The filesystem path the unit was opened on -- recorded so INQUIRE
+  // can report ``NAME=`` and match a file by path.  Empty for a
+  // synthesized ``fort.<N>`` unit.
+  void set_path(std::string p) { path_ = std::move(p); }
+  const std::string &path() const noexcept { return path_; }
+
 private:
   std::unique_ptr<std::fstream> source_;
   FortranListDirectedBuf filter_;
   int recl_{0};
   bool unformatted_{false};
+  std::string path_;
 };
 
 class Units {
@@ -183,7 +190,10 @@ public:
     if (iequals(status, "old")) {
       mode = std::ios::in;
     } else if (iequals(status, "new") || iequals(status, "replace")) {
-      mode = std::ios::out | std::ios::trunc;
+      // Open for read+write so the program can REWIND a just-written file
+      // and read its records back; std::ios::trunc still clears any
+      // pre-existing contents.
+      mode = std::ios::in | std::ios::out | std::ios::trunc;
     } else {
       mode = std::ios::in | std::ios::out;
     }
@@ -214,6 +224,7 @@ public:
       file_obj->set_direct_access(recl);
     }
     file_obj->set_unformatted(unformatted);
+    file_obj->set_path(path);
     files_[unit] = std::move(file_obj);
   }
 
@@ -311,6 +322,114 @@ public:
   }
 
   void close(int unit) { files_.erase(unit); }
+
+  // INQUIRE results.  Each member maps to one Fortran specifier
+  // (``EXIST``, ``OPENED``, ``IOSTAT``, ``NUMBER``, ``NAME``, ``ACCESS``,
+  // ``FORM``, ``RECL``); unset fields keep their defaults.  The lowering
+  // pass writes only the ones the source actually asked for.
+  struct InquireResult {
+    bool exist{false};
+    bool opened{false};
+    int iostat{0};
+    int number{-1};
+    int recl{0};
+    std::string name;
+    std::string access;
+    std::string form;
+  };
+
+  // ``INQUIRE(FILE=path, ...)``: properties of a named file.  EXIST is
+  // resolved on the filesystem; OPENED tells whether *any* of our open
+  // units points at this path (matching Fortran semantics, modulo
+  // case-/symlink-canonicalization).
+  InquireResult inquire_by_file(std::string_view file) {
+    InquireResult r;
+    std::string path{trim_trailing_blanks(file)};
+    std::ifstream probe(path);
+    r.exist = probe.is_open();
+    r.name = path;
+    for (auto &kv : files_) {
+      // Two file paths point at the same file only if the OS sees them
+      // that way; we do a plain string compare here -- enough for the
+      // SPICE usage which just checks whether *this* path is connected.
+      if (kv.second && kv.second->path() == path) {
+        r.opened = true;
+        r.number = kv.first;
+        r.access = kv.second->recl() > 0 ? "DIRECT" : "SEQUENTIAL";
+        r.form = kv.second->unformatted() ? "UNFORMATTED" : "FORMATTED";
+        r.recl = kv.second->recl();
+        break;
+      }
+    }
+    return r;
+  }
+
+  // ``INQUIRE(UNIT=u, ...)``: properties of a unit.  ``OPENED`` is true
+  // iff the unit has a FortranFile in our table; ``NAME`` and the
+  // access/form/recl fields come from the OPEN call's recorded
+  // parameters.  An ordinary sequential text file reports
+  // ACCESS=SEQUENTIAL FORM=FORMATTED RECL=0.
+  InquireResult inquire_by_unit(int unit) {
+    InquireResult r;
+    r.number = unit;
+    auto it = files_.find(unit);
+    if (it == files_.end() || !it->second) {
+      return r;
+    }
+    r.opened = true;
+    r.exist = true;
+    r.name = it->second->path();
+    r.access = it->second->recl() > 0 ? "DIRECT" : "SEQUENTIAL";
+    r.form = it->second->unformatted() ? "UNFORMATTED" : "FORMATTED";
+    r.recl = it->second->recl();
+    return r;
+  }
+
+  // ``BACKSPACE(u)``: undo the last sequential read/write so the next
+  // operation re-runs on that record.  For a formatted sequential file
+  // this is "seek back past the previous newline"; for a direct file it
+  // decrements the record cursor.  Errors on a non-positionable stream
+  // (stdin/stdout, internal-file, no record yet read) are reported as
+  // IOSTAT == 0 (best-effort) -- matches Fortran's permissive defaults.
+  void backspace(int unit) {
+    auto &file = ensure(unit);
+    auto &is = file.raw_in();
+    if (!is.good()) {
+      is.clear();
+    }
+    auto pos = is.tellg();
+    if (pos <= std::streampos(0)) {
+      return;
+    }
+    if (file.recl() > 0) {
+      is.seekg(pos - std::streamoff(file.recl()));
+      return;
+    }
+    // Sequential formatted: walk back past the previous newline.
+    std::streamoff off{static_cast<std::streamoff>(pos) - 1};
+    while (off > 0) {
+      is.seekg(off - 1);
+      char c{};
+      if (!is.get(c)) {
+        break;
+      }
+      if (c == '\n') {
+        return;
+      }
+      --off;
+    }
+    is.seekg(0);
+  }
+
+  // ``REWIND(u)``: position the unit at its first record (i.e. seek to
+  // byte 0).  Clears any failbit so the next read starts fresh.
+  void rewind(int unit) {
+    auto &file = ensure(unit);
+    file.raw_in().clear();
+    file.raw_in().seekg(0);
+    file.out().clear();
+    file.out().seekp(0);
+  }
 
   std::ostream &out(int unit) {
     if (unit == 6) {

@@ -52,6 +52,8 @@ from .ir import (
     IRDirectWrite,
     IRUnformattedDirectRead,
     IRUnformattedDirectWrite,
+    IRInquire,
+    IRFilePosition,
     IRRead,
     IRGoto,
     IRReturn,
@@ -262,6 +264,21 @@ def _map_statement_children(
             unit_text=stmt.unit_text,
             rec=_e(stmt.rec, on_expr),
             items=[_e(a, on_expr) for a in stmt.items],
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    if isinstance(stmt, IRInquire):
+        return IRInquire(
+            selector_kind=stmt.selector_kind,
+            selector=_e(stmt.selector, on_expr),
+            outputs=[(f, _e(t, on_expr)) for f, t in stmt.outputs],
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    if isinstance(stmt, IRFilePosition):
+        return IRFilePosition(
+            op=stmt.op,
+            unit=_e(stmt.unit, on_expr),
             leading_comments=stmt.leading_comments,
             trailing_comments=stmt.trailing_comments,
         )

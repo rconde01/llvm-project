@@ -340,6 +340,37 @@ class IRDirectWrite:
 
 
 @dataclass(slots=True)
+class IRInquire:
+    """``INQUIRE(...)`` -- query file/unit properties.
+
+    ``selector_kind`` is ``"file"`` or ``"unit"`` (the named selector
+    spec); ``selector`` is the lowered file-path or unit-number.
+    ``outputs`` is a list of ``(field, IRExpr)`` -- one assignment per
+    requested output, where ``field`` is the runtime InquireResult
+    member name (``exist``, ``opened``, ``iostat``, ``name``, ...) and
+    IRExpr is the lvalue to assign into."""
+
+    selector_kind: str
+    selector: IRExpr
+    outputs: list[tuple[str, IRExpr]] = field(default_factory=list)
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class IRFilePosition:
+    """``BACKSPACE(u)``, ``REWIND(u)`` -- positional commands on a unit.
+
+    ``op`` is the runtime method name (``"backspace"`` or ``"rewind"``);
+    ``unit`` is the lowered unit expression."""
+
+    op: str
+    unit: IRExpr
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class IRUnformattedDirectRead:
     """``read(unit, REC=n) items`` — record-based *unformatted* read.
 
@@ -609,6 +640,8 @@ IRStatement = Union[
     IRDirectWrite,
     IRUnformattedDirectRead,
     IRUnformattedDirectWrite,
+    IRInquire,
+    IRFilePosition,
     IRStop,
     IRAllocate,
     IRDeallocate,

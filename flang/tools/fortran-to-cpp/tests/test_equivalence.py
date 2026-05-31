@@ -71,14 +71,29 @@ PUN_ARRAY_F = """\
 """
 
 
-# A partial-overlap subscript like ``EQUIVALENCE (A(2), B)`` is not
-# modeled -- lowering must raise rather than silently get it wrong.
-PARTIAL_OVERLAP_F = """\
+# Element-subscript alias: ``EQUIVALENCE (BEGIN, PTR(1))`` (SPICE's
+# lbins_1.for pattern).  Same scalar type on both sides -- ``BEGIN``
+# becomes ``auto& BEGIN = PTR(1);`` (a reference to the existing array
+# element); the array PTR keeps its own storage.
+ELEMENT_ALIAS_F = """\
       program p
-      real a(4), b
-      equivalence (a(2), b)
-      a(2) = 3.5
-      print *, b
+      integer begin, end, ptr(2)
+      equivalence ( begin, ptr(1) )
+      equivalence ( end,   ptr(2) )
+      ptr(1) = 10
+      ptr(2) = 20
+      print *, begin, end
+      end
+"""
+
+
+# Multi-rank EQUIVALENCE is genuinely not modeled (would need a 2-D
+# byte-view), so lowering must raise.
+MULTI_RANK_F = """\
+      program p
+      real a(2,3), b(2,3)
+      equivalence (a, b)
+      print *, a(1,1)
       end
 """
 
@@ -122,9 +137,22 @@ class EquivalenceEmitTests(unittest.TestCase):
         self.assertNotIn("fortran::Array<double, 1> dbuf{{4}};", cpp)
         self.assertNotIn("fortran::Array<std::int32_t, 1> ibuf{{8}};", cpp)
 
-    def test_partial_overlap_errors(self) -> None:
+    def test_element_alias_binds_to_array_slot(self) -> None:
+        # The array's storage IS the storage; the bare-name aliases bind
+        # to the existing array slots and the array itself stays declared.
+        cpp = _convert(ELEMENT_ALIAS_F)
+        self.assertIn("auto& begin = ptr(1);", cpp)
+        self.assertIn("auto& end = ptr(2);", cpp)
+        # The bare-name locals must not be re-declared by implicit
+        # typing -- they're now references into the array.
+        self.assertNotIn("std::int32_t begin{};", cpp)
+        self.assertNotIn("std::int32_t end{};", cpp)
+        # The array itself must keep its own declaration.
+        self.assertIn("fortran::Array<std::int32_t, 1> ptr{{2}};", cpp)
+
+    def test_multi_rank_errors(self) -> None:
         with self.assertRaises(ConversionError):
-            _convert(PARTIAL_OVERLAP_F)
+            _convert(MULTI_RANK_F)
 
 
 @unittest.skipUnless(
@@ -167,6 +195,15 @@ class EquivalenceRunTests(unittest.TestCase):
         self.assertEqual(
             self._build_and_run(PUN_ARRAY_F),
             ["0", "1074921472"],
+        )
+
+    def test_element_alias_runs(self) -> None:
+        # Writes through PTR(1) / PTR(2), reads through the bare-name
+        # aliases BEGIN / END -- must observe each other since they
+        # share storage.
+        self.assertEqual(
+            self._build_and_run(ELEMENT_ALIAS_F),
+            ["10", "20"],
         )
 
 

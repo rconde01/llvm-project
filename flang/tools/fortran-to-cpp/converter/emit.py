@@ -48,6 +48,8 @@ from .ir import (
     IRDirectWrite,
     IRUnformattedDirectRead,
     IRUnformattedDirectWrite,
+    IRInquire,
+    IRFilePosition,
     IRRead,
     IRReturn,
     IRSection,
@@ -676,10 +678,7 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         out.write(f"{pad}{{\n")
         out.write(f"{pad}  std::vector<std::byte> _wrec;\n")
         for item in stmt.items:
-            out.write(
-                f"{pad}  fortran::io::append_bytes(_wrec, "
-                f"{_render_expr(item)});\n"
-            )
+            _emit_unformatted_item(out, item, "_wrec", read=False, indent=indent + 1)
         out.write(
             f"{pad}  _units.write_record_raw({stmt.unit_text}, "
             f"{_render_expr(stmt.rec)}, _wrec);\n"
@@ -697,11 +696,31 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         )
         out.write(f"{pad}  std::size_t _roff = 0;\n")
         for item in stmt.items:
-            out.write(
-                f"{pad}  _roff = fortran::io::take_bytes(_rrec, _roff, "
-                f"{_render_expr(item)});\n"
-            )
+            _emit_unformatted_item(out, item, "_rrec", read=True, indent=indent + 1)
         out.write(f"{pad}}}")
+        _emit_trailing(out, stmt.trailing_comments)
+        return
+    if isinstance(stmt, IRInquire):
+        _emit_comment_block(out, stmt.leading_comments, indent=indent)
+        # One ``_units.inquire_by_*`` call, then per-output field copies.
+        out.write(f"{pad}{{\n")
+        call = (
+            "inquire_by_unit" if stmt.selector_kind == "unit"
+            else "inquire_by_file"
+        )
+        out.write(
+            f"{pad}  auto _inq = _units.{call}({_render_expr(stmt.selector)});\n"
+        )
+        for field, target in stmt.outputs:
+            out.write(f"{pad}  {_render_expr(target)} = _inq.{field};\n")
+        out.write(f"{pad}}}")
+        _emit_trailing(out, stmt.trailing_comments)
+        return
+    if isinstance(stmt, IRFilePosition):
+        _emit_comment_block(out, stmt.leading_comments, indent=indent)
+        out.write(
+            f"{pad}_units.{stmt.op}({_render_expr(stmt.unit)});"
+        )
         _emit_trailing(out, stmt.trailing_comments)
         return
     if isinstance(stmt, IRRead):
@@ -893,6 +912,42 @@ def _emit_internal_read(out: StringIO, stmt: "IRRead", *, indent: int) -> None:
     out.write(";\n")
     out.write(f"{pad}}}")
     _emit_trailing(out, stmt.trailing_comments)
+
+
+def _emit_unformatted_item(
+    out, item, rec_var: str, *, read: bool, indent: int
+) -> None:
+    """Emit one item of an unformatted direct READ/WRITE.
+
+    Plain items become a single ``take_bytes`` / ``append_bytes`` call.
+    An implied-do becomes a runtime for-loop that iterates over its
+    inner items -- mirrors the order Fortran would serialize them in
+    (innermost loop fastest, items in declaration order)."""
+    pad = "  " * indent
+    if isinstance(item, IRImpliedDo):
+        lo = _render_expr(item.lower)
+        hi = _render_expr(item.upper)
+        step = _render_expr(item.step) if item.step is not None else "1"
+        v = item.var
+        out.write(
+            f"{pad}for (std::int32_t {v} = {lo}; {v} <= {hi}; {v} += {step}) {{\n"
+        )
+        for inner in item.items:
+            _emit_unformatted_item(
+                out, inner, rec_var, read=read, indent=indent + 1
+            )
+        out.write(f"{pad}}}\n")
+        return
+    if read:
+        out.write(
+            f"{pad}_roff = fortran::io::take_bytes({rec_var}, _roff, "
+            f"{_render_expr(item)});\n"
+        )
+    else:
+        out.write(
+            f"{pad}fortran::io::append_bytes({rec_var}, "
+            f"{_render_expr(item)});\n"
+        )
 
 
 def _emit_io_with_implied_do(out, stmt, *, write: bool, indent: int) -> None:
