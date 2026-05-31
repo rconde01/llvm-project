@@ -43,6 +43,7 @@ from .ir import (
     IRPointerAssign,
     IRPrint,
     IRRaw,
+    IRDirectRead,
     IRRead,
     IRReturn,
     IRSection,
@@ -570,6 +571,28 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
                     out.write(" << ' '")
                 out.write(f" << {_render_expr(item)}")
         out.write(" << '\\n';")
+        _emit_trailing(out, stmt.trailing_comments)
+        return
+    if isinstance(stmt, IRDirectRead):
+        _emit_comment_block(out, stmt.leading_comments, indent=indent)
+        out.write(f"{pad}{{\n")
+        out.write(
+            f"{pad}  std::string _rec{{_units.read_record({stmt.unit_text}, "
+            f"{_render_expr(stmt.rec)})}};\n"
+        )
+        for target, kind, off, width, dec in stmt.fields:
+            tgt = _render_expr(target)
+            if kind == "int":
+                out.write(
+                    f"{pad}  {tgt} = static_cast<std::int32_t>("
+                    f"fortran::io::read_field_int(_rec, {off}, {width}));\n"
+                )
+            else:
+                out.write(
+                    f"{pad}  {tgt} = static_cast<float>("
+                    f"fortran::io::read_field_real(_rec, {off}, {width}, {dec}));\n"
+                )
+        out.write(f"{pad}}}")
         _emit_trailing(out, stmt.trailing_comments)
         return
     if isinstance(stmt, IRRead):
