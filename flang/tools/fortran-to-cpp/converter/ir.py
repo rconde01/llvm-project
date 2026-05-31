@@ -305,6 +305,23 @@ class IRRead:
 
 
 @dataclass(slots=True)
+class IRDirectRead:
+    """``read(unit, fmt, REC=n) items`` — record-based formatted read.
+
+    A direct-access OPEN gives each record a fixed ``recl``-byte slot; the
+    read fetches record ``rec`` and parses items at fixed offsets per the
+    FORMAT spec.  ``fields`` is one ``(target, kind, offset, width,
+    decimals)`` tuple per scalar item, where ``kind`` is ``"int"`` or
+    ``"real"`` and ``decimals`` matters only for reals (F/E descriptors)."""
+
+    unit_text: str
+    rec: IRExpr
+    fields: list[tuple[IRExpr, str, int, int, int]] = field(default_factory=list)
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class IRStop:
     """``stop`` / ``stop <code>`` / ``stop "msg"`` / ``error stop``.
 

@@ -64,6 +64,7 @@ from .ir import (
     IRCycle,
     IRDeallocate,
     IRDerivedType,
+    IRDirectRead,
     IREntry,
     IRExit,
     IRGoto,
@@ -325,6 +326,11 @@ def _infer_readonly_scalar_params(tu: IRTranslationUnit) -> None:
             elif isinstance(stmt, IRRead):
                 for it in stmt.items:
                     r = root(it)
+                    if r is not None:
+                        _w.add(r)
+            elif isinstance(stmt, IRDirectRead):
+                for tgt, *_rest in stmt.fields:
+                    r = root(tgt)
                     if r is not None:
                         _w.add(r)
             elif isinstance(stmt, IRCall):
@@ -1801,6 +1807,19 @@ def _lower_data_statements(
                 values.extend(_lower_data_value(v))
             vi = 0
             for obj in objs:
+                # ``data ((a(i,j),i=1,n),j=1,m) /...values.../`` — an
+                # implied-do visiting an array slice element-by-element.
+                # Emit one assignment per element so the converter doesn't
+                # need to materialize the whole array's worth of values up
+                # front; anything more elaborate (jagged subscripts) falls
+                # through to the plain object handling.
+                ido = obj.first_child("DataImpliedDo")
+                if ido is not None:
+                    assignments = _expand_data_implied_do(ido, values, vi)
+                    if assignments is not None:
+                        out.extend(a for a, _ in assignments)
+                        vi += sum(c for _, c in assignments)
+                        continue
                 var = obj.first_child("Variable")
                 expr = _lower_expression(var) if var is not None else None
                 if not isinstance(expr, IRName):
@@ -1817,6 +1836,114 @@ def _lower_data_statements(
                 elif vi < len(values):
                     out.append(IRAssignment(target=expr, value=values[vi]))
                     vi += 1
+    return out
+
+
+def _expand_data_implied_do(
+    ido: Node, values: list[IRExpr], start: int
+) -> list[tuple[IRStatement, int]] | None:
+    """Expand a ``DataImpliedDo`` over an array slice into individual
+    element assignments.  Returns ``[(assignment, values_consumed), ...]``
+    or ``None`` if the shape is too elaborate to enumerate here.
+
+    Iteration is innermost-first (matching Fortran's column-major loop
+    nesting), so ``((a(i,j),i=1,n),j=1,m)`` produces ``a(1,1)``,
+    ``a(2,1)`` ... ``a(n,1)``, ``a(1,2)`` ... — the order DATA values are
+    listed in source."""
+    # Collect nested loop bounds (outer-first).
+    loops: list[tuple[str, int, int]] = []
+    inner: Node = ido
+    while True:
+        lb = inner.first_child("LoopBounds")
+        if lb is None:
+            return None
+        scalars = lb.children_of_kind("Scalar")
+        # First Scalar holds the loop variable Name; the next two are the
+        # integer bounds.
+        var_node = scalars[0].find_first("Name") if scalars else None
+        bounds: list[int] = []
+        for sub in scalars[1:]:
+            lit = sub.find_first("IntLiteralConstant")
+            if lit is None or not lit.fortran:
+                return None
+            try:
+                bounds.append(int(lit.fortran.split("_")[0]))
+            except ValueError:
+                return None
+        if len(bounds) < 2 or var_node is None or not var_node.fortran:
+            return None
+        loops.append((var_node.fortran, bounds[0], bounds[1]))
+        # Descend one level: the next DataImpliedDo is a child of this
+        # one's DataIDoObject.
+        do_obj = inner.first_child("DataIDoObject")
+        nxt = do_obj.first_child("DataImpliedDo") if do_obj is not None else None
+        if nxt is None:
+            break
+        inner = nxt
+    # The leaf must be a single ArrayElement scalar.
+    leaf = inner.first_child("DataIDoObject")
+    if leaf is None:
+        return None
+    ae = leaf.find_first("ArrayElement")
+    if ae is None:
+        return None
+    name_node = ae.find_first("Name")
+    if name_node is None or not name_node.fortran:
+        return None
+    arr_name = _safe_name(name_node.fortran)
+    loop_vars = {v: (lo, hi) for v, lo, hi in loops}
+    # Each subscript is either a loop variable (it advances) or a constant
+    # integer that stays fixed (``(C(1,1,J),J=1,81)`` — the slice
+    # ``C(1,1,*)``).  Classify each, rejecting anything else (a non-loop
+    # variable subscript, a computed expression) so the caller falls back.
+    subs: list[tuple[str, object]] = []  # ('var', name) | ('const', int)
+    for ss in ae.children_of_kind("SectionSubscript"):
+        nm = ss.find_first("Name")
+        if nm is not None and nm.fortran and nm.fortran in loop_vars:
+            subs.append(("var", nm.fortran))
+            continue
+        lit = ss.find_first("IntLiteralConstant")
+        if lit is None or not lit.fortran:
+            return None
+        try:
+            subs.append(("const", int(lit.fortran.split("_")[0])))
+        except ValueError:
+            return None
+    ordered_vars = [val for kind, val in subs if kind == "var"]
+    if not ordered_vars:
+        return None
+    # Enumerate the index space innermost-first (the first *variable*
+    # subscript advances fastest — Fortran column-major); constant
+    # subscripts render at their fixed value.
+    out: list[tuple[IRStatement, int]] = []
+    cur: dict[str, int] = {v: loop_vars[v][0] for v in ordered_vars}
+    finished = False
+    while not finished:
+        if start + len(out) >= len(values):
+            break
+        idx_str = ", ".join(
+            str(val) if kind == "const" else str(cur[val])
+            for kind, val in subs
+        )
+        out.append((
+            IRAssignment(
+                target=IRRaw(f"{arr_name}({idx_str})"),
+                value=values[start + len(out)],
+            ),
+            1,
+        ))
+        k = 0
+        while True:
+            v = ordered_vars[k]
+            cur[v] += 1
+            lo, hi = loop_vars[v]
+            if cur[v] <= hi:
+                break
+            cur[v] = lo
+            k += 1
+            if k >= len(ordered_vars):
+                finished = True
+                break
     return out
 
 
@@ -3196,24 +3323,136 @@ def _lower_write(node: Node) -> IRPrint:
     )
 
 
-def _lower_read(node: Node) -> IRRead:
-    """Lower ``read *, items`` / ``read(unit, fmt) items``.
+def _lower_read(node: Node) -> "IRRead | IRDirectRead":
+    """Lower ``read *, items`` / ``read(unit, fmt[, REC=n]) items``.
 
-    Only list-directed input is handled; the items become a ``>>``
-    chain on the stream (``*`` / ``5`` -> std::cin).
+    With ``REC=`` (direct-access record number) plus a parseable format
+    spec, emit an :class:`IRDirectRead` that fetches the record and parses
+    fixed-width fields.  Otherwise lower to list-directed input (a ``>>``
+    chain; ``*`` / ``5`` -> std::cin).
     """
-    items = _lower_io_items(node, "InputItem", "InputImpliedDo")
+    rec_expr = _extract_rec(node)
+    fmt_str = _extract_format(node)
     io_unit = node.first_child("IoUnit")
+    if rec_expr is not None and fmt_str is not None:
+        unit_text = _unit_text(io_unit)
+        if unit_text is not None:
+            fields = _build_direct_read_fields(node, fmt_str)
+            if fields is not None:
+                return IRDirectRead(
+                    unit_text=unit_text, rec=rec_expr, fields=fields
+                )
+    items = _lower_io_items(node, "InputItem", "InputImpliedDo")
     internal = _internal_file_unit(io_unit)
     stream = _input_stream_for_unit(io_unit)
     return IRRead(items=items, stream=stream, internal_unit=internal)
 
 
+def _extract_rec(node: Node) -> IRExpr | None:
+    """``READ(unit, fmt, REC=n) ...`` -> lowered ``n`` (else ``None``)."""
+    for spec in node.children_of_kind("IoControlSpec"):
+        if spec.first_child("Rec") is not None:
+            e = spec.find_first("Expr")
+            if e is not None:
+                return _lower_expression(e)
+    return None
+
+
+def _build_direct_read_fields(
+    node: Node, fmt_str: str
+) -> list[tuple[IRExpr, str, int, int, int]] | None:
+    """Pair the parsed FORMAT with the InputItem list, returning one
+    ``(target, kind, offset, width, decimals)`` tuple per scalar item, or
+    ``None`` if the format has descriptors we don't slice (newline,
+    character, nested groups we can't flatten — caller then falls back to
+    list-directed).  Whole-array items expand element-by-element across the
+    format's repeat counts (``8I3`` over an ``INTEGER(8)`` array)."""
+    from .format import parse_format, FormatParseError
+
+    try:
+        actions = parse_format(fmt_str)
+    except FormatParseError:
+        return None
+    targets: list[IRExpr] = []
+    for sub in node.children:
+        if sub.kind != "InputItem":
+            continue
+        expr = sub.first_child("Expr") or sub.first_child("Variable")
+        if expr is None:
+            continue
+        lowered = _lower_expression(expr)
+        targets.extend(_expand_array_target(lowered, expr))
+    fields: list[tuple[IRExpr, str, int, int, int]] = []
+    pos = 0
+    ti = 0
+    for a in actions:
+        if a.kind == "literal":
+            pos += len(a.text)
+            continue
+        if a.kind == "space":
+            pos += a.count
+            continue
+        if a.kind == "newline":
+            return None  # multi-record format isn't direct-read material
+        if a.kind != "data":
+            return None
+        width = a.width or 0
+        letter = a.letter.upper()
+        if letter == "X":
+            pos += width
+            continue
+        if letter == "I":
+            kind = "int"
+        elif letter in ("F", "E", "D", "G"):
+            kind = "real"
+        else:
+            return None  # character / unsupported descriptor
+        if ti >= len(targets):
+            return None
+        fields.append((targets[ti], kind, pos, width, a.decimals or 0))
+        ti += 1
+        pos += width
+    if ti != len(targets):
+        return None
+    return fields
+
+
+def _expand_array_target(lowered: IRExpr, expr_node: Node) -> list[IRExpr]:
+    """A whole-array input item reads one value per element; expand ``a``
+    into ``a(1) ... a(N)`` so each maps 1:1 to a format descriptor.
+    Returns ``[lowered]`` for scalars or arrays of unknown size."""
+    name = expr_node.find_first("Name")
+    if name is None or not name.sym_type or name.rank != 1:
+        return [lowered]
+    size = _array_size_from_sym(name)
+    if size is None or size <= 0:
+        return [lowered]
+    if isinstance(lowered, IRName):
+        return [IRRaw(f"{lowered.name}({i})") for i in range(1, size + 1)]
+    return [lowered]
+
+
+def _array_size_from_sym(name: Node) -> int | None:
+    """1-D extent of an array Name, from the analyzer's resolved ``shape``
+    attribute (``[[lo, hi]]``).  ``None`` if absent or not rank-1."""
+    if name.shape is None or len(name.shape) != 1:
+        return None
+    lo, hi = name.shape[0]
+    return hi - lo + 1
+
+
 def _lower_open(node: Node) -> IRStatement:
-    """``open(unit=u, file=f, status=s)`` -> ``_units.open(u, f, s)``."""
+    """``open(unit=u, file=f, status=s [,access='direct', recl=N])`` ->
+    ``_units.open(u, f, s [, access, recl])``.
+
+    ACCESS='DIRECT' + RECL=N enables record-based reads via
+    ``_units.read_record`` (see io.hpp); FORM= is informational and
+    discarded — the runtime models only FORMATTED files."""
     unit: IRExpr | None = None
     file: IRExpr | None = None
     status: IRExpr | None = None
+    access: IRExpr | None = None
+    recl: IRExpr | None = None
     for cs in node.children_of_kind("ConnectSpec"):
         if cs.first_child("FileUnitNumber") is not None:
             e = cs.find_first("Expr")
@@ -3223,15 +3462,36 @@ def _lower_open(node: Node) -> IRStatement:
             e = cs.find_first("Expr")
             if e is not None:
                 status = _lower_expression(e)
+        elif cs.first_child("Recl") is not None:
+            e = cs.find_first("Expr")
+            if e is not None:
+                recl = _lower_expression(e)
+        elif cs.first_child("CharExpr") is not None:
+            ce = cs.first_child("CharExpr")
+            tag = next(
+                (c.kind for c in ce.children if c.kind.startswith("Kind = ")),
+                None,
+            )
+            e = cs.find_first("Expr")
+            if tag == "Kind = Access" and e is not None:
+                access = _lower_expression(e)
+            # FORM=, BLANK=, etc. are ignored — runtime is formatted-only.
         elif cs.first_child("Scalar") is not None:
             e = cs.find_first("Expr")
             if e is not None:
                 file = _lower_expression(e)
     args: list[IRExpr] = [unit if unit is not None else IRRaw("0")]
-    if file is not None or status is not None:
+    if (
+        file is not None or status is not None
+        or access is not None or recl is not None
+    ):
         args.append(file if file is not None else IRRaw('""sv'))
-    if status is not None:
-        args.append(status)
+    if status is not None or access is not None or recl is not None:
+        args.append(status if status is not None else IRRaw('"unknown"sv'))
+    if access is not None or recl is not None:
+        args.append(access if access is not None else IRRaw('"sequential"sv'))
+    if recl is not None:
+        args.append(recl)
     return IRCall(callee="_units.open", args=args)
 
 
