@@ -264,17 +264,32 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
     # Per block: canonical-name list, indexable by position.
     canon_for_block: dict[str, list[str]] = {}
     for block_name, slots in block_slots.items():
-        fields = [
-            IRLocal(
-                name=canon,
-                type=t or IRType(cpp="/* TODO: type */ double", fortran="?"),
+        # The same source name can legitimately land at two *different*
+        # positions when routines declare the block with different layouts
+        # (IRI's ``/C1/`` lists ``...,K,IY,BB`` in one routine and
+        # ``...,K,IY,BA`` far later in another -- distinct storage at
+        # distinct offsets that happen to reuse the names K/IY).  Each
+        # position is its own field, so disambiguate a repeated name rather
+        # than emit a duplicate struct member; the per-routine binding uses
+        # the position's unique name, so each routine still reaches the slot
+        # it declared.
+        used: set[str] = set()
+        canon_names: list[str] = []
+        fields: list[IRLocal] = []
+        for pos, (canon, t) in enumerate(slots):
+            name = canon if canon not in used else f"{canon}__p{pos}"
+            used.add(name)
+            canon_names.append(name)
+            fields.append(
+                IRLocal(
+                    name=name,
+                    type=t or IRType(cpp="/* TODO: type */ double", fortran="?"),
+                )
             )
-            for canon, t in slots
-        ]
         struct_for_block[block_name] = IRStateStruct(
             cpp_type=_common_struct_name(block_name), fields=fields
         )
-        canon_for_block[block_name] = [canon for canon, _ in slots]
+        canon_for_block[block_name] = canon_names
     for struct in struct_for_block.values():
         tu.common_structs.append(struct)
 
