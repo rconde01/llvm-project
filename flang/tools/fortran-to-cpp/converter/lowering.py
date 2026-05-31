@@ -1820,11 +1820,20 @@ def _lower_data_statements(
                         out.extend(a for a, _ in assignments)
                         vi += sum(c for _, c in assignments)
                         continue
+                    # An implied-do shape we can't enumerate (e.g. a
+                    # computed subscript or a non-constant bound).  Surface
+                    # it as a TODO rather than silently leaving the array
+                    # zero — a silent drop here is exactly the class of bug
+                    # that produced wrong numerics before.
+                    out.append(_data_todo(obj))
+                    continue
                 var = obj.first_child("Variable")
                 expr = _lower_expression(var) if var is not None else None
-                if not isinstance(expr, IRName):
+                if expr is None:
+                    out.append(_data_todo(obj))
                     continue
-                if expr.name in arrays:
+                if isinstance(expr, IRName) and expr.name in arrays:
+                    # A whole-array object consumes the remaining values.
                     rest = values[vi:]
                     out.append(
                         IRAssignment(
@@ -1834,9 +1843,37 @@ def _lower_data_statements(
                     )
                     vi = len(values)
                 elif vi < len(values):
+                    # A scalar, or a single array element / substring /
+                    # component (``data a(2) /7.0/``, ``data s(1:3) /'abc'/``)
+                    # — exactly one value.  (Previously a non-IRName target
+                    # here was silently dropped, leaving the slot zero.)
                     out.append(IRAssignment(target=expr, value=values[vi]))
                     vi += 1
     return out
+
+
+def _data_todo(obj: Node) -> IRUnsupported:
+    """A visible ``// TODO`` marker for a DATA object the converter can't
+    lower, so the gap surfaces in the output instead of silently leaving
+    the target uninitialized."""
+    src = obj.source.text if obj.source is not None else ""
+    return IRUnsupported(
+        kind="this DATA initializer",
+        source_text=src,
+        note="initializer dropped — the target keeps its default value",
+    )
+
+
+def _folded_int_text(text: str | None) -> int | None:
+    """Parse a flang-folded integer constant (``"4_4"``, ``"-1_4"``,
+    ``"7"``) to an int, or ``None`` if it isn't a plain integer (e.g. a
+    variable reference or an un-folded expression)."""
+    if not text:
+        return None
+    try:
+        return int(text.split("_")[0])
+    except ValueError:
+        return None
 
 
 def _expand_data_implied_do(
@@ -1850,29 +1887,33 @@ def _expand_data_implied_do(
     nesting), so ``((a(i,j),i=1,n),j=1,m)`` produces ``a(1,1)``,
     ``a(2,1)`` ... ``a(n,1)``, ``a(1,2)`` ... — the order DATA values are
     listed in source."""
-    # Collect nested loop bounds (outer-first).
-    loops: list[tuple[str, int, int]] = []
+    # Collect nested loop bounds (outer-first).  Bounds are constant
+    # expressions; flang folds them, so the value lives in each bound
+    # ``Scalar``'s ``Expr.fortran`` (``"1_4"``, ``"4_4"`` — even when the
+    # source wrote a PARAMETER name like ``n``).  A third bound is the
+    # stride (``i=1,5,2``); absent, it defaults to 1.
+    loops: list[tuple[str, int, int, int]] = []
     inner: Node = ido
     while True:
         lb = inner.first_child("LoopBounds")
         if lb is None:
             return None
         scalars = lb.children_of_kind("Scalar")
-        # First Scalar holds the loop variable Name; the next two are the
-        # integer bounds.
+        # First Scalar holds the loop variable Name; the rest are bounds.
         var_node = scalars[0].find_first("Name") if scalars else None
         bounds: list[int] = []
         for sub in scalars[1:]:
-            lit = sub.find_first("IntLiteralConstant")
-            if lit is None or not lit.fortran:
+            bexpr = sub.find_first("Expr")
+            bval = _folded_int_text(bexpr.fortran if bexpr is not None else None)
+            if bval is None:
                 return None
-            try:
-                bounds.append(int(lit.fortran.split("_")[0]))
-            except ValueError:
-                return None
+            bounds.append(bval)
         if len(bounds) < 2 or var_node is None or not var_node.fortran:
             return None
-        loops.append((var_node.fortran, bounds[0], bounds[1]))
+        step = bounds[2] if len(bounds) >= 3 else 1
+        if step == 0:
+            return None
+        loops.append((var_node.fortran, bounds[0], bounds[1], step))
         # Descend one level: the next DataImpliedDo is a child of this
         # one's DataIDoObject.
         do_obj = inner.first_child("DataIDoObject")
@@ -1891,24 +1932,29 @@ def _expand_data_implied_do(
     if name_node is None or not name_node.fortran:
         return None
     arr_name = _safe_name(name_node.fortran)
-    loop_vars = {v: (lo, hi) for v, lo, hi in loops}
+    loop_vars = {v: (lo, hi, st) for v, lo, hi, st in loops}
     # Each subscript is either a loop variable (it advances) or a constant
     # integer that stays fixed (``(C(1,1,J),J=1,81)`` — the slice
-    # ``C(1,1,*)``).  Classify each, rejecting anything else (a non-loop
-    # variable subscript, a computed expression) so the caller falls back.
+    # ``C(1,1,*)``).  Reject a compound subscript like ``a(2*i)`` (we'd
+    # otherwise mistake it for the bare variable) so the caller falls back.
     subs: list[tuple[str, object]] = []  # ('var', name) | ('const', int)
     for ss in ae.children_of_kind("SectionSubscript"):
-        nm = ss.find_first("Name")
-        if nm is not None and nm.fortran and nm.fortran in loop_vars:
-            subs.append(("var", nm.fortran))
+        sexpr = ss.find_first("Expr")
+        txt = (sexpr.fortran or "").strip() if sexpr is not None else ""
+        const_val = _folded_int_text(txt)
+        if const_val is not None:
+            subs.append(("const", const_val))
             continue
-        lit = ss.find_first("IntLiteralConstant")
-        if lit is None or not lit.fortran:
-            return None
-        try:
-            subs.append(("const", int(lit.fortran.split("_")[0])))
-        except ValueError:
-            return None
+        # A bare loop-variable reference, possibly wrapped by the analyzer
+        # as ``__builtin_int(i,kind=4)``.
+        m = re.fullmatch(
+            r"(?:__builtin_int\(\s*)?([A-Za-z_]\w*)(?:\s*,\s*kind=\d+\s*\))?",
+            txt,
+        )
+        if m is not None and m.group(1) in loop_vars:
+            subs.append(("var", m.group(1)))
+            continue
+        return None
     ordered_vars = [val for kind, val in subs if kind == "var"]
     if not ordered_vars:
         return None
@@ -1935,9 +1981,9 @@ def _expand_data_implied_do(
         k = 0
         while True:
             v = ordered_vars[k]
-            cur[v] += 1
-            lo, hi = loop_vars[v]
-            if cur[v] <= hi:
+            lo, hi, st = loop_vars[v]
+            cur[v] += st
+            if (st > 0 and cur[v] <= hi) or (st < 0 and cur[v] >= hi):
                 break
             cur[v] = lo
             k += 1
