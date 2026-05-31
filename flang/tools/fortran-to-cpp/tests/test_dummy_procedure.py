@@ -98,6 +98,34 @@ FORWARDED_PROC_F90 = """\
 """
 
 
+# A callback invoked with an *expression* actual, where the callback
+# modifies its (scalar) dummy -- the Numerical Recipes DFRIDR pattern in
+# IRI's igrf (``hom = dfridr(cgmgla, ...)`` with ``func(x+hh)`` inside,
+# and ``cgmgla`` doing ``if (clon .gt. 360.) clon = clon - 360.``).
+# Fortran materializes a temporary for the expression and discards the
+# write; the generic-lambda wrapper must bind the modifiable ``float&``
+# dummy to that temporary (pass the named param, not std::forward).
+EXPR_ACTUAL_PROC_F90 = """\
+      real function applyf(g, v)
+      external g
+      real g, v
+      applyf = g(v + 1.0)
+      end
+
+      real function twiddle(x)
+      real x
+      x = x + 100.0
+      twiddle = x * 2.0
+      end
+
+      program p
+      external twiddle
+      real applyf
+      print *, applyf(twiddle, 4.0)
+      end
+"""
+
+
 @unittest.skipUnless(have_flang(), "flang binary not available")
 class ForwardedDummyProcedureEmitTests(unittest.TestCase):
     def test_forwarder_is_a_template(self) -> None:
@@ -107,12 +135,29 @@ class ForwardedDummyProcedureEmitTests(unittest.TestCase):
         self.assertIn("template <class F0>\nvoid engine(", cpp)
         self.assertIn("template <class F0>\nvoid driver(", cpp)
 
+    def test_callback_lambda_passes_named_args_not_forwarded(self) -> None:
+        # Passing the named _a (an lvalue) lets a modifiable scalar dummy
+        # bind even for an expression actual; std::forward of an rvalue
+        # would fail to bind to float&.
+        cpp = convert_project(EXPR_ACTUAL_PROC_F90, suffix=".f")
+        self.assertNotIn("std::forward<decltype(_a)>(_a)", cpp)
+        self.assertIn("_a...); }", cpp)
+
 
 @unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
 class ForwardedDummyProcedureRunTests(unittest.TestCase):
     def test_output_argument_writes_through(self) -> None:
         # average(2, 6) writes m = 4 through the double& output parameter.
         self.assertEqual(float(run_project(FORWARDED_PROC_F90).strip()), 4.0)
+
+    def test_expression_actual_to_modifiable_dummy_runs(self) -> None:
+        # applyf calls g(v+1.0) = twiddle(5.0): twiddle mutates its temp to
+        # 105 (discarded, as Fortran does for an expression actual) and
+        # returns 210.  Must compile (rvalue binds the float& dummy via the
+        # materialized temporary) and print 210.
+        self.assertEqual(
+            float(run_project(EXPR_ACTUAL_PROC_F90, suffix=".f").strip()), 210.0
+        )
 
 
 # A *nested* dummy procedure — a callback whose own first argument is itself

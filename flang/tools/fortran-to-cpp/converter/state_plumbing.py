@@ -747,11 +747,21 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
 
             The receiving routine takes the callback as a deduced template
             type, so the lambda needs no fixed parameter signature: it accepts
-            whatever the callee invokes it with (``auto&&...``) and forwards
+            whatever the callee invokes it with (``auto&&...``) and passes
             those after the captured state arguments.  A generic lambda is a
             concrete object with its own type, so even a higher-order routine
             (itself a template) can be passed this way — deduction latches
-            onto the closure, not the un-instantiable template name."""
+            onto the closure, not the un-instantiable template name.
+
+            The forwarded arguments are passed as the *named* parameters
+            ``_a...`` (lvalues), not ``std::forward``-ed, because Fortran
+            argument association is by reference: a modifiable scalar dummy
+            (``float&``) must bind even when the caller invoked the callback
+            with an expression (``func(x+hh)`` in Numerical Recipes' DFRIDR).
+            Fortran materializes a temporary for such an expression actual
+            and discards any write to it; binding the named ``_a`` (an lvalue
+            referring to that temporary) reproduces exactly that, while an
+            lvalue actual still has writes propagate back."""
             sargs = state_args(actual_name) or []
             state = "".join(
                 f"{e.name}, " for e in sargs if isinstance(e, IRName)
@@ -759,8 +769,7 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
             actual = by_name.get(actual_name)
             ret = "return " if (actual is not None and actual.kind == "function") else ""
             return IRRaw(
-                f"[&](auto&&... _a) {{ {ret}{actual_name}("
-                f"{state}std::forward<decltype(_a)>(_a)...); }}"
+                f"[&](auto&&... _a) {{ {ret}{actual_name}({state}_a...); }}"
             )
 
         def wrap_proc_args(callee_name: str, args) -> list[IRExpr]:
