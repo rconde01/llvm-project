@@ -46,6 +46,8 @@ from .ir import (
     IRRaw,
     IRDirectRead,
     IRDirectWrite,
+    IRUnformattedDirectRead,
+    IRUnformattedDirectWrite,
     IRRead,
     IRReturn,
     IRSection,
@@ -353,6 +355,44 @@ def _emit_prototypes(out: StringIO, tu: IRTranslationUnit) -> None:
         out.write(f"{_template_prefix(sub)}{_signature(sub)};\n")
 
 
+def _emit_equiv_group(out: StringIO, g, idx: int) -> None:
+    """Render one EQUIVALENCE class as a local struct + bindings.
+
+    Layout (the SPICE pattern -- all members share offset 0):
+        struct <CppType> {
+          alignas(<A>) std::byte _store[<N>]{};
+          fortran::EquivSlot<T,0>  scalar { _store };
+          fortran::EquivArray<T,N,0> arr  { _store };
+          fortran::FortranString<L> chr;      // character member (special-cased)
+        } _eqK;
+        auto& <name> = _eqK.<name>;
+    The CHARACTER alias is emitted as a plain ``FortranString<L>`` --
+    the shared bytes form a single character record, and Fortran code
+    addresses it as a substring.
+    """
+    pad = "  "
+    out.write(f"{pad}struct {g.cpp_type} {{\n")
+    out.write(f"{pad}  alignas({g.alignment}) std::byte _store[{g.byte_size}]{{}};\n")
+    for m in g.members:
+        if m.is_character:
+            out.write(
+                f"{pad}  fortran::FortranString<{m.count}> {m.name};\n"
+            )
+        elif m.count is None:
+            out.write(
+                f"{pad}  fortran::EquivSlot<{m.cpp_elem_type}, 0> "
+                f"{m.name}{{_store}};\n"
+            )
+        else:
+            out.write(
+                f"{pad}  fortran::EquivArray<{m.cpp_elem_type}, "
+                f"{m.count}, 0> {m.name}{{_store}};\n"
+            )
+    out.write(f"{pad}}} _eq{idx};\n")
+    for m in g.members:
+        out.write(f"{pad}auto& {m.name} = _eq{idx}.{m.name};\n")
+
+
 def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
     _emit_comment_block(out, sub.leading_comments, indent=0)
     # The prototype carries default arguments; the definition omits them.
@@ -374,14 +414,29 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
     for loc in instance_locals:
         _emit_local(out, loc, indent=1)
 
+    # EQUIVALENCE classes: one struct per group holding the shared byte
+    # buffer plus a typed proxy per aliased Fortran name, then a binding
+    # so the body refers to each name unqualified.
+    for idx, g in enumerate(sub.equiv_groups):
+        _emit_equiv_group(out, g, idx)
+
     # State bindings: ``auto& field = param.field;`` so the body can use
     # plumbed common / save / module / workspace state by its original
-    # name and stay clean.
-    for b in sub.state_bindings:
+    # name and stay clean.  Param-bindings must come early (before
+    # ordinary locals, in case a local's initializer captures one);
+    # local-to-local aliases (an empty ``param``, the same-type
+    # EQUIVALENCE renaming) must come *after* the canonical local has
+    # been declared, so emit those last.
+    param_bindings = [b for b in sub.state_bindings if b.param]
+    alias_bindings = [b for b in sub.state_bindings if not b.param]
+    for b in param_bindings:
         out.write(f"  auto& {b.name} = {b.param}.{b.field};\n")
 
     for loc in other_locals:
         _emit_local(out, loc, indent=1)
+
+    for b in alias_bindings:
+        out.write(f"  auto& {b.name} = {b.field};\n")
 
     if (sub.locals or sub.state_bindings) and sub.body:
         out.write("\n")
@@ -611,6 +666,41 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
             f"{pad}  _units.write_record({stmt.unit_text}, "
             f"{_render_expr(stmt.rec)}, _wrec.str());\n"
         )
+        out.write(f"{pad}}}")
+        _emit_trailing(out, stmt.trailing_comments)
+        return
+    if isinstance(stmt, IRUnformattedDirectWrite):
+        _emit_comment_block(out, stmt.leading_comments, indent=indent)
+        # Pack each item onto a raw byte buffer, then place it at the
+        # target record (zero-padded / truncated to RECL by the runtime).
+        out.write(f"{pad}{{\n")
+        out.write(f"{pad}  std::vector<std::byte> _wrec;\n")
+        for item in stmt.items:
+            out.write(
+                f"{pad}  fortran::io::append_bytes(_wrec, "
+                f"{_render_expr(item)});\n"
+            )
+        out.write(
+            f"{pad}  _units.write_record_raw({stmt.unit_text}, "
+            f"{_render_expr(stmt.rec)}, _wrec);\n"
+        )
+        out.write(f"{pad}}}")
+        _emit_trailing(out, stmt.trailing_comments)
+        return
+    if isinstance(stmt, IRUnformattedDirectRead):
+        _emit_comment_block(out, stmt.leading_comments, indent=indent)
+        # Fetch the whole record as raw bytes, then unpack each item.
+        out.write(f"{pad}{{\n")
+        out.write(
+            f"{pad}  auto _rrec = _units.read_record_raw("
+            f"{stmt.unit_text}, {_render_expr(stmt.rec)});\n"
+        )
+        out.write(f"{pad}  std::size_t _roff = 0;\n")
+        for item in stmt.items:
+            out.write(
+                f"{pad}  _roff = fortran::io::take_bytes(_rrec, _roff, "
+                f"{_render_expr(item)});\n"
+            )
         out.write(f"{pad}}}")
         _emit_trailing(out, stmt.trailing_comments)
         return

@@ -89,6 +89,37 @@ DIRECT_F = """\
 """
 
 
+# Unformatted direct I/O: writes raw bytes per item (here a double-array
+# then a character string then an int) into a 32-byte record, then reads
+# them back into matching variables.
+UNFORMATTED_F = """\
+      program da
+      double precision drec(4)
+      character*8 crec
+      integer ireg
+      open(9, file='b.dat', access='direct', recl=32,
+     *     form='unformatted', status='replace')
+      drec(1) = 1.5
+      drec(2) = 2.5
+      drec(3) = 3.5
+      drec(4) = 4.5
+      write(9, rec=1) drec
+      crec = 'HELLO123'
+      write(9, rec=2) crec, 42
+      drec(1) = 0
+      drec(2) = 0
+      drec(3) = 0
+      drec(4) = 0
+      crec = '        '
+      ireg = 0
+      read(9, rec=1) drec
+      read(9, rec=2) crec, ireg
+      close(9)
+      print *, drec(1), drec(4), crec, ireg
+      end
+"""
+
+
 def _convert(src: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".f", delete=False, encoding="utf-8"
@@ -105,8 +136,12 @@ def _convert(src: str) -> str:
 class DirectAccessEmitTests(unittest.TestCase):
     def test_open_passes_access_and_recl(self) -> None:
         cpp = _convert(DIRECT_F)
+        # The fixture's ``form='formatted'`` reaches ``_units.open`` too
+        # (so the runtime knows the record framing mode).
         self.assertIn(
-            '_units.open(9, "da_test.dat"sv, "old"sv, "direct"sv, 13);', cpp
+            '_units.open(9, "da_test.dat"sv, "old"sv, "direct"sv, 13, '
+            '"formatted"sv);',
+            cpp,
         )
 
     def test_read_uses_read_record_and_field_parsers(self) -> None:
@@ -122,13 +157,27 @@ class DirectAccessEmitTests(unittest.TestCase):
         self.assertIn("_units.write_record(9, 1, _wrec.str());", cpp)
         self.assertIn("_units.write_record(9, 2, _wrec.str());", cpp)
 
-    def test_unformatted_direct_write_errors(self) -> None:
-        with self.assertRaises(ConversionError):
-            _convert(UNFORMATTED_WRITE_F)
+    def test_unformatted_open_threads_form(self) -> None:
+        # ``form='unformatted'`` must reach ``_units.open`` so the runtime
+        # opens in binary mode and treats RECL as raw bytes.
+        cpp = _convert(UNFORMATTED_F)
+        self.assertIn(
+            '_units.open(9, "b.dat"sv, "replace"sv, "direct"sv, 32, "unformatted"sv);',
+            cpp,
+        )
 
-    def test_unformatted_direct_read_errors(self) -> None:
-        with self.assertRaises(ConversionError):
-            _convert(UNFORMATTED_READ_F)
+    def test_unformatted_write_uses_write_record_raw(self) -> None:
+        cpp = _convert(UNFORMATTED_F)
+        self.assertIn("std::vector<std::byte> _wrec;", cpp)
+        self.assertIn("fortran::io::append_bytes(_wrec, drec);", cpp)
+        self.assertIn("_units.write_record_raw(9, 1, _wrec);", cpp)
+
+    def test_unformatted_read_uses_read_record_raw(self) -> None:
+        cpp = _convert(UNFORMATTED_F)
+        self.assertIn("auto _rrec = _units.read_record_raw(9, 1);", cpp)
+        self.assertIn(
+            "fortran::io::take_bytes(_rrec, _roff, drec);", cpp
+        )
 
 
 @unittest.skipUnless(
@@ -187,6 +236,32 @@ class DirectAccessRunTests(unittest.TestCase):
             # Records written out of order, read back: rec2=33,44,2.5 rec3=55,66,3.5
             self.assertEqual(
                 run.stdout.split(), ["33", "44", "2.5", "55", "66", "3.5"]
+            )
+
+    def test_unformatted_roundtrip(self) -> None:
+        # End-to-end raw-byte roundtrip through write_record_raw +
+        # read_record_raw.  Items mix array, character, and integer.
+        with tempfile.TemporaryDirectory() as d:
+            cpp = Path(d) / "out.cpp"
+            cpp.write_text(_convert(UNFORMATTED_F))
+            exe = Path(d) / "out"
+            cxx = (
+                shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+            )
+            assert cxx is not None
+            comp = subprocess.run(
+                [cxx, "-std=c++20", "-I", str(RUNTIME_INCLUDE),
+                 str(cpp), "-o", str(exe)],
+                capture_output=True, text=True, check=False,
+            )
+            if comp.returncode != 0:
+                self.fail(f"compile failed:\n{comp.stderr}\n{cpp.read_text()}")
+            run = subprocess.run(
+                [str(exe)], capture_output=True, text=True, check=False, cwd=d
+            )
+            self.assertEqual(run.returncode, 0, msg=run.stderr)
+            self.assertEqual(
+                run.stdout.split(), ["1.5", "4.5", "HELLO123", "42"]
             )
 
 

@@ -110,6 +110,87 @@ private:
   std::byte *base_;
 };
 
+/// Array proxy for an EQUIVALENCE class: ``N`` typed elements over the
+/// shared byte buffer, starting at byte ``Offset``.  ``operator()(i)``
+/// (1-based, Fortran semantics) returns an :class:`EquivCell` that
+/// reads / writes one element through memcpy -- so concurrent aliases of
+/// different types (a ``double[128]`` and an ``int32_t[256]`` over the
+/// same 1024 bytes -- SPICE's classic DAF pattern) both stay correct.
+template <typename T, std::size_t N, std::size_t Offset> class EquivArray {
+  static_assert(std::is_trivially_copyable_v<T>,
+                "EquivArray<T> requires T to be trivially copyable");
+
+public:
+  using value_type = T;
+  static constexpr std::size_t length = N;
+
+  constexpr explicit EquivArray(std::byte *base) noexcept
+      : base_(base + Offset) {}
+
+  EquivArray(const EquivArray &) = default;
+  EquivArray(EquivArray &&) = default;
+  EquivArray &operator=(const EquivArray &) = delete;
+  EquivArray &operator=(EquivArray &&) = delete;
+
+  // Per-element proxy: reads/writes ``T`` at byte ``(i-1)*sizeof(T)``.
+  class Cell {
+  public:
+    constexpr explicit Cell(std::byte *p) noexcept : p_(p) {}
+    operator T() const noexcept {
+      T v;
+      std::memcpy(&v, p_, sizeof(T));
+      return v;
+    }
+    Cell &operator=(const T &v) noexcept {
+      std::memcpy(p_, &v, sizeof(T));
+      return *this;
+    }
+    template <typename U, typename = std::enable_if_t<
+                              std::is_arithmetic_v<T> &&
+                              std::is_convertible_v<U, T>>>
+    Cell &operator+=(const U &d) noexcept {
+      T v;
+      std::memcpy(&v, p_, sizeof(T));
+      v = static_cast<T>(v + d);
+      std::memcpy(p_, &v, sizeof(T));
+      return *this;
+    }
+    template <typename U, typename = std::enable_if_t<
+                              std::is_arithmetic_v<T> &&
+                              std::is_convertible_v<U, T>>>
+    Cell &operator-=(const U &d) noexcept {
+      T v;
+      std::memcpy(&v, p_, sizeof(T));
+      v = static_cast<T>(v - d);
+      std::memcpy(p_, &v, sizeof(T));
+      return *this;
+    }
+
+  private:
+    std::byte *p_;
+  };
+
+  /// Fortran-style 1-based element access.
+  Cell operator()(std::size_t i) noexcept {
+    return Cell{base_ + (i - 1) * sizeof(T)};
+  }
+  T operator()(std::size_t i) const noexcept {
+    T v;
+    std::memcpy(&v, base_ + (i - 1) * sizeof(T), sizeof(T));
+    return v;
+  }
+
+  /// Raw byte access -- used by the unformatted-direct I/O helpers
+  /// ``fortran::io::append_bytes`` / ``take_bytes`` to read / write the
+  /// whole aliased buffer in one go.
+  std::byte *byte_data() noexcept { return base_; }
+  const std::byte *byte_data() const noexcept { return base_; }
+  static constexpr std::size_t byte_size() noexcept { return N * sizeof(T); }
+
+private:
+  std::byte *base_;
+};
+
 /// Free helper for an explicit ``bit_cast`` between same-size,
 /// trivially-copyable types.  Used by the emitter for Fortran's
 /// ``TRANSFER`` intrinsic and for any place where the source code
