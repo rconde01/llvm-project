@@ -71,6 +71,28 @@ PUN_ARRAY_F = """\
 """
 
 
+# Passing an equivalenced (type-punned) array to a subroutine with an
+# array dummy -- the SPICE DAF pattern (ZZDAFGSR passes DPBUF to ZZXLATED).
+# The EquivArray must view as an ArrayRef so the callee writes T directly
+# into the shared buffer; the other (integer) view then reads the bytes.
+PUN_PASS_F = """\
+      program p
+      double precision dbuf(2)
+      integer*4        ibuf(4)
+      equivalence (dbuf, ibuf)
+      call fill(dbuf)
+      print *, ibuf(1), ibuf(2)
+      end
+
+      subroutine fill(x)
+      double precision x(2)
+      x(1) = 1.5
+      x(2) = 2.5
+      return
+      end
+"""
+
+
 # Element-subscript alias: ``EQUIVALENCE (BEGIN, PTR(1))`` (SPICE's
 # lbins_1.for pattern).  Same scalar type on both sides -- ``BEGIN``
 # becomes ``auto& BEGIN = PTR(1);`` (a reference to the existing array
@@ -204,6 +226,16 @@ class EquivalenceRunTests(unittest.TestCase):
         self.assertEqual(
             self._build_and_run(ELEMENT_ALIAS_F),
             ["10", "20"],
+        )
+
+    def test_pun_passed_to_subroutine_runs(self) -> None:
+        # FILL writes DBUF (passed as an array dummy -> EquivArray viewed
+        # as ArrayRef); the integer view reads the punned bytes.  IEEE 1.5
+        # = 0x3FF8000000000000: low 32 of DBUF(1) -> IBUF(1) = 0, high 32
+        # -> IBUF(2) = 0x3FF80000 = 1073217536.
+        self.assertEqual(
+            self._build_and_run(PUN_PASS_F),
+            ["0", "1073217536"],
         )
 
 
