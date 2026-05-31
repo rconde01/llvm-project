@@ -72,6 +72,25 @@ REWIND_F = """\
 """
 
 
+# A subroutine that reaches the units table *only* through INQUIRE (no
+# OPEN/CLOSE, no unit-directed READ/WRITE) -- SPICE's fndlun/errfnm
+# pattern.  The units state must still be threaded into it, or the emitted
+# ``_units.inquire_by_file`` references an undeclared ``_units``.
+INQUIRE_ONLY_SUB_F = """\
+      program p
+      logical ex
+      call probe ( ex )
+      print *, 'ex', ex
+      end
+
+      subroutine probe ( ex )
+      logical ex
+      inquire ( file = '/etc/hostname', exist = ex )
+      return
+      end
+"""
+
+
 def _convert(src: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".f", delete=False, encoding="utf-8"
@@ -100,6 +119,14 @@ class InquirePositionEmitTests(unittest.TestCase):
     def test_rewind_and_backspace_emit_calls(self) -> None:
         cpp = _convert(REWIND_F)
         self.assertIn("_units.rewind(12);", cpp)
+
+    def test_inquire_only_subroutine_gets_units(self) -> None:
+        # A routine reaching the units table solely via INQUIRE must still
+        # have the Units state threaded in (param type appears in probe's
+        # signature) so the emitted _units.inquire_by_file is declared.
+        cpp = _convert(INQUIRE_ONLY_SUB_F)
+        self.assertIn('_units.inquire_by_file("/etc/hostname"sv)', cpp)
+        self.assertIn("fortran::io::Units", cpp)
 
 
 @unittest.skipUnless(
@@ -141,6 +168,13 @@ class InquirePositionRunTests(unittest.TestCase):
         # After REWIND, the first read returns the first record again.
         out = self._build_and_run(REWIND_F).split()
         self.assertEqual(out[0], "first")
+
+    def test_inquire_only_subroutine_runs(self) -> None:
+        # probe() only INQUIREs; with units threaded in it builds and the
+        # existence check returns T for /etc/hostname.
+        out = self._build_and_run(INQUIRE_ONLY_SUB_F).split()
+        self.assertIn("ex", out)
+        self.assertEqual(out[out.index("ex") + 1], "T")
 
 
 if __name__ == "__main__":

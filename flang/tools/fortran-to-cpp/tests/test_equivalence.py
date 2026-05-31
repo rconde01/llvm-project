@@ -93,6 +93,28 @@ PUN_PASS_F = """\
 """
 
 
+# Sequence association on an equivalenced element: ``CALL FILL2(DBUF(2))``
+# with an array dummy -- exercises ``elem_tail`` over the EquivArray view
+# (the DAF ``ZZDAFGSR`` pattern of handing a buffer element to a helper).
+PUN_ELEM_TAIL_F = """\
+      program p
+      double precision dbuf(3)
+      integer*4        ibuf(6)
+      equivalence (dbuf, ibuf)
+      dbuf(1) = 9.5
+      call fill2 ( dbuf(2) )
+      print *, ibuf(3), ibuf(4)
+      end
+
+      subroutine fill2 ( x )
+      double precision x(2)
+      x(1) = 1.5
+      x(2) = 2.5
+      return
+      end
+"""
+
+
 # Element-subscript alias: ``EQUIVALENCE (BEGIN, PTR(1))`` (SPICE's
 # lbins_1.for pattern).  Same scalar type on both sides -- ``BEGIN``
 # becomes ``auto& BEGIN = PTR(1);`` (a reference to the existing array
@@ -226,6 +248,16 @@ class EquivalenceRunTests(unittest.TestCase):
         self.assertEqual(
             self._build_and_run(ELEMENT_ALIAS_F),
             ["10", "20"],
+        )
+
+    def test_pun_element_tail_to_subroutine_runs(self) -> None:
+        # FILL2 receives DBUF(2) as an array dummy -> elem_tail views the
+        # equivalenced buffer from element 2; writes land in DBUF(2..3) and
+        # the integer view reads the punned bytes of DBUF(2)=1.5: low 32 ->
+        # IBUF(3)=0, high 32 -> IBUF(4)=0x3FF80000=1073217536.
+        self.assertEqual(
+            self._build_and_run(PUN_ELEM_TAIL_F),
+            ["0", "1073217536"],
         )
 
     def test_pun_passed_to_subroutine_runs(self) -> None:

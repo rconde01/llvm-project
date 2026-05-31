@@ -31,11 +31,39 @@ WHOLE_ARRAY_TO_SCALAR_F = """\
 """
 
 
+# A rank-1 actual passed to a 2-D explicit-shape dummy whose extents are
+# *other dummies* (``V(NR,NC)``) -- the SPICE CORTAB ``VALUES(NCOLS,N)``
+# pattern.  The seq_assoc reshape must spell the extents using the actual
+# arguments passed for NR/NC at this call site (2 and 3), not the callee's
+# dummy names (which don't exist in the caller).
+SEQ_ASSOC_DUMMY_BOUNDS_F = """\
+      subroutine fill(nr, nc, v)
+      integer nr, nc
+      double precision v(nr, nc)
+      v(1, 1)   = 1.5
+      v(nr, nc) = 9.5
+      end
+
+      program p
+      double precision a(6)
+      call fill(2, 3, a)
+      print *, a(1), a(6)
+      end
+"""
+
+
 @unittest.skipUnless(have_flang(), "flang binary not available")
 class WholeArrayToScalarEmitTests(unittest.TestCase):
     def test_actual_passed_as_first_element(self) -> None:
         cpp = convert_project(WHOLE_ARRAY_TO_SCALAR_F, suffix=".f")
         self.assertIn("head(fortran::first(a))", cpp)
+
+    def test_dummy_bounds_use_caller_actuals(self) -> None:
+        cpp = convert_project(SEQ_ASSOC_DUMMY_BOUNDS_F, suffix=".f")
+        # Extents NR, NC become the actual arguments 2 and 3 -- not the
+        # callee's dummy names.
+        self.assertIn("fortran::seq_assoc<2>(a, {1, 1}, {(2), (3)})", cpp)
+        self.assertNotIn("{nr, nc}", cpp)
 
 
 @unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
@@ -43,6 +71,14 @@ class WholeArrayToScalarRunTests(unittest.TestCase):
     def test_scalar_dummy_sees_first_element(self) -> None:
         # head(a) is storage-associated with a(1) == 7.
         self.assertEqual(int(run_project(WHOLE_ARRAY_TO_SCALAR_F, suffix=".f").strip()), 7)
+
+    def test_dummy_bounds_reshape_runs(self) -> None:
+        # a(6) views as V(2,3); V(1,1)->a(1)=1.5, V(2,3)->a(6)=9.5
+        # (column-major: (2,3) -> offset 1+2*2 = 5 -> a(6)).
+        self.assertEqual(
+            run_project(SEQ_ASSOC_DUMMY_BOUNDS_F, suffix=".f").split(),
+            ["1.5", "9.5"],
+        )
 
 
 if __name__ == "__main__":
