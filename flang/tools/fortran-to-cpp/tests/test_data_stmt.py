@@ -105,6 +105,19 @@ end program
 """
 
 
+# A *multi-object* implied-do: ``(p(i), q(i), r(i), i=1,3)`` fills three
+# parallel arrays, with the DATA values interleaved one per object per
+# iteration (SPICE's SCLU01 NAMLST/LB/UB pattern).  The values must
+# round-robin: p(1), q(1), r(1), p(2), q(2), r(2), ...
+IDO_MULTI_OBJ_F90 = """\
+program dt
+  integer :: p(3), q(3), r(3)
+  data (p(i), q(i), r(i), i = 1, 3) /1, 10, 100, 2, 20, 200, 3, 30, 300/
+  print *, p(1), q(1), r(1), p(3), q(3), r(3)
+end program
+"""
+
+
 def _convert(src: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".f90", delete=False, encoding="utf-8"
@@ -156,6 +169,17 @@ class DataEmitTests(unittest.TestCase):
         self.assertIn("c(1, 1, 4) = 4.5f;", cpp)
         self.assertIn("c(2, 1, 1) = 5.5f;", cpp)
         self.assertIn("c(2, 1, 4) = 8.5f;", cpp)
+
+    def test_implied_do_multi_object_round_robins(self) -> None:
+        # (p(i), q(i), r(i), i=1,3): values interleave one per object per
+        # iteration -- previously everything was assigned to the first
+        # object (p), silently corrupting q and r.
+        cpp = _convert(IDO_MULTI_OBJ_F90)
+        self.assertIn("p(1) = 1;", cpp)
+        self.assertIn("q(1) = 10;", cpp)
+        self.assertIn("r(1) = 100;", cpp)
+        self.assertIn("p(2) = 2;", cpp)
+        self.assertIn("r(3) = 300;", cpp)
 
     def test_single_array_element_objects(self) -> None:
         # ``data a(2) /7/`` and an element list must each emit one
@@ -255,6 +279,12 @@ class DataRunTests(unittest.TestCase):
 
     def test_implied_do_stride_runs(self) -> None:
         self.assertEqual(self._build_and_run(IDO_STRIDE_F90), ["1", "3", "5"])
+
+    def test_implied_do_multi_object_runs(self) -> None:
+        self.assertEqual(
+            self._build_and_run(IDO_MULTI_OBJ_F90),
+            ["1", "10", "100", "3", "30", "300"],
+        )
 
 
 if __name__ == "__main__":

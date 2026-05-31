@@ -424,6 +424,30 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
     so call arguments still line up with the callee's Fortran dummies."""
     params_by_name = {s.name: s.parameters for s in tu.subprograms}
 
+    def _subst_dummy_bounds(
+        exprs: list[str], params: list, out: list[IRExpr]
+    ) -> list[str]:
+        """Rewrite a dummy's declared bound expressions (which reference the
+        *callee's* other dummy parameters, e.g. ``VALUES(NCOLS, N)``) into
+        the *caller's* scope by substituting each referenced dummy name with
+        the actual argument passed for it at this call site."""
+        from .emit import _render_expr
+
+        name_to_text: dict[str, str] = {}
+        for j, q in enumerate(params):
+            if j < len(out) and not q.type.is_array:
+                name_to_text[q.name] = f"({_render_expr(out[j])})"
+        if not name_to_text:
+            return exprs
+        return [
+            re.sub(
+                r"[A-Za-z_]\w*",
+                lambda m: name_to_text.get(m.group(0), m.group(0)),
+                e,
+            )
+            for e in exprs
+        ]
+
     def reshape(
         callee: str, args: list[IRExpr], caller_arrays: dict[str, int]
     ) -> list[IRExpr]:
@@ -456,8 +480,14 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
                 and actual_rank1
             ):
                 rank = p.type.array_rank
-                lowers = p.type.array_lower_bound_exprs or ["1"] * rank
+                lowers = list(p.type.array_lower_bound_exprs or ["1"] * rank)
                 extents = list(p.type.array_extent_exprs)
+                # The dummy's bounds may reference the callee's *other*
+                # dummies (``VALUES(NCOLS, N)``); rewrite those names into
+                # the actual arguments passed at this call site so the
+                # ``{...}`` extent list is valid in the caller's scope.
+                lowers = _subst_dummy_bounds(lowers, params, out)
+                extents = _subst_dummy_bounds(extents, params, out)
                 out[i] = IRFunctionCall(
                     callee=f"fortran::seq_assoc<{rank}>",
                     args=(
@@ -1950,41 +1980,57 @@ def _expand_data_implied_do(
         if nxt is None:
             break
         inner = nxt
-    # The leaf must be a single ArrayElement scalar.
-    leaf = inner.first_child("DataIDoObject")
-    if leaf is None:
-        return None
-    ae = leaf.find_first("ArrayElement")
-    if ae is None:
-        return None
-    name_node = ae.find_first("Name")
-    if name_node is None or not name_node.fortran:
-        return None
-    arr_name = _safe_name(name_node.fortran)
     loop_vars = {v: (lo, hi, st) for v, lo, hi, st in loops}
-    # Each subscript is either a loop variable (it advances) or a constant
-    # integer that stays fixed (``(C(1,1,J),J=1,81)`` — the slice
-    # ``C(1,1,*)``).  Reject a compound subscript like ``a(2*i)`` (we'd
-    # otherwise mistake it for the bare variable) so the caller falls back.
-    subs: list[tuple[str, object]] = []  # ('var', name) | ('const', int)
-    for ss in ae.children_of_kind("SectionSubscript"):
-        sexpr = ss.find_first("Expr")
-        txt = (sexpr.fortran or "").strip() if sexpr is not None else ""
-        const_val = _folded_int_text(txt)
-        if const_val is not None:
-            subs.append(("const", const_val))
-            continue
-        # A bare loop-variable reference, possibly wrapped by the analyzer
-        # as ``__builtin_int(i,kind=4)``.
-        m = re.fullmatch(
-            r"(?:__builtin_int\(\s*)?([A-Za-z_]\w*)(?:\s*,\s*kind=\d+\s*\))?",
-            txt,
-        )
-        if m is not None and m.group(1) in loop_vars:
-            subs.append(("var", m.group(1)))
-            continue
+
+    def parse_object(do_obj: Node) -> tuple[str, list[tuple[str, object]]] | None:
+        """Parse one ``DataIDoObject`` array element into its name and the
+        per-dimension subscript pattern.  Each subscript is either a loop
+        variable (it advances) or a constant integer that stays fixed
+        (``(C(1,1,J),J=1,81)`` -> the slice ``C(1,1,*)``).  Returns None for
+        anything we can't enumerate (a compound subscript like ``a(2*i)``,
+        or an object that isn't a plain array element)."""
+        ae = do_obj.find_first("ArrayElement")
+        if ae is None:
+            return None
+        name_node = ae.find_first("Name")
+        if name_node is None or not name_node.fortran:
+            return None
+        arr_name = _safe_name(name_node.fortran)
+        subs: list[tuple[str, object]] = []  # ('var', name) | ('const', int)
+        for ss in ae.children_of_kind("SectionSubscript"):
+            sexpr = ss.find_first("Expr")
+            txt = (sexpr.fortran or "").strip() if sexpr is not None else ""
+            const_val = _folded_int_text(txt)
+            if const_val is not None:
+                subs.append(("const", const_val))
+                continue
+            # A bare loop-variable reference, possibly wrapped by the
+            # analyzer as ``__builtin_int(i,kind=4)``.
+            m = re.fullmatch(
+                r"(?:__builtin_int\(\s*)?([A-Za-z_]\w*)(?:\s*,\s*kind=\d+\s*\))?",
+                txt,
+            )
+            if m is not None and m.group(1) in loop_vars:
+                subs.append(("var", m.group(1)))
+                continue
+            return None
+        return arr_name, subs
+
+    # The innermost implied-do may list several objects that share the loop
+    # (``(NAMLST(I), LB(I), UB(I), I=1,N)``).  DATA values are interleaved
+    # one per object per iteration, so we round-robin across them in the
+    # order they appear.
+    objects: list[tuple[str, list[tuple[str, object]]]] = []
+    for do_obj in inner.children_of_kind("DataIDoObject"):
+        parsed = parse_object(do_obj)
+        if parsed is None:
+            return None
+        objects.append(parsed)
+    if not objects:
         return None
-    ordered_vars = [val for kind, val in subs if kind == "var"]
+    # The iteration order (which subscript advances fastest) comes from the
+    # first object; every object shares the same loop variables.
+    ordered_vars = [val for kind, val in objects[0][1] if kind == "var"]
     if not ordered_vars:
         return None
     # Enumerate the index space innermost-first (the first *variable*
@@ -1994,19 +2040,23 @@ def _expand_data_implied_do(
     cur: dict[str, int] = {v: loop_vars[v][0] for v in ordered_vars}
     finished = False
     while not finished:
-        if start + len(out) >= len(values):
+        for arr_name, subs in objects:
+            if start + len(out) >= len(values):
+                finished = True
+                break
+            idx_str = ", ".join(
+                str(val) if kind == "const" else str(cur[val])
+                for kind, val in subs
+            )
+            out.append((
+                IRAssignment(
+                    target=IRRaw(f"{arr_name}({idx_str})"),
+                    value=values[start + len(out)],
+                ),
+                1,
+            ))
+        if finished:
             break
-        idx_str = ", ".join(
-            str(val) if kind == "const" else str(cur[val])
-            for kind, val in subs
-        )
-        out.append((
-            IRAssignment(
-                target=IRRaw(f"{arr_name}({idx_str})"),
-                value=values[start + len(out)],
-            ),
-            1,
-        ))
         k = 0
         while True:
             v = ordered_vars[k]
@@ -3751,9 +3801,11 @@ def _lower_assignment(node: Node) -> IRStatement:
 
 
 def _lower_print(node: Node) -> IRPrint:
+    fmt_kind, fmt_payload = _classify_format(node)
     return IRPrint(
         items=_lower_io_items(node, "OutputItem", "OutputImpliedDo"),
-        format=_extract_format(node),
+        format=fmt_payload if fmt_kind == "const" else None,
+        format_expr=fmt_payload if fmt_kind == "runtime" else None,
     )
 
 
@@ -3811,7 +3863,7 @@ def _lower_write(
     # unformatted-direct write expansion.
     items = _lower_io_items(node, "OutputItem", "OutputImpliedDo")
     io_unit = _find_io_unit(node)
-    fmt_str = _extract_format(node)
+    fmt_kind, fmt_payload = _classify_format(node)
     rec_expr = _extract_rec(node)
     if rec_expr is not None:
         unit_text = _unit_text(io_unit)
@@ -3821,6 +3873,13 @@ def _lower_write(
                 note="unsupported unit for a REC= write",
                 source=node.source.text if node.source else "",
             )
+        if fmt_kind == "runtime":
+            raise ConversionError(
+                "direct-access WRITE",
+                note="runtime (non-constant) FORMAT with REC= unsupported",
+                source=node.source.text if node.source else "",
+            )
+        fmt_str = fmt_payload if fmt_kind == "const" else None
         if fmt_str is None:
             return IRUnformattedDirectWrite(
                 unit_text=unit_text, rec=rec_expr, items=items
@@ -3833,7 +3892,8 @@ def _lower_write(
     return IRPrint(
         items=items,
         stream=stream,
-        format=fmt_str,
+        format=fmt_payload if fmt_kind == "const" else None,
+        format_expr=fmt_payload if fmt_kind == "runtime" else None,
         internal_unit=internal,
     )
 
@@ -4393,11 +4453,18 @@ def _stream_for_unit(io_unit: Node | None) -> str:
     return f"_units.out({u})"
 
 
-def _extract_format(node: Node) -> str | None:
-    """Return the format string for a Print/Write, or None for the
-    list-directed (``*``) form.  The positional form puts the Format as a
-    direct child; the keyword form (``READ(UNIT=u, FMT=100, ...)``) buries
-    it inside an IoControlSpec -- accept either."""
+def _classify_format(node: Node) -> tuple[str, object | None]:
+    """Resolve a Print/Write/Read FORMAT spec to one of:
+
+    * ``("none", None)``      -- list-directed (``*``) or no format;
+    * ``("const", str|None)`` -- a constant format string (or ``None`` when
+      a label reference has no captured FORMAT statement);
+    * ``("runtime", IRExpr)`` -- a format built at run time (a non-constant
+      character expression), to be interpreted by the runtime.
+
+    The positional form puts the Format as a direct child; the keyword
+    form (``READ(UNIT=u, FMT=100, ...)``) buries it inside an
+    IoControlSpec -- accept either."""
     fmt = node.first_child("Format")
     if fmt is None:
         for spec in node.children_of_kind("IoControlSpec"):
@@ -4406,20 +4473,71 @@ def _extract_format(node: Node) -> str | None:
                 fmt = nested
                 break
     if fmt is None:
-        return None
+        return ("none", None)
     if fmt.first_child("Star") is not None:
-        return None
+        return ("none", None)
     # A label reference (``write(u, 100)``) -> the FORMAT statement's spec.
     label = fmt.first_child("uint64_t")
     if label is not None and label.fortran:
         try:
-            return _FORMAT_LABELS.get(int(label.fortran))
+            return ("const", _FORMAT_LABELS.get(int(label.fortran)))
         except ValueError:
             pass
+    # A character-expression format.  Prefer flang's folded constant value:
+    # a concatenation of literals and PARAMETER constants
+    # (``'(A,'//FMT1//')'``) is evaluated by semantics, so we read the
+    # whole folded string rather than the first literal fragment.
+    expr = fmt.first_child("Expr")
+    if expr is not None:
+        if expr.category == "constant" and expr.fortran:
+            decoded = _decode_flang_char_constant(expr.fortran)
+            if decoded is not None:
+                return ("const", decoded)
+        # A non-constant character expression (a format held in a runtime
+        # variable assembled by e.g. REPMI) can't be parsed at translation
+        # time -- hand the lowered expression to the runtime interpreter
+        # rather than silently degrading to list-directed output.  A single
+        # inline literal still falls through to the string-walk below.
+        single_literal = (
+            expr.first_child("LiteralConstant") is not None
+            or expr.find_first("CharLiteralConstant") is not None
+        )
+        if not single_literal:
+            return ("runtime", _lower_expression(expr))
     # Otherwise an inline character literal; pull its body.
     for s in fmt.walk():
         if s.kind == "string" and s.fortran is not None:
-            return s.fortran
+            return ("const", s.fortran)
+    return ("none", None)
+
+
+def _extract_format(node: Node) -> str | None:
+    """Return the constant format string for a Print/Write/Read, or None
+    for the list-directed form.
+
+    Raises ``ConversionError`` for a runtime (non-constant) format in a
+    context that can't interpret one (direct-access record I/O); the
+    print/write paths call :func:`_classify_format` directly so they can
+    route a runtime format through the runtime interpreter instead."""
+    kind, payload = _classify_format(node)
+    if kind == "runtime":
+        src = node.source.text if node.source else ""
+        raise ConversionError(
+            "FORMAT",
+            note="runtime (non-constant) format unsupported here",
+            source=src,
+        )
+    return payload  # type: ignore[return-value]
+
+
+def _decode_flang_char_constant(text: str) -> str | None:
+    """Decode flang's rendering of a folded CHARACTER constant.
+
+    Semantics renders a character constant double-quoted, with any
+    embedded double-quote doubled (e.g. ``"(A,(1PE24.16))"``).  Returns
+    the raw contents, or ``None`` when *text* is not such a constant."""
+    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+        return text[1:-1].replace('""', '"')
     return None
 
 

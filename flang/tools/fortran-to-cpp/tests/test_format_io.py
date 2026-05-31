@@ -157,6 +157,29 @@ class FormatEmitTests(unittest.TestCase):
         cpp = self._convert(IO_F90)
         self.assertIn("std::cout <<", cpp)
 
+    def test_runtime_format_routes_to_interpreter(self) -> None:
+        # A FORMAT held in a CHARACTER variable is not a compile-time
+        # constant, so it must route through the runtime interpreter
+        # rather than silently degrade to list-directed output.
+        cpp = self._convert(RUNTIME_FMT_F)
+        self.assertIn("fortran::io::format_record(fmt, x)", cpp)
+
+
+# The format lives in a CHARACTER variable, so flang reports it as a
+# (non-constant) ``variable`` -- the converter can't parse it at
+# translation time and emits a runtime-interpreter call.
+RUNTIME_FMT_F = """\
+      program p
+      character*8     fmt
+      character*30    out
+      double precision x
+      x = 3.14159d0
+      fmt = '(F20.13)'
+      write (out, fmt) x
+      print *, out
+      end
+"""
+
 
 @unittest.skipUnless(
     _have_flang() and _have_cxx(), "need flang and a C++20 compiler"
@@ -187,6 +210,12 @@ class FormatRunTests(unittest.TestCase):
             )
             self.assertEqual(run.returncode, 0, msg=run.stderr)
             return run.stdout
+
+    def test_runtime_format_output(self) -> None:
+        # The runtime interpreter must format ``(F20.13)`` identically to
+        # the compile-time path: 20-wide field, 13 fractional digits.
+        out = self._run(RUNTIME_FMT_F)
+        self.assertIn("3.1415900000000", out)
 
     def test_formatted_output_widths(self) -> None:
         out = self._run(IO_F90)
