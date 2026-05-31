@@ -11,8 +11,9 @@ D5 / rule R8:
   * descriptors that need byte-fidelity (E, D, G) become calls into
     the ``fortran::io`` runtime helpers.
 
-Only a flat descriptor list is handled for now; nested parenthesized
-groups fall back to a passthrough that emits the items list-directed.
+Nested parenthesized groups (``2(1x,f8.2)``) are flattened by repeat.
+An unrecognized descriptor raises ``FormatParseError`` — there is no
+silent list-directed fallback.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from dataclasses import dataclass
 class _Action:
     """One resolved (repeat-expanded) format action."""
 
-    kind: str  # "data" | "space" | "literal" | "newline"
+    kind: str  # "data" | "space" | "literal" | "newline" | "suppress_nl"
     letter: str = ""  # for "data": I F E D G A L
     width: int | None = None
     decimals: int | None = None
@@ -51,9 +52,9 @@ def parse_format(fmt: str) -> list[_Action]:
     """Parse a Fortran format string into a flat list of actions.
 
     Handles repeated and nested parenthesized groups (``2(1x,f8.2)``) and
-    the ``P`` scale factor (``1pe12.2``).  Raises FormatParseError on an
-    unrecognized descriptor so the caller can fall back to list-directed
-    output."""
+    the ``P`` scale factor (``1pe12.2``).  Raises ``FormatParseError`` on
+    an unrecognized descriptor — the caller must surface the error rather
+    than silently drop down to list-directed output."""
     actions: list[_Action] = []
     _parse_body(strip_format(fmt), actions, _State())
     return actions
@@ -200,10 +201,10 @@ def _parse_token(token: str, actions: list[_Action], state: _State) -> None:
             _parse_token(rest, actions, state)
         return
     if token == "$":
-        # Non-standard "suppress trailing newline" marker -- emitted
-        # code always writes a newline; treat ``$`` as a no-op for now.
-        # The output gains one extra blank line per affected prompt;
-        # known-cosmetic gap, not a correctness issue.
+        # Non-standard "suppress trailing newline" marker (used for
+        # prompts).  Caller honours this by omitting the ``<< '\n'`` at
+        # the end of the formatted print.
+        actions.append(_Action(kind="suppress_nl"))
         return
     m = _DESCRIPTOR_RE.match(token)
     if not m:
@@ -236,14 +237,19 @@ def _parse_token(token: str, actions: list[_Action], state: _State) -> None:
     raise FormatParseError(f"unsupported descriptor letter {letter!r}")
 
 
-def render_format(fmt: str, item_exprs: list[str]) -> list[str]:
+def render_format(
+    fmt: str, item_exprs: list[str]
+) -> tuple[list[str], bool]:
     """Map a format + rendered output-item expressions to C++ chunks.
 
-    Returns the list of C++ expressions to join with ``<<``.  A
-    trailing newline is *not* added here — the caller appends it.
+    Returns ``(chunks, suppress_trailing_newline)``: the chunks are the
+    C++ expressions to join with ``<<``; the flag is ``True`` iff the
+    format ended with a ``$`` (non-standard "no newline" marker used for
+    interactive prompts) so the caller knows to omit its own ``<< '\\n'``.
     """
     actions = parse_format(fmt)
     chunks: list[str] = []
+    suppress_nl = False
     item_iter = iter(item_exprs)
     for act in actions:
         if act.kind == "literal":
@@ -252,6 +258,8 @@ def render_format(fmt: str, item_exprs: list[str]) -> list[str]:
             chunks.append(_cpp_string_literal(" " * act.count))
         elif act.kind == "newline":
             chunks.append("'\\n'")
+        elif act.kind == "suppress_nl":
+            suppress_nl = True
         elif act.kind == "data":
             try:
                 item = next(item_iter)
@@ -260,7 +268,7 @@ def render_format(fmt: str, item_exprs: list[str]) -> list[str]:
                 # terminate the record here).
                 break
             chunks.append(_render_data(act, item))
-    return chunks
+    return chunks, suppress_nl
 
 
 def _render_data(act: _Action, item: str) -> str:
@@ -295,7 +303,7 @@ def _render_data(act: _Action, item: str) -> str:
         ww = w if w is not None else 15
         dd = d if d is not None else 6
         return f"fortran::io::fmt_G({item}, {ww}, {dd})"
-    return f'std::format("{{}}", {item})'
+    raise FormatParseError(f"unsupported descriptor letter {letter!r}")
 
 
 def _cpp_string_literal(text: str) -> str:

@@ -30,15 +30,16 @@ class FormatParserTests(unittest.TestCase):
     """Pure-Python tests for the format -> C++ chunk mapping."""
 
     def test_integer_descriptor(self) -> None:
-        chunks = render_format("(I5)", ["n"])
+        chunks, nl = render_format("(I5)", ["n"])
         self.assertEqual(chunks, ['std::format("{:5d}", n)'])
+        self.assertFalse(nl)
 
     def test_fixed_float(self) -> None:
-        chunks = render_format("(F8.2)", ["x"])
+        chunks, _ = render_format("(F8.2)", ["x"])
         self.assertEqual(chunks, ['std::format("{:8.2f}", x)'])
 
     def test_mixed_with_spacing(self) -> None:
-        chunks = render_format("(I5, 1X, F8.2)", ["n", "x"])
+        chunks, _ = render_format("(I5, 1X, F8.2)", ["n", "x"])
         self.assertEqual(
             chunks,
             [
@@ -49,17 +50,17 @@ class FormatParserTests(unittest.TestCase):
         )
 
     def test_literal_text(self) -> None:
-        chunks = render_format("('value=', I3)", ["n"])
+        chunks, _ = render_format("('value=', I3)", ["n"])
         self.assertEqual(
             chunks, ['"value="sv', 'std::format("{:3d}", n)']
         )
 
     def test_e_descriptor_uses_runtime_helper(self) -> None:
-        chunks = render_format("(E12.4)", ["x"])
+        chunks, _ = render_format("(E12.4)", ["x"])
         self.assertEqual(chunks, ["fortran::io::fmt_E(x, 12, 4)"])
 
     def test_repeat_count(self) -> None:
-        chunks = render_format("(3I4)", ["a", "b", "c"])
+        chunks, _ = render_format("(3I4)", ["a", "b", "c"])
         self.assertEqual(
             chunks,
             [
@@ -70,7 +71,7 @@ class FormatParserTests(unittest.TestCase):
         )
 
     def test_slash_is_newline(self) -> None:
-        chunks = render_format("(I3, /, I3)", ["a", "b"])
+        chunks, _ = render_format("(I3, /, I3)", ["a", "b"])
         self.assertEqual(
             chunks,
             [
@@ -82,8 +83,9 @@ class FormatParserTests(unittest.TestCase):
 
     def test_repeated_group_expands(self) -> None:
         # ``2(I3, F5.1)`` repeats the inner group for two (a,b) and (c,d).
+        chunks, _ = render_format("(2(I3, F5.1))", ["a", "b", "c", "d"])
         self.assertEqual(
-            render_format("(2(I3, F5.1))", ["a", "b", "c", "d"]),
+            chunks,
             [
                 'std::format("{:3d}", a)',
                 'std::format("{:5.1f}", b)',
@@ -94,16 +96,25 @@ class FormatParserTests(unittest.TestCase):
 
     def test_p_scale_factor(self) -> None:
         # ``1PE12.2`` applies a scale factor via the runtime helper.
+        chunks, _ = render_format("(1PE12.2)", ["x"])
         self.assertEqual(
-            render_format("(1PE12.2)", ["x"]),
+            chunks,
             ["fortran::io::fmt_E_with_scale(x, 1, 12, 2)"],
         )
 
-    def test_slash_is_newline(self) -> None:
+    def test_slash_alt(self) -> None:
+        chunks, _ = render_format("(I3/I3)", ["a", "b"])
         self.assertEqual(
-            render_format("(I3/I3)", ["a", "b"]),
+            chunks,
             ['std::format("{:3d}", a)', "'\\n'", 'std::format("{:3d}", b)'],
         )
+
+    def test_dollar_suppresses_trailing_newline(self) -> None:
+        # ``$`` is the non-standard prompt marker -- caller must omit
+        # the trailing newline.
+        chunks, nl = render_format("('prompt: ', $)", [])
+        self.assertEqual(chunks, ['"prompt: "sv'])
+        self.assertTrue(nl)
 
 
 IO_F90 = """\

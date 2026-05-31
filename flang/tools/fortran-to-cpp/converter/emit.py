@@ -621,15 +621,19 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
             return
         _emit_comment_block(out, stmt.leading_comments, indent=indent)
         out.write(f"{pad}{stmt.stream}")
+        suppress_nl = False
         if stmt.format is not None:
-            _emit_formatted_chunks(out, stmt)
+            suppress_nl = _emit_formatted_chunks(out, stmt)
         else:
             # List-directed: separate items with a single space.
             for i, item in enumerate(stmt.items):
                 if i > 0:
                     out.write(" << ' '")
                 out.write(f" << {_render_expr(item)}")
-        out.write(" << '\\n';")
+        if suppress_nl:
+            out.write(";")
+        else:
+            out.write(" << '\\n';")
         _emit_trailing(out, stmt.trailing_comments)
         return
     if isinstance(stmt, IRDirectRead):
@@ -851,26 +855,30 @@ def _emit_block(out: StringIO, node: IRBlock, *, indent: int) -> None:
     _emit_trailing(out, node.trailing_comments)
 
 
-def _emit_formatted_chunks(out: StringIO, stmt: "IRPrint") -> None:
+def _emit_formatted_chunks(out: StringIO, stmt: "IRPrint") -> bool:
     """Emit the ``<< ...`` chain for a format-directed print/write.
 
     A format the parser can't model is an error, not a silent
     degradation: list-directed output would print the right values with
     the wrong layout, which is exactly the kind of quietly-wrong result
     we refuse to emit.
+
+    Returns ``True`` if the FORMAT requested newline suppression (``$``)
+    so the caller knows to skip its trailing ``<< '\\n'``.
     """
     from .format import FormatParseError, render_format
 
     assert stmt.format is not None
     item_exprs = [_render_expr(it) for it in stmt.items]
     try:
-        chunks = render_format(stmt.format, item_exprs)
+        chunks, suppress_nl = render_format(stmt.format, item_exprs)
     except FormatParseError as exc:
         raise ConversionError(
             "FORMAT", note=str(exc), source=stmt.format
         ) from exc
     for chunk in chunks:
         out.write(f" << {chunk}")
+    return suppress_nl
 
 
 def _emit_internal_write(out: StringIO, stmt: "IRPrint", *, indent: int) -> None:
