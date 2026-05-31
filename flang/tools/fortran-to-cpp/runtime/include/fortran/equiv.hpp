@@ -36,12 +36,20 @@
 #ifndef FORTRAN_RT_EQUIV_HPP
 #define FORTRAN_RT_EQUIV_HPP
 
+#include "array_ref.hpp" // ArrayRef view + elem_tail for equivalenced buffers
+
 #include <bit>
 #include <cstddef>
 #include <cstring>
 #include <type_traits>
+#include <vector>
 
 namespace fortran {
+
+// Tag base so the unformatted byte-I/O helpers can recognise an
+// EquivArray element proxy (its value is reached via memcpy, not a
+// raw lvalue) without depending on the EquivArray template parameters.
+struct EquivCellTag {};
 
 template <typename T, std::size_t Offset> class EquivSlot {
   static_assert(std::is_trivially_copyable_v<T>,
@@ -133,8 +141,9 @@ public:
   EquivArray &operator=(EquivArray &&) = delete;
 
   // Per-element proxy: reads/writes ``T`` at byte ``(i-1)*sizeof(T)``.
-  class Cell {
+  class Cell : public EquivCellTag {
   public:
+    using value_type = T;
     constexpr explicit Cell(std::byte *p) noexcept : p_(p) {}
     operator T() const noexcept {
       T v;
@@ -187,9 +196,28 @@ public:
   const std::byte *byte_data() const noexcept { return base_; }
   static constexpr std::size_t byte_size() noexcept { return N * sizeof(T); }
 
+  /// View the aliased buffer as a contiguous rank-1 ``ArrayRef<T>``.
+  /// Used when the whole equivalenced array is passed to a routine that
+  /// takes an array dummy (the SPICE DAF buffers DPBUF/INBUF) -- the
+  /// callee reads/writes ``T`` directly in the shared storage, and the
+  /// other equivalenced view still observes the bytes through memcpy.
+  ArrayRef<T, 1> ref() noexcept {
+    return ArrayRef<T, 1>(reinterpret_cast<T *>(base_),
+                          {static_cast<index_t>(N)});
+  }
+  operator ArrayRef<T, 1>() noexcept { return ref(); }
+
 private:
   std::byte *base_;
 };
+
+/// Sequence association on an equivalenced array: ``call s(DPBUF(i))``
+/// with an array dummy views the buffer from element ``i`` onward.  Routes
+/// through the ``ArrayRef`` view's :func:`elem_tail`.
+template <typename T, std::size_t N, std::size_t O, typename... Idx>
+inline ArrayRef<T, 1> elem_tail(EquivArray<T, N, O> &a, Idx... idx) noexcept {
+  return elem_tail(a.ref(), idx...);
+}
 
 /// Free helper for an explicit ``bit_cast`` between same-size,
 /// trivially-copyable types.  Used by the emitter for Fortran's
@@ -207,5 +235,38 @@ constexpr To bit_cast(const From &from) noexcept {
 }
 
 } // namespace fortran
+
+namespace fortran::io {
+
+// Unformatted record I/O of a single equivalenced element
+// (``read(u) (DPBUF(i), i=1,128)`` -- one Cell per iteration).  The
+// element's value is reached through memcpy (operator T() / operator=),
+// so we round-trip a plain ``T`` rather than aliasing the cell directly.
+// SFINAE on EquivCellTag keeps these disjoint from the arithmetic /
+// contiguous-view overloads in io.hpp.
+template <class C, std::enable_if_t<std::is_base_of_v<
+                       fortran::EquivCellTag, std::remove_cvref_t<C>>, int> = 0>
+inline void append_bytes(std::vector<std::byte> &buf, const C &cell) {
+  using T = typename std::remove_cvref_t<C>::value_type;
+  T v = static_cast<T>(cell);
+  std::byte tmp[sizeof(T)];
+  std::memcpy(tmp, &v, sizeof(T));
+  buf.insert(buf.end(), tmp, tmp + sizeof(T));
+}
+
+template <class C, std::enable_if_t<std::is_base_of_v<
+                       fortran::EquivCellTag, std::remove_cvref_t<C>>, int> = 0>
+inline std::size_t take_bytes(const std::vector<std::byte> &rec,
+                              std::size_t off, C &&cell) {
+  using T = typename std::remove_cvref_t<C>::value_type;
+  T v{};
+  if (off + sizeof(T) <= rec.size()) {
+    std::memcpy(&v, rec.data() + off, sizeof(T));
+  }
+  cell = v;  // writes back through the proxy's memcpy assignment
+  return off + sizeof(T);
+}
+
+} // namespace fortran::io
 
 #endif // FORTRAN_RT_EQUIV_HPP
