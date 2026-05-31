@@ -34,8 +34,12 @@ import re
 
 from .ir import (
     IRCall,
+    IRDirectRead,
+    IRDirectWrite,
     IRExpr,
+    IRFilePosition,
     IRFunctionCall,
+    IRInquire,
     IRLocal,
     IRName,
     IRPrint,
@@ -49,6 +53,8 @@ from .ir import (
     IRSubprogram,
     IRTranslationUnit,
     IRType,
+    IRUnformattedDirectRead,
+    IRUnformattedDirectWrite,
 )
 from .lowering import _render_expr_inline
 from .transform import map_expr, map_statement
@@ -463,7 +469,22 @@ def _uses_units(body: list[IRStatement]) -> bool:
     found = [False]
 
     def check(stmt: IRStatement) -> IRStatement:
-        if isinstance(stmt, IRCall) and stmt.callee.startswith(_UNITS_PARAM + "."):
+        # Statements that emit ``_units.<op>(...)`` directly: INQUIRE,
+        # BACKSPACE/REWIND, and direct-access / unformatted record I/O.
+        # (fndlun/errfnm reach the units table only through INQUIRE.)
+        if isinstance(
+            stmt,
+            (
+                IRInquire,
+                IRFilePosition,
+                IRDirectRead,
+                IRDirectWrite,
+                IRUnformattedDirectRead,
+                IRUnformattedDirectWrite,
+            ),
+        ):
+            found[0] = True
+        elif isinstance(stmt, IRCall) and stmt.callee.startswith(_UNITS_PARAM + "."):
             found[0] = True
         elif isinstance(stmt, (IRPrint, IRRead)) and _UNITS_PARAM in stmt.stream:
             found[0] = True
