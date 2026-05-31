@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from converter import convert_file
+from converter import ConversionError, convert_file
 
 
 def _have_flang() -> bool:
@@ -30,6 +30,48 @@ def _have_cxx() -> bool:
 
 
 RUNTIME_INCLUDE = Path(__file__).resolve().parent.parent / "runtime" / "include"
+
+
+# Writes three records out of order then reads two back, round-tripping
+# through write_record / read_record on a RECL=13 direct file.
+ROUNDTRIP_F = """\
+      program da
+      real x, y
+      open(9, file='rt.dat', access='direct', recl=13,
+     *     form='formatted', status='replace')
+      write(9, 10, rec=1) 11, 22, 1.5
+      write(9, 10, rec=3) 55, 66, 3.5
+      write(9, 10, rec=2) 33, 44, 2.5
+10    format(2i3, f6.1)
+      read(9, 10, rec=2) i, j, x
+      read(9, 10, rec=3) k, l, y
+      close(9)
+      print *, i, j, x, k, l, y
+      end
+"""
+
+
+# Unformatted direct I/O is raw binary records, which the converter does
+# not model -- it must error, not silently mistranslate.
+UNFORMATTED_WRITE_F = """\
+      program da
+      double precision d
+      open(9, file='b.dat', access='direct', recl=8)
+      d = 1.0
+      write(9, rec=2) d
+      close(9)
+      end
+"""
+
+UNFORMATTED_READ_F = """\
+      program da
+      double precision d
+      open(9, file='b.dat', access='direct', recl=8, status='old')
+      read(9, rec=2) d
+      close(9)
+      print *, d
+      end
+"""
 
 
 # Reads record 2 of a 12-char-record direct file (RECL=13 counts the
@@ -75,6 +117,19 @@ class DirectAccessEmitTests(unittest.TestCase):
         self.assertIn("fortran::io::read_field_int(_rec, 3, 3)", cpp)
         self.assertIn("fortran::io::read_field_real(_rec, 6, 6, 1)", cpp)
 
+    def test_write_uses_write_record(self) -> None:
+        cpp = _convert(ROUNDTRIP_F)
+        self.assertIn("_units.write_record(9, 1, _wrec.str());", cpp)
+        self.assertIn("_units.write_record(9, 2, _wrec.str());", cpp)
+
+    def test_unformatted_direct_write_errors(self) -> None:
+        with self.assertRaises(ConversionError):
+            _convert(UNFORMATTED_WRITE_F)
+
+    def test_unformatted_direct_read_errors(self) -> None:
+        with self.assertRaises(ConversionError):
+            _convert(UNFORMATTED_READ_F)
+
 
 @unittest.skipUnless(
     _have_flang() and _have_cxx(), "need flang and a C++20 compiler"
@@ -108,6 +163,31 @@ class DirectAccessRunTests(unittest.TestCase):
             self.assertEqual(run.returncode, 0, msg=run.stderr)
             # Record 2: i=3, j=4, x=20.5
             self.assertEqual(run.stdout.split(), ["3", "4", "20.5"])
+
+    def test_write_read_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            cpp = Path(d) / "out.cpp"
+            cpp.write_text(_convert(ROUNDTRIP_F))
+            exe = Path(d) / "out"
+            cxx = (
+                shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+            )
+            assert cxx is not None
+            comp = subprocess.run(
+                [cxx, "-std=c++20", "-I", str(RUNTIME_INCLUDE),
+                 str(cpp), "-o", str(exe)],
+                capture_output=True, text=True, check=False,
+            )
+            if comp.returncode != 0:
+                self.fail(f"compile failed:\n{comp.stderr}\n{cpp.read_text()}")
+            run = subprocess.run(
+                [str(exe)], capture_output=True, text=True, check=False, cwd=d
+            )
+            self.assertEqual(run.returncode, 0, msg=run.stderr)
+            # Records written out of order, read back: rec2=33,44,2.5 rec3=55,66,3.5
+            self.assertEqual(
+                run.stdout.split(), ["33", "44", "2.5", "55", "66", "3.5"]
+            )
 
 
 if __name__ == "__main__":

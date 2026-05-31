@@ -22,6 +22,7 @@ from flang_ast import (
 )
 
 from .emit import emit_translation_unit
+from .errors import ConversionError
 from .ir import IRTranslationUnit
 from .lowering import lower_program
 from .prepass import sanitized_source
@@ -66,6 +67,7 @@ def lower_to_ir(source: str | Path, *, flang: str | None = None) -> IRTranslatio
 
 
 __all__ = [
+    "ConversionError",
     "IRTranslationUnit",
     "convert_ast",
     "convert_file",

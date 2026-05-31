@@ -9,6 +9,8 @@ from typing import Sequence
 
 from flang_ast import FlangError
 
+from .errors import ConversionError
+
 from . import convert_ast, convert_file, convert_files
 
 
@@ -75,6 +77,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # error, ...).  Report cleanly rather than dumping a traceback.
         detail = (exc.stderr or str(exc)).strip().splitlines()
         print(f"fortran-to-cpp: {detail[0] if detail else exc}", file=sys.stderr)
+        return 1
+    except ConversionError as exc:
+        # A construct the converter can't faithfully translate.  Fail
+        # loudly so the gap gets fixed rather than silently mistranslated.
+        print(f"fortran-to-cpp: {exc}", file=sys.stderr)
         return 1
     if args.output:
         args.output.write_text(cpp, encoding="utf-8")

@@ -322,6 +322,24 @@ class IRDirectRead:
 
 
 @dataclass(slots=True)
+class IRDirectWrite:
+    """``write(unit, fmt, REC=n) items`` — record-based formatted write.
+
+    The formatted record text is built (the same edit-descriptor chunks a
+    sequential formatted write would emit) and placed at record ``rec`` of
+    a direct-access file via ``Units::write_record``.  ``format`` is the
+    Fortran format string (always present — an unformatted direct write
+    is rejected during lowering)."""
+
+    unit_text: str
+    rec: IRExpr
+    items: list[IRExpr] = field(default_factory=list)
+    format: str | None = None
+    leading_comments: list[Comment] = field(default_factory=list)
+    trailing_comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class IRStop:
     """``stop`` / ``stop <code>`` / ``stop "msg"`` / ``error stop``.
 
@@ -556,6 +574,8 @@ IRStatement = Union[
     IRCall,
     IRPrint,
     IRRead,
+    IRDirectRead,
+    IRDirectWrite,
     IRStop,
     IRAllocate,
     IRDeallocate,

@@ -16,6 +16,7 @@ from typing import Iterable
 
 from flang_ast import Comment
 
+from .errors import ConversionError
 from .ir import (
     IRAllocate,
     IRArrayConstructor,
@@ -44,6 +45,7 @@ from .ir import (
     IRPrint,
     IRRaw,
     IRDirectRead,
+    IRDirectWrite,
     IRRead,
     IRReturn,
     IRSection,
@@ -595,6 +597,23 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         out.write(f"{pad}}}")
         _emit_trailing(out, stmt.trailing_comments)
         return
+    if isinstance(stmt, IRDirectWrite):
+        _emit_comment_block(out, stmt.leading_comments, indent=indent)
+        # Build the formatted record into a string, then place it at the
+        # target record.  ``_emit_formatted_chunks`` is duck-typed on
+        # ``.format`` / ``.items``, which IRDirectWrite also carries.
+        out.write(f"{pad}{{\n")
+        out.write(f"{pad}  std::ostringstream _wrec;\n")
+        out.write(f"{pad}  _wrec")
+        _emit_formatted_chunks(out, stmt)  # writes " << ..."
+        out.write(";\n")
+        out.write(
+            f"{pad}  _units.write_record({stmt.unit_text}, "
+            f"{_render_expr(stmt.rec)}, _wrec.str());\n"
+        )
+        out.write(f"{pad}}}")
+        _emit_trailing(out, stmt.trailing_comments)
+        return
     if isinstance(stmt, IRRead):
         if stmt.internal_unit is not None:
             _emit_internal_read(out, stmt, indent=indent)
@@ -636,9 +655,9 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
     if isinstance(stmt, IRAllocate):
         _emit_comment_block(out, stmt.leading_comments, indent=indent)
         if not stmt.cpp_type:
-            out.write(f"{pad}// TODO: could not resolve type of {stmt.obj!r} "
-                      f"for allocate\n")
-            return
+            raise ConversionError(
+                "ALLOCATE", note=f"could not resolve type of {stmt.obj!r}"
+            )
         extents = ", ".join(_render_expr(e) for e in stmt.extents)
         if stmt.lowers:
             lowers = ", ".join(_render_expr(e) for e in stmt.lowers)
@@ -702,7 +721,9 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
     if isinstance(stmt, IRUnsupported):
         _emit_unsupported(out, stmt, indent=indent)
         return
-    out.write(f"{pad}// TODO: unhandled IR statement {type(stmt).__name__}\n")
+    raise ConversionError(
+        type(stmt).__name__, note="unhandled IR statement"
+    )
 
 
 def _emit_block(out: StringIO, node: IRBlock, *, indent: int) -> None:
@@ -724,8 +745,10 @@ def _emit_block(out: StringIO, node: IRBlock, *, indent: int) -> None:
 def _emit_formatted_chunks(out: StringIO, stmt: "IRPrint") -> None:
     """Emit the ``<< ...`` chain for a format-directed print/write.
 
-    Falls back to list-directed output (with a TODO note) when the
-    format string uses a feature the parser doesn't model yet.
+    A format the parser can't model is an error, not a silent
+    degradation: list-directed output would print the right values with
+    the wrong layout, which is exactly the kind of quietly-wrong result
+    we refuse to emit.
     """
     from .format import FormatParseError, render_format
 
@@ -734,18 +757,9 @@ def _emit_formatted_chunks(out: StringIO, stmt: "IRPrint") -> None:
     try:
         chunks = render_format(stmt.format, item_exprs)
     except FormatParseError as exc:
-        # Couldn't parse — degrade gracefully to list-directed, leaving
-        # a marker so the user knows fidelity wasn't achieved.  The format
-        # text is arbitrary Fortran and may itself contain ``*/`` (e.g. a
-        # Hollerith ``12h ** ERROR **/...``); neutralize it so it can't
-        # close this block comment early and corrupt the rest of the file.
-        note = f"format {stmt.format!r}: {exc}".replace("*/", "* /")
-        out.write(f" /* TODO: {note} */")
-        for i, expr in enumerate(item_exprs):
-            if i > 0:
-                out.write(" << ' '")
-            out.write(f" << {expr}")
-        return
+        raise ConversionError(
+            "FORMAT", note=str(exc), source=stmt.format
+        ) from exc
     for chunk in chunks:
         out.write(f" << {chunk}")
 
@@ -980,14 +994,9 @@ def _emit_do(out: StringIO, node: IRDo, *, indent: int) -> None:
 def _emit_unsupported(
     out: StringIO, stmt: IRUnsupported, *, indent: int
 ) -> None:
-    pad = "  " * indent
-    _emit_comment_block(out, stmt.leading_comments, indent=indent)
-    out.write(f"{pad}// TODO: fortran-to-cpp does not yet translate "
-              f"{stmt.kind}\n")
-    if stmt.note:
-        out.write(f"{pad}//       {stmt.note}\n")
-    for line in stmt.source_text.splitlines() or [stmt.source_text]:
-        out.write(f"{pad}//   {line.rstrip()}\n")
+    # An IRUnsupported reaching emit means an earlier pass couldn't model
+    # the construct.  Fail loudly rather than write a // TODO placeholder.
+    raise ConversionError(stmt.kind, note=stmt.note, source=stmt.source_text)
 
 
 # ---------------------------------------------------------------------------

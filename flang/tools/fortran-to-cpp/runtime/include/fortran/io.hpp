@@ -177,6 +177,12 @@ public:
     } else {
       mode = std::ios::in | std::ios::out;
     }
+    // A direct-access file is random read+write regardless of STATUS, so
+    // it must always be opened for both (an OLD file stays untruncated; a
+    // NEW/REPLACE one is truncated first).
+    if (iequals(access, "direct")) {
+      mode |= std::ios::in | std::ios::out;
+    }
     // Fortran CHARACTER variables are blank-padded to their declared length;
     // OPEN(FILE=...) trims trailing blanks before resolving the path.
     std::string path{trim_trailing_blanks(file)};
@@ -219,6 +225,27 @@ public:
       buf.pop_back();
     }
     return buf;
+  }
+
+  // ACCESS='DIRECT' record write — the inverse of read_record.  The
+  // formatted ``content`` is blank-padded (Fortran-style) or truncated to
+  // recl-1 chars, terminated with a newline (recl bytes total), and placed
+  // at record ``rec``'s slot so it round-trips with read_record's
+  // recl-byte stride.
+  void write_record(int unit, int rec, std::string content) {
+    auto &file = ensure(unit);
+    int recl{file.recl()};
+    auto &os = file.out();
+    if (recl <= 0) {
+      // Not a direct-access unit; degrade to a plain line write.
+      os << content << '\n';
+      return;
+    }
+    content.resize(static_cast<std::size_t>(recl - 1), ' ');
+    content.push_back('\n');
+    os.seekp(static_cast<std::streamoff>(recl) * (rec - 1));
+    os.write(content.data(), recl);
+    os.flush();
   }
 
   void close(int unit) { files_.erase(unit); }
