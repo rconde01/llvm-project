@@ -179,6 +179,25 @@ class DirectAccessEmitTests(unittest.TestCase):
             "fortran::io::take_bytes(_rrec, _roff, drec);", cpp
         )
 
+    def test_keyword_unit_form_lowers(self) -> None:
+        # ``READ(UNIT=lun, REC=r, ...) item`` -- SPICE's DAF subsystem
+        # uses this keyword form.  The positional-form short-cut would
+        # have missed the IoUnit because flang nests it inside an
+        # IoControlSpec; the lookup must find it either way.
+        src = """\
+      subroutine z
+      integer u, r
+      double precision rec(4)
+      read ( unit  =  u,
+     .       rec   =  r ) rec
+      write( unit  =  u,
+     .       rec   =  r ) rec
+      end
+"""
+        cpp = _convert(src)
+        self.assertIn("_units.read_record_raw(u, r)", cpp)
+        self.assertIn("_units.write_record_raw(u, r, _wrec);", cpp)
+
 
 @unittest.skipUnless(
     _have_flang() and _have_cxx(), "need flang and a C++20 compiler"

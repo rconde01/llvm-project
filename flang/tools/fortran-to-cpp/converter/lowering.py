@@ -3604,7 +3604,7 @@ def _lower_write(
             expr = sub.find_first("Expr")
             if expr is not None:
                 items.append(_lower_expression(expr))
-    io_unit = node.first_child("IoUnit")
+    io_unit = _find_io_unit(node)
     fmt_str = _extract_format(node)
     rec_expr = _extract_rec(node)
     if rec_expr is not None:
@@ -3645,7 +3645,7 @@ def _lower_read(
     """
     rec_expr = _extract_rec(node)
     fmt_str = _extract_format(node)
-    io_unit = node.first_child("IoUnit")
+    io_unit = _find_io_unit(node)
     if rec_expr is not None:
         unit_text = _unit_text(io_unit)
         if unit_text is None:
@@ -3691,6 +3691,21 @@ def _extract_rec(node: Node) -> IRExpr | None:
             e = spec.find_first("Expr")
             if e is not None:
                 return _lower_expression(e)
+    return None
+
+
+def _find_io_unit(node: Node) -> Node | None:
+    """Locate the IoUnit on a READ/WRITE.  The positional form puts it
+    as a direct child of the statement; the keyword form (``READ(UNIT =
+    LUN, ...)`` -- common in SPICE) buries it inside an
+    ``IoControlSpec``.  Find either."""
+    direct = node.first_child("IoUnit")
+    if direct is not None:
+        return direct
+    for spec in node.children_of_kind("IoControlSpec"):
+        nested = spec.first_child("IoUnit")
+        if nested is not None:
+            return nested
     return None
 
 
