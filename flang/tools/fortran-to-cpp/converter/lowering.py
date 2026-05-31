@@ -1946,33 +1946,24 @@ def _expand_data_implied_do(
     nesting), so ``((a(i,j),i=1,n),j=1,m)`` produces ``a(1,1)``,
     ``a(2,1)`` ... ``a(n,1)``, ``a(1,2)`` ... — the order DATA values are
     listed in source."""
-    # Collect nested loop bounds (outer-first).  Bounds are constant
-    # expressions; flang folds them, so the value lives in each bound
-    # ``Scalar``'s ``Expr.fortran`` (``"1_4"``, ``"4_4"`` — even when the
-    # source wrote a PARAMETER name like ``n``).  A third bound is the
-    # stride (``i=1,5,2``); absent, it defaults to 1.
-    loops: list[tuple[str, int, int, int]] = []
+    # Collect the loop nest, outer-first.  Bounds are kept as their AST
+    # ``Scalar`` nodes (not pre-folded) because an inner bound may name an
+    # *outer* loop variable -- the triangular form
+    # ``((C(N,M), M=0,N), N=1,K)`` where M runs 0..N.  Each bound is
+    # evaluated lazily against the current outer-variable environment.
+    loops: list[tuple[str, Node, Node, Node | None]] = []
     inner: Node = ido
     while True:
         lb = inner.first_child("LoopBounds")
         if lb is None:
             return None
         scalars = lb.children_of_kind("Scalar")
-        # First Scalar holds the loop variable Name; the rest are bounds.
+        # First Scalar holds the loop variable Name; then lo, hi[, step].
         var_node = scalars[0].find_first("Name") if scalars else None
-        bounds: list[int] = []
-        for sub in scalars[1:]:
-            bexpr = sub.find_first("Expr")
-            bval = _folded_int_text(bexpr.fortran if bexpr is not None else None)
-            if bval is None:
-                return None
-            bounds.append(bval)
-        if len(bounds) < 2 or var_node is None or not var_node.fortran:
+        if var_node is None or not var_node.fortran or len(scalars) < 3:
             return None
-        step = bounds[2] if len(bounds) >= 3 else 1
-        if step == 0:
-            return None
-        loops.append((var_node.fortran, bounds[0], bounds[1], step))
+        step_node = scalars[3] if len(scalars) >= 4 else None
+        loops.append((var_node.fortran, scalars[1], scalars[2], step_node))
         # Descend one level: the next DataImpliedDo is a child of this
         # one's DataIDoObject.
         do_obj = inner.first_child("DataIDoObject")
@@ -1980,7 +1971,24 @@ def _expand_data_implied_do(
         if nxt is None:
             break
         inner = nxt
-    loop_vars = {v: (lo, hi, st) for v, lo, hi, st in loops}
+    loop_var_names = {v for v, _, _, _ in loops}
+
+    def eval_bound(scalar: Node, env: dict[str, int]) -> int | None:
+        """Evaluate a loop-bound ``Scalar`` to an int: a folded constant, or
+        a bare reference to an enclosing loop variable (current value in
+        ``env``).  Returns None for anything else (forces the loud fallback)."""
+        expr = scalar.find_first("Expr")
+        txt = (expr.fortran or "").strip() if expr is not None else ""
+        c = _folded_int_text(txt)
+        if c is not None:
+            return c
+        m = re.fullmatch(
+            r"(?:__builtin_int\(\s*)?([A-Za-z_]\w*)(?:\s*,\s*kind=\d+\s*\))?",
+            txt,
+        )
+        if m is not None and m.group(1) in env:
+            return env[m.group(1)]
+        return None
 
     def parse_object(do_obj: Node) -> tuple[str, list[tuple[str, object]]] | None:
         """Parse one ``DataIDoObject`` array element into its name and the
@@ -2010,7 +2018,7 @@ def _expand_data_implied_do(
                 r"(?:__builtin_int\(\s*)?([A-Za-z_]\w*)(?:\s*,\s*kind=\d+\s*\))?",
                 txt,
             )
-            if m is not None and m.group(1) in loop_vars:
+            if m is not None and m.group(1) in loop_var_names:
                 subs.append(("var", m.group(1)))
                 continue
             return None
@@ -2018,8 +2026,7 @@ def _expand_data_implied_do(
 
     # The innermost implied-do may list several objects that share the loop
     # (``(NAMLST(I), LB(I), UB(I), I=1,N)``).  DATA values are interleaved
-    # one per object per iteration, so we round-robin across them in the
-    # order they appear.
+    # one per object per iteration, so we round-robin across them in order.
     objects: list[tuple[str, list[tuple[str, object]]]] = []
     for do_obj in inner.children_of_kind("DataIDoObject"):
         parsed = parse_object(do_obj)
@@ -2028,47 +2035,51 @@ def _expand_data_implied_do(
         objects.append(parsed)
     if not objects:
         return None
-    # The iteration order (which subscript advances fastest) comes from the
-    # first object; every object shares the same loop variables.
-    ordered_vars = [val for kind, val in objects[0][1] if kind == "var"]
-    if not ordered_vars:
-        return None
-    # Enumerate the index space innermost-first (the first *variable*
-    # subscript advances fastest — Fortran column-major); constant
-    # subscripts render at their fixed value.
+
+    # Enumerate the loop nest outer-to-inner (innermost varies fastest,
+    # matching the order DATA values are listed); the leaf body emits one
+    # assignment per object per iteration.
     out: list[tuple[IRStatement, int]] = []
-    cur: dict[str, int] = {v: loop_vars[v][0] for v in ordered_vars}
-    finished = False
-    while not finished:
-        for arr_name, subs in objects:
-            if start + len(out) >= len(values):
-                finished = True
-                break
-            idx_str = ", ".join(
-                str(val) if kind == "const" else str(cur[val])
-                for kind, val in subs
-            )
-            out.append((
-                IRAssignment(
-                    target=IRRaw(f"{arr_name}({idx_str})"),
-                    value=values[start + len(out)],
-                ),
-                1,
-            ))
-        if finished:
-            break
-        k = 0
-        while True:
-            v = ordered_vars[k]
-            lo, hi, st = loop_vars[v]
-            cur[v] += st
-            if (st > 0 and cur[v] <= hi) or (st < 0 and cur[v] >= hi):
-                break
-            cur[v] = lo
-            k += 1
-            if k >= len(ordered_vars):
-                finished = True
-                break
+    env: dict[str, int] = {}
+    failed = [False]
+
+    def recurse(li: int) -> None:
+        if failed[0]:
+            return
+        if li == len(loops):
+            for arr_name, subs in objects:
+                if start + len(out) >= len(values):
+                    return  # values exhausted -- stop emitting
+                idx_str = ", ".join(
+                    str(val) if kind == "const" else str(env[val])
+                    for kind, val in subs
+                )
+                out.append((
+                    IRAssignment(
+                        target=IRRaw(f"{arr_name}({idx_str})"),
+                        value=values[start + len(out)],
+                    ),
+                    1,
+                ))
+            return
+        var, lo_n, hi_n, step_n = loops[li]
+        lo = eval_bound(lo_n, env)
+        hi = eval_bound(hi_n, env)
+        st = eval_bound(step_n, env) if step_n is not None else 1
+        if lo is None or hi is None or st is None or st == 0:
+            failed[0] = True
+            return
+        i = lo
+        while (st > 0 and i <= hi) or (st < 0 and i >= hi):
+            env[var] = i
+            recurse(li + 1)
+            if failed[0]:
+                return
+            i += st
+
+    recurse(0)
+    if failed[0]:
+        return None
     return out
 
 

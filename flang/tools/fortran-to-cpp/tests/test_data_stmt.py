@@ -118,6 +118,20 @@ end program
 """
 
 
+# A triangular nested implied-do whose inner bound is the *outer* loop
+# variable: ``((c(n,m), m=0,n), n=1,3)`` (the IRI ``irifun`` pattern).
+# Iteration is n=1: m=0,1; n=2: m=0,1,2; n=3: m=0,1,2,3 -- 2+3+4 = 9
+# values, innermost (m) varying fastest.
+IDO_TRIANGULAR_F90 = """\
+program dt
+  integer :: c(3, 0:3)
+  data ((c(n, m), m = 0, n), n = 1, 3) &
+       /11, 12,  21, 22, 23,  31, 32, 33, 34/
+  print *, c(1,0), c(1,1), c(2,2), c(3,0), c(3,3)
+end program
+"""
+
+
 def _convert(src: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".f90", delete=False, encoding="utf-8"
@@ -180,6 +194,16 @@ class DataEmitTests(unittest.TestCase):
         self.assertIn("r(1) = 100;", cpp)
         self.assertIn("p(2) = 2;", cpp)
         self.assertIn("r(3) = 300;", cpp)
+
+    def test_implied_do_triangular_bound(self) -> None:
+        # Inner bound M=0..N references the outer loop variable N; values
+        # are laid out triangularly, innermost (M) fastest.
+        cpp = _convert(IDO_TRIANGULAR_F90)
+        self.assertIn("c(1, 0) = 11;", cpp)
+        self.assertIn("c(1, 1) = 12;", cpp)
+        self.assertIn("c(2, 2) = 23;", cpp)
+        self.assertIn("c(3, 0) = 31;", cpp)
+        self.assertIn("c(3, 3) = 34;", cpp)
 
     def test_single_array_element_objects(self) -> None:
         # ``data a(2) /7/`` and an element list must each emit one
@@ -284,6 +308,13 @@ class DataRunTests(unittest.TestCase):
         self.assertEqual(
             self._build_and_run(IDO_MULTI_OBJ_F90),
             ["1", "10", "100", "3", "30", "300"],
+        )
+
+    def test_implied_do_triangular_runs(self) -> None:
+        # c(1,0),c(1,1), c(2,*)..., c(3,0),c(3,3)
+        self.assertEqual(
+            self._build_and_run(IDO_TRIANGULAR_F90),
+            ["11", "12", "23", "31", "34"],
         )
 
 
