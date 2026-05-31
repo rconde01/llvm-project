@@ -49,6 +49,7 @@ from .ir import (
     IRPrint,
     IRRaw,
     IRDirectRead,
+    IRDirectWrite,
     IRRead,
     IRGoto,
     IRReturn,
@@ -234,6 +235,15 @@ def _map_statement_children(
                 (_e(tgt, on_expr), kind, off, width, dec)
                 for tgt, kind, off, width, dec in stmt.fields
             ],
+            leading_comments=stmt.leading_comments,
+            trailing_comments=stmt.trailing_comments,
+        )
+    if isinstance(stmt, IRDirectWrite):
+        return IRDirectWrite(
+            unit_text=stmt.unit_text,
+            rec=_e(stmt.rec, on_expr),
+            items=[_e(a, on_expr) for a in stmt.items],
+            format=stmt.format,
             leading_comments=stmt.leading_comments,
             trailing_comments=stmt.trailing_comments,
         )

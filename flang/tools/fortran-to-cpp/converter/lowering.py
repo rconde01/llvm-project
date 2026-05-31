@@ -27,7 +27,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import re
-from typing import Iterable, Literal
+from typing import Iterable, Literal, NoReturn
 
 from flang_ast import Comment, Node
 
@@ -65,6 +65,7 @@ from .ir import (
     IRDeallocate,
     IRDerivedType,
     IRDirectRead,
+    IRDirectWrite,
     IREntry,
     IRExit,
     IRGoto,
@@ -83,6 +84,7 @@ from .ir import (
     IRWhere,
     IRWhile,
 )
+from .errors import ConversionError
 from .structure import structure_gotos
 from .transform import map_expr, map_statement, rename_var
 from .types import camelcase, lower_type_spec
@@ -1821,17 +1823,15 @@ def _lower_data_statements(
                         vi += sum(c for _, c in assignments)
                         continue
                     # An implied-do shape we can't enumerate (e.g. a
-                    # computed subscript or a non-constant bound).  Surface
-                    # it as a TODO rather than silently leaving the array
-                    # zero — a silent drop here is exactly the class of bug
-                    # that produced wrong numerics before.
-                    out.append(_data_todo(obj))
-                    continue
+                    # computed subscript or a non-constant bound).  Fail
+                    # loudly rather than silently leave the array zero — a
+                    # silent drop is exactly the class of bug that produced
+                    # wrong numerics before.
+                    _data_todo(obj)  # raises ConversionError
                 var = obj.first_child("Variable")
                 expr = _lower_expression(var) if var is not None else None
                 if expr is None:
-                    out.append(_data_todo(obj))
-                    continue
+                    _data_todo(obj)  # raises ConversionError
                 if isinstance(expr, IRName) and expr.name in arrays:
                     # A whole-array object consumes the remaining values.
                     rest = values[vi:]
@@ -1852,15 +1852,14 @@ def _lower_data_statements(
     return out
 
 
-def _data_todo(obj: Node) -> IRUnsupported:
-    """A visible ``// TODO`` marker for a DATA object the converter can't
-    lower, so the gap surfaces in the output instead of silently leaving
-    the target uninitialized."""
+def _data_todo(obj: Node) -> NoReturn:
+    """A DATA object the converter can't lower.  Fail loudly rather than
+    silently leave the target at its default value."""
     src = obj.source.text if obj.source is not None else ""
-    return IRUnsupported(
-        kind="this DATA initializer",
-        source_text=src,
-        note="initializer dropped — the target keeps its default value",
+    raise ConversionError(
+        "this DATA initializer",
+        note="unsupported DATA object",
+        source=src,
     )
 
 
@@ -3014,8 +3013,8 @@ def _where_loop(
     return loop[0]
 
 
-def _unsupported_stmt(note: str) -> IRStatement:
-    return IRUnsupported(kind="WHERE", source_text="", note=note)
+def _unsupported_stmt(note: str) -> NoReturn:
+    raise ConversionError("WHERE", note=note)
 
 
 def _implied_do_fill_loop(
@@ -3346,11 +3345,13 @@ def _lower_io_implied_do(
     )
 
 
-def _lower_write(node: Node) -> IRPrint:
-    """Lower ``write(unit, fmt) items``.
+def _lower_write(node: Node) -> "IRPrint | IRDirectWrite":
+    """Lower ``write(unit, fmt[, REC=n]) items``.
 
     The unit selects the stream: ``*`` / ``6`` -> std::cout, ``0`` ->
-    std::cerr.  Other (file) units are a TODO; we default to cout.
+    std::cerr.  ``REC=`` makes it a direct-access record write (see
+    :class:`IRDirectWrite`); other (file) units write through the units
+    table.
     """
     items: list[IRExpr] = []
     for sub in node.children:
@@ -3359,12 +3360,34 @@ def _lower_write(node: Node) -> IRPrint:
             if expr is not None:
                 items.append(_lower_expression(expr))
     io_unit = node.first_child("IoUnit")
+    fmt_str = _extract_format(node)
+    rec_expr = _extract_rec(node)
+    if rec_expr is not None:
+        # Direct-access write.  Unformatted (no FORMAT) is raw binary
+        # records, which we don't model -- fail loudly rather than emit a
+        # sequential write that silently ignores REC=.
+        if fmt_str is None:
+            raise ConversionError(
+                "unformatted direct-access WRITE",
+                note="binary record I/O is not supported",
+                source=node.source.text if node.source else "",
+            )
+        unit_text = _unit_text(io_unit)
+        if unit_text is None:
+            raise ConversionError(
+                "direct-access WRITE",
+                note="unsupported unit for a REC= write",
+                source=node.source.text if node.source else "",
+            )
+        return IRDirectWrite(
+            unit_text=unit_text, rec=rec_expr, items=items, format=fmt_str
+        )
     internal = _internal_file_unit(io_unit)
     stream = _stream_for_unit(io_unit)
     return IRPrint(
         items=items,
         stream=stream,
-        format=_extract_format(node),
+        format=fmt_str,
         internal_unit=internal,
     )
 
@@ -3380,14 +3403,29 @@ def _lower_read(node: Node) -> "IRRead | IRDirectRead":
     rec_expr = _extract_rec(node)
     fmt_str = _extract_format(node)
     io_unit = node.first_child("IoUnit")
-    if rec_expr is not None and fmt_str is not None:
+    if rec_expr is not None:
+        # Direct-access read.  Unformatted (no FORMAT) means raw binary
+        # records, which we don't model — fail loudly rather than fall
+        # through to a list-directed read that silently ignores REC=.
+        if fmt_str is None:
+            raise ConversionError(
+                "unformatted direct-access READ",
+                note="binary record I/O is not supported",
+                source=node.source.text if node.source else "",
+            )
         unit_text = _unit_text(io_unit)
-        if unit_text is not None:
-            fields = _build_direct_read_fields(node, fmt_str)
-            if fields is not None:
-                return IRDirectRead(
-                    unit_text=unit_text, rec=rec_expr, fields=fields
-                )
+        fields = (
+            _build_direct_read_fields(node, fmt_str)
+            if unit_text is not None
+            else None
+        )
+        if fields is None:
+            raise ConversionError(
+                "direct-access READ",
+                note="unsupported unit or FORMAT for a REC= read",
+                source=node.source.text if node.source else "",
+            )
+        return IRDirectRead(unit_text=unit_text, rec=rec_expr, fields=fields)
     items = _lower_io_items(node, "InputItem", "InputImpliedDo")
     internal = _internal_file_unit(io_unit)
     stream = _input_stream_for_unit(io_unit)
@@ -4761,20 +4799,19 @@ def _drill(node: Node, *, skip: Iterable[str]) -> Node | None:
     return cur
 
 
-def _expr_raw(node: Node) -> IRRaw:
+def _expr_raw(node: Node) -> NoReturn:
+    """An expression node the converter doesn't model.  Fail loudly rather
+    than emit a ``/* TODO */`` placeholder that compiles to garbage."""
     src = node.source.text if node.source else node.kind
-    return IRRaw(text=f"/* TODO: {node.kind} */ {src}")
+    raise ConversionError(node.kind, note="unsupported expression", source=src)
 
 
 def _unsupported(
     node: Node, *, kind: str, leading: list[Comment] | None = None
-) -> IRUnsupported:
+) -> NoReturn:
+    """A statement / construct the converter doesn't model — fail loudly."""
     src = node.source.text if node.source else ""
-    return IRUnsupported(
-        kind=kind,
-        source_text=src,
-        leading_comments=leading or [],
-    )
+    raise ConversionError(kind, source=src)
 
 
 def _fortran_char_literal_body(raw: str) -> str:
