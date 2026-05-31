@@ -894,6 +894,333 @@ inline std::string fmt_int_no_sign(long long value, int w) {
 }
 
 // ---------------------------------------------------------------------------
+// Runtime FORMAT interpreter.
+//
+// Almost every FORMAT is constant and is lowered at translation time to
+// inline ``std::format`` / ``fmt_X`` calls.  A FORMAT that is *built at
+// run time* (e.g. SPICE's ``FMT='(F@W.@F)'`` with the width/decimals
+// filled in by REPMI) cannot be resolved then, so generated code routes
+// it here: ``format_record(fmt, items...)`` parses the format string at
+// run time and applies it to a list of type-erased items.  The interpreter
+// mirrors converter/format.py so its layout matches the compile-time path.
+// ---------------------------------------------------------------------------
+
+// One output item, type-erased so a single interpreter can format a mixed
+// list (an integer width, a real value, a character label, ...).
+struct FmtArg {
+  enum class Kind { Int, Real, Text, Logical };
+  Kind kind{Kind::Text};
+  long long i{0};
+  double r{0.0};
+  bool b{false};
+  std::string s;
+
+  double as_real() const {
+    switch (kind) {
+    case Kind::Int: return static_cast<double>(i);
+    case Kind::Real: return r;
+    case Kind::Logical: return b ? 1.0 : 0.0;
+    default: return 0.0;
+    }
+  }
+  long long as_int() const {
+    switch (kind) {
+    case Kind::Int: return i;
+    case Kind::Real: return static_cast<long long>(r);
+    case Kind::Logical: return b ? 1 : 0;
+    default: return 0;
+    }
+  }
+};
+
+template <class T> inline FmtArg make_fmt_arg(const T &v) {
+  FmtArg a;
+  if constexpr (std::is_same_v<std::remove_cv_t<T>, bool>) {
+    a.kind = FmtArg::Kind::Logical;
+    a.b = v;
+  } else if constexpr (std::is_integral_v<T>) {
+    a.kind = FmtArg::Kind::Int;
+    a.i = static_cast<long long>(v);
+  } else if constexpr (std::is_floating_point_v<T>) {
+    a.kind = FmtArg::Kind::Real;
+    a.r = static_cast<double>(v);
+  } else if constexpr (std::is_convertible_v<T, std::string_view>) {
+    a.kind = FmtArg::Kind::Text;
+    a.s = std::string(std::string_view(v));
+  } else {
+    // Last resort: anything else streamable becomes its numeric value.
+    a.kind = FmtArg::Kind::Real;
+    a.r = static_cast<double>(v);
+  }
+  return a;
+}
+
+namespace detail {
+
+// Split a format body on top-level commas, mirroring format.py's
+// _split_top_level: quotes, parenthesized groups, Hollerith (nH), and
+// ``/`` runs are kept intact.  Hollerith and quoted text become tokens
+// beginning with a single quote so apply-token routes them as literals.
+inline std::vector<std::string> fmt_split(std::string_view body) {
+  std::vector<std::string> parts;
+  std::string buf;
+  int depth = 0;
+  std::size_t i = 0, n = body.size();
+  auto flush_pending = [&] {
+    std::size_t a = 0, b = buf.size();
+    while (a < b && std::isspace((unsigned char)buf[a])) ++a;
+    while (b > a && std::isspace((unsigned char)buf[b - 1])) --b;
+    if (b > a) parts.emplace_back(buf.substr(a, b - a));
+    buf.clear();
+  };
+  while (i < n) {
+    char c = body[i];
+    if (std::isdigit((unsigned char)c) && depth == 0) {
+      std::size_t j = i;
+      while (j < n && std::isdigit((unsigned char)body[j])) ++j;
+      if (j < n && (body[j] == 'H' || body[j] == 'h')) {
+        int count = std::stoi(std::string(body.substr(i, j - i)));
+        std::size_t start = j + 1;
+        std::size_t end = std::min(start + count, n);
+        flush_pending();
+        std::string lit = "'";
+        for (std::size_t k = start; k < end; ++k) {
+          if (body[k] == '\'') lit += "''";
+          else lit += body[k];
+        }
+        lit += "'";
+        parts.push_back(lit);
+        i = end;
+        continue;
+      }
+    }
+    if (c == '\'' || c == '"') {
+      char q = c;
+      buf += c;
+      ++i;
+      while (i < n) {
+        buf += body[i];
+        if (body[i] == q) {
+          if (i + 1 < n && body[i + 1] == q) { buf += body[i + 1]; i += 2; continue; }
+          ++i;
+          break;
+        }
+        ++i;
+      }
+      continue;
+    }
+    if (c == '(') ++depth;
+    else if (c == ')') --depth;
+    if (c == ',' && depth == 0) { flush_pending(); ++i; continue; }
+    if (c == '/' && depth == 0) {
+      flush_pending();
+      std::string run;
+      while (i < n && body[i] == '/') { run += '/'; ++i; }
+      parts.push_back(run);
+      continue;
+    }
+    buf += c;
+    ++i;
+  }
+  flush_pending();
+  return parts;
+}
+
+struct FmtCursor {
+  const std::vector<FmtArg> &args;
+  std::size_t ai{0};
+  int scale{0};
+  std::string out;
+};
+
+inline void fmt_emit_data(FmtCursor &cur, char letter, int w, bool has_w,
+                          int d, bool has_d, std::optional<int> e) {
+  const FmtArg *arg = cur.ai < cur.args.size() ? &cur.args[cur.ai] : nullptr;
+  if (arg) ++cur.ai;
+  switch (letter) {
+  case 'I': {
+    long long v = arg ? arg->as_int() : 0;
+    cur.out += has_w ? std::format("{0:{1}d}", v, w) : std::format("{}", v);
+    break;
+  }
+  case 'F': {
+    double v = arg ? arg->as_real() : 0.0;
+    if (cur.scale)
+      cur.out += fmt_F_with_scale(v, cur.scale, w, has_d ? d : 0);
+    else if (has_w && has_d)
+      cur.out += std::format("{0:{1}.{2}f}", v, w, d);
+    else
+      cur.out += std::format("{}", v);
+    break;
+  }
+  case 'E':
+  case 'D': {
+    double v = arg ? arg->as_real() : 0.0;
+    int ww = has_w ? w : 15, dd = has_d ? d : 6;
+    if (cur.scale) cur.out += fmt_E_with_scale(v, cur.scale, ww, dd);
+    else cur.out += fmt_E(v, ww, dd, e);
+    break;
+  }
+  case 'G': {
+    double v = arg ? arg->as_real() : 0.0;
+    cur.out += fmt_G(v, has_w ? w : 15, has_d ? d : 6, e);
+    break;
+  }
+  case 'A': {
+    std::string s = arg ? (arg->kind == FmtArg::Kind::Text
+                               ? arg->s
+                               : std::format("{}", arg->as_real()))
+                        : std::string{};
+    cur.out += has_w ? std::format("{0:>{1}}", s, w) : s;
+    break;
+  }
+  case 'L': {
+    bool v = arg && arg->kind == FmtArg::Kind::Logical
+                 ? arg->b
+                 : (arg ? arg->as_int() != 0 : false);
+    cur.out += std::format("{0:>{1}}", v ? "T" : "F", has_w ? w : 1);
+    break;
+  }
+  default:
+    break;
+  }
+}
+
+inline void fmt_apply_body(std::string_view body, FmtCursor &cur);
+
+inline void fmt_apply_token(std::string_view tok, FmtCursor &cur) {
+  std::size_t a = 0, b = tok.size();
+  while (a < b && std::isspace((unsigned char)tok[a])) ++a;
+  while (b > a && std::isspace((unsigned char)tok[b - 1])) --b;
+  tok = tok.substr(a, b - a);
+  if (tok.empty()) return;
+
+  // Repeated / nested group: ``n(...)`` or ``(...)``.
+  {
+    std::size_t p = 0;
+    int rep = 0; bool has_rep = false;
+    while (p < tok.size() && std::isdigit((unsigned char)tok[p])) {
+      rep = rep * 10 + (tok[p] - '0'); has_rep = true; ++p;
+    }
+    if (p < tok.size() && tok[p] == '(' && tok.back() == ')') {
+      std::string_view inner = tok.substr(p + 1, tok.size() - p - 2);
+      int times = has_rep ? rep : 1;
+      for (int k = 0; k < times; ++k) fmt_apply_body(inner, cur);
+      return;
+    }
+  }
+  // Quoted literal.
+  if (tok.front() == '\'' || tok.front() == '"') {
+    char q = tok.front();
+    std::string inner;
+    for (std::size_t k = 1; k < tok.size(); ++k) {
+      if (tok[k] == q) {
+        if (k + 1 < tok.size() && tok[k + 1] == q) { inner += q; ++k; continue; }
+        break;
+      }
+      inner += tok[k];
+    }
+    cur.out += inner;
+    return;
+  }
+  // Slash run -> one newline each.
+  if (tok.front() == '/') {
+    for (char ch : tok) if (ch == '/') cur.out += '\n';
+    return;
+  }
+  // ``kP`` scale factor, possibly glued to a descriptor (``1PE12.2``).
+  {
+    std::size_t p = 0;
+    bool neg = false;
+    if (tok[p] == '+' || tok[p] == '-') { neg = tok[p] == '-'; ++p; }
+    std::size_t ds = p;
+    int val = 0;
+    while (p < tok.size() && std::isdigit((unsigned char)tok[p])) {
+      val = val * 10 + (tok[p] - '0'); ++p;
+    }
+    if (p > ds && p < tok.size() && (tok[p] == 'P' || tok[p] == 'p')) {
+      cur.scale = neg ? -val : val;
+      std::string_view rest = tok.substr(p + 1);
+      if (!rest.empty()) fmt_apply_token(rest, cur);
+      return;
+    }
+  }
+  // ``$`` non-advancing marker -- no field, no newline.
+  if (tok == "$") return;
+  // Descriptor: [repeat] letter [width] [.dec] [E exp].
+  std::size_t p = 0;
+  int repeat = 0; bool has_rep = false;
+  while (p < tok.size() && std::isdigit((unsigned char)tok[p])) {
+    repeat = repeat * 10 + (tok[p] - '0'); has_rep = true; ++p;
+  }
+  if (p >= tok.size() || !std::isalpha((unsigned char)tok[p])) return;
+  char letter = std::toupper((unsigned char)tok[p]);
+  ++p;
+  int width = 0; bool has_w = false;
+  while (p < tok.size() && std::isdigit((unsigned char)tok[p])) {
+    width = width * 10 + (tok[p] - '0'); has_w = true; ++p;
+  }
+  int dec = 0; bool has_d = false;
+  if (p < tok.size() && tok[p] == '.') {
+    ++p;
+    while (p < tok.size() && std::isdigit((unsigned char)tok[p])) {
+      dec = dec * 10 + (tok[p] - '0'); has_d = true; ++p;
+    }
+  }
+  std::optional<int> exp;
+  if (p < tok.size() && (tok[p] == 'E' || tok[p] == 'e')) {
+    ++p; int ev = 0; bool has_e = false;
+    while (p < tok.size() && std::isdigit((unsigned char)tok[p])) {
+      ev = ev * 10 + (tok[p] - '0'); has_e = true; ++p;
+    }
+    if (has_e) exp = ev;
+  }
+  if (letter == 'X') {
+    int count = has_rep ? repeat : 1;
+    cur.out.append(static_cast<std::size_t>(count > 0 ? count : 0), ' ');
+    return;
+  }
+  if (letter == 'I' || letter == 'F' || letter == 'E' || letter == 'D' ||
+      letter == 'G' || letter == 'A' || letter == 'L') {
+    int times = has_rep ? repeat : 1;
+    for (int k = 0; k < times; ++k)
+      fmt_emit_data(cur, letter, width, has_w, dec, has_d, exp);
+    return;
+  }
+  // Unknown descriptor: skip (the constant-format path raises on these at
+  // translation time; here we keep going so a partial format still runs).
+}
+
+inline void fmt_apply_body(std::string_view body, FmtCursor &cur) {
+  for (auto &tok : fmt_split(body)) fmt_apply_token(tok, cur);
+}
+
+} // namespace detail
+
+// Strip one layer of surrounding parentheses and interpret *fmt* against
+// *args*, returning the formatted record text.
+inline std::string vformat_record(std::string_view fmt,
+                                  const std::vector<FmtArg> &args) {
+  std::size_t a = 0, b = fmt.size();
+  while (a < b && std::isspace((unsigned char)fmt[a])) ++a;
+  while (b > a && std::isspace((unsigned char)fmt[b - 1])) --b;
+  fmt = fmt.substr(a, b - a);
+  if (!fmt.empty() && fmt.front() == '(' && fmt.back() == ')')
+    fmt = fmt.substr(1, fmt.size() - 2);
+  detail::FmtCursor cur{args};
+  detail::fmt_apply_body(fmt, cur);
+  return std::move(cur.out);
+}
+
+template <class... Ts>
+inline std::string format_record(std::string_view fmt, const Ts &...items) {
+  std::vector<FmtArg> args;
+  args.reserve(sizeof...(items));
+  (args.push_back(make_fmt_arg(items)), ...);
+  return vformat_record(fmt, args);
+}
+
+// ---------------------------------------------------------------------------
 // Formatted output of a whole array / section: one edit descriptor repeats
 // over every element, e.g. ``write(u, '(9e13.4)') a(1:9)``.  Each ``fmt_X``
 // gains an array overload that maps the scalar formatter over the elements

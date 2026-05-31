@@ -279,6 +279,12 @@ class IRPrint:
     items: list[IRExpr] = field(default_factory=list)
     stream: str = "std::cout"  # C++ stream expression
     format: str | None = None
+    # When set, the FORMAT is built at run time (e.g. ``WRITE(s, FMTVAR)``
+    # with FMTVAR assembled by REPMI).  The emitter routes items through
+    # ``fortran::io::format_record(<format_expr>, items...)`` -- a runtime
+    # format interpreter -- instead of inline ``std::format`` calls.
+    # Mutually exclusive with ``format``.
+    format_expr: "IRExpr | None" = None
     # When set, this is an *internal file* write: the formatted record is
     # built and assigned to this (character-variable) lvalue rather than
     # written to ``stream``.

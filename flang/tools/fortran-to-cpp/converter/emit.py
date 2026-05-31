@@ -622,7 +622,10 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         _emit_comment_block(out, stmt.leading_comments, indent=indent)
         out.write(f"{pad}{stmt.stream}")
         suppress_nl = False
-        if stmt.format is not None:
+        if stmt.format_expr is not None:
+            # Run-time FORMAT: interpret it against the items at run time.
+            out.write(f" << {_render_format_record(stmt)}")
+        elif stmt.format is not None:
             suppress_nl = _emit_formatted_chunks(out, stmt)
         else:
             # List-directed: separate items with a single space.
@@ -888,6 +891,12 @@ def _emit_internal_write(out: StringIO, stmt: "IRPrint", *, indent: int) -> None
     pad = "  " * indent
     _emit_comment_block(out, stmt.leading_comments, indent=indent)
     unit = _render_expr(stmt.internal_unit)
+    if stmt.format_expr is not None:
+        # Run-time FORMAT: build the record via the runtime interpreter and
+        # assign it directly (no intermediate ostringstream needed).
+        out.write(f"{pad}{unit} = {_render_format_record(stmt)};")
+        _emit_trailing(out, stmt.trailing_comments)
+        return
     out.write(f"{pad}{{\n")
     out.write(f"{pad}  std::ostringstream _ftn_os;\n")
     out.write(f"{pad}  _ftn_os")
@@ -902,6 +911,16 @@ def _emit_internal_write(out: StringIO, stmt: "IRPrint", *, indent: int) -> None
     out.write(f"{pad}  {unit} = _ftn_os.str();\n")
     out.write(f"{pad}}}")
     _emit_trailing(out, stmt.trailing_comments)
+
+
+def _render_format_record(stmt: "IRPrint") -> str:
+    """Render a ``fortran::io::format_record(fmt, items...)`` call for a
+    run-time (non-constant) FORMAT.  The first argument is the format
+    string expression; the rest are the output items, flattened."""
+    assert stmt.format_expr is not None
+    args = [_render_expr(stmt.format_expr)]
+    args.extend(_render_expr(it) for it in stmt.items)
+    return f"fortran::io::format_record({', '.join(args)})"
 
 
 def _emit_internal_read(out: StringIO, stmt: "IRRead", *, indent: int) -> None:

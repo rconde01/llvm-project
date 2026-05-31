@@ -211,6 +211,11 @@ def _map_statement_children(
             items=[_e(a, on_expr) for a in stmt.items],
             stream=stmt.stream,
             format=stmt.format,
+            format_expr=(
+                _e(stmt.format_expr, on_expr)
+                if stmt.format_expr is not None
+                else None
+            ),
             internal_unit=(
                 _e(stmt.internal_unit, on_expr)
                 if stmt.internal_unit is not None
