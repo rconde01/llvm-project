@@ -244,12 +244,22 @@ def _eval_constant_extent(text: str) -> int:
 def _common_elem_size(t: IRType) -> int:
     """Bytes-per-element for a Fortran scalar type, for COMMON layout.
 
+    The byte size is the *Fortran storage size* (so the byte-offset
+    layout aligns across declarations), not the C++ object size.
+    Notably, Fortran's default LOGICAL is 4 bytes -- a routine that
+    declares ``LOGICAL RZINO`` in a common block takes the same storage
+    slot as another's ``REAL RZINO`` even though the C++ types are
+    ``bool`` (1 byte) vs ``float`` (4 bytes).
+
     Defaults to 4 (Fortran default REAL/INTEGER) when the type isn't a
     known fixed-width spelling.  Character types are sized by the C++
     spelling's character count when feasible; otherwise 1."""
+    if t.is_logical:
+        return 4
     cpp = (t.element_type_cpp or t.cpp).strip()
     sizes = {
-        "bool": 1, "char": 1, "signed char": 1, "unsigned char": 1,
+        "bool": 4,  # Fortran LOGICAL kind 4 -- see comment above
+        "char": 1, "signed char": 1, "unsigned char": 1,
         "std::int8_t": 1, "std::uint8_t": 1,
         "std::int16_t": 2, "std::uint16_t": 2,
         "std::int32_t": 4, "std::uint32_t": 4,
