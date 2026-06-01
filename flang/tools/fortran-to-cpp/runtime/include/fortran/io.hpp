@@ -937,6 +937,30 @@ inline std::string skip(int n) {
 // "restore default" S are handled here.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// List-directed READ helpers.
+//
+// C++11's ``operator>>`` zeros the target on failure (e.g. non-numeric
+// input), whereas Fortran list-directed input on a ``/`` terminator (or
+// any input that ends the list early) leaves remaining items at their
+// **current values**.  ``read_list_item`` saves the destination, reads
+// through ``>>``, and restores the saved value if the read fails — so
+// Fortran's "keep current value on /" semantics survive C++11's zeroing.
+// Returns ``true`` on success so caller chains via ``&&`` to stop the
+// rest of the item list once one item fails.
+// ---------------------------------------------------------------------------
+
+template <class S, class T>
+inline bool read_list_item(S &stream, T &v) {
+  T save = v;
+  stream >> v;
+  if (stream.fail()) {
+    v = save;
+    return false;
+  }
+  return true;
+}
+
 inline std::string fmt_int_force_sign(long long value, int w) {
   return std::format("{0:+{1}d}", value, w);  // SP
 }

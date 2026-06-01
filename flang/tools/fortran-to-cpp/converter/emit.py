@@ -792,20 +792,22 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
             )
             _emit_trailing(out, stmt.trailing_comments)
             return
-        out.write(f"{pad}{stmt.stream}")
-        for item in stmt.items:
-            out.write(f" >> {_render_expr(item)}")
-        out.write(";")
-        # List-directed READ is record-based: once the items are filled,
-        # the rest of the current record is discarded so the next READ
-        # starts on a new line.  C++ stream extraction does not advance
-        # past trailing data on the line, so do that explicitly.  Clear
-        # the failbit too: Fortran's ``/`` terminator in list-directed
-        # input leaves remaining items at their current values rather
-        # than fatally failing the next READ -- ``>>`` sets failbit on a
-        # ``/`` (or on any non-numeric character), so we must recover so
-        # the next statement starts cleanly.  Preserve eofbit so a
-        # well-formed EOF still terminates END=-labelled loops.
+        # List-directed READ: route each item through ``read_list_item``
+        # so Fortran's "current value preserved on /" semantics survive
+        # C++11's "zero target on failure" behavior.  Short-circuit via
+        # ``&&`` so once one item fails (e.g. a ``/`` terminator), the
+        # remaining items keep their previous values rather than each
+        # consuming further input.
+        item_calls = " && ".join(
+            f"fortran::io::read_list_item({stmt.stream}, {_render_expr(item)})"
+            for item in stmt.items
+        )
+        if item_calls:
+            out.write(f"{pad}(void)({item_calls});")
+        # Once the items are filled (or terminated), advance to the next
+        # record so the next READ starts on a fresh line.  Clear the
+        # failbit too, but preserve eofbit so a well-formed EOF still
+        # trips ``END=``-labelled jumps.
         out.write(
             f"\n{pad}if ({stmt.stream}.fail() && !{stmt.stream}.eof()) "
             f"{stmt.stream}.clear();"

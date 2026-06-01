@@ -55,8 +55,11 @@ def _convert(src: str) -> str:
 class ReadStopEmitTests(unittest.TestCase):
     def test_read_uses_cin(self) -> None:
         cpp = _convert(READ_STOP_F90)
-        self.assertIn("std::cin >> n;", cpp)
-        self.assertIn("std::cin >> x;", cpp)
+        # List-directed READ routes through ``read_list_item`` so a
+        # Fortran ``/`` terminator preserves the destination's current
+        # value (C++11's ``>>`` zeros the target on failure).
+        self.assertIn("fortran::io::read_list_item(std::cin, n)", cpp)
+        self.assertIn("fortran::io::read_list_item(std::cin, x)", cpp)
 
     def test_bare_stop_exits_zero(self) -> None:
         cpp = _convert(READ_STOP_F90)

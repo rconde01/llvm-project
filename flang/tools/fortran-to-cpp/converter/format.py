@@ -251,23 +251,43 @@ def render_format(
     chunks: list[str] = []
     suppress_nl = False
     item_iter = iter(item_exprs)
+    # Track output within the current record: ``pending_blanks`` holds
+    # space chunks (``nX``) that haven't been followed by any data yet.
+    # Fortran only emits ``X`` blanks when followed by data in the same
+    # record -- ``1X/`` with no intervening data writes an empty record,
+    # not a single-space record.  We discard pending blanks at each
+    # record break.
+    pending_blanks: list[str] = []
+    record_has_data = False
+
+    def flush_blanks() -> None:
+        nonlocal pending_blanks
+        chunks.extend(pending_blanks)
+        pending_blanks = []
+
     for act in actions:
         if act.kind == "literal":
+            flush_blanks()
             chunks.append(_cpp_string_literal(act.text))
+            record_has_data = True
         elif act.kind == "space":
-            chunks.append(_cpp_string_literal(" " * act.count))
+            pending_blanks.append(_cpp_string_literal(" " * act.count))
         elif act.kind == "newline":
+            # Record break: drop pending blanks (they had nothing to
+            # position before).  Reset the record's data state.
+            pending_blanks = []
             chunks.append("'\\n'")
+            record_has_data = False
         elif act.kind == "suppress_nl":
             suppress_nl = True
         elif act.kind == "data":
             try:
                 item = next(item_iter)
             except StopIteration:
-                # More descriptors than items: stop (Fortran would
-                # terminate the record here).
                 break
+            flush_blanks()
             chunks.append(_render_data(act, item))
+            record_has_data = True
     return chunks, suppress_nl
 
 

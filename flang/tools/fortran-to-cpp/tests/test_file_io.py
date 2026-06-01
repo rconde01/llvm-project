@@ -108,6 +108,23 @@ c     to 7 + 6 = 13 items.  Cycling reads 5 records: 3+3+3+3+1.
 """
 
 
+# Fortran's ``/`` terminator in list-directed input ends the list early
+# and leaves remaining items at their **current** values.  C++11's
+# ``operator>>`` zeros the target on failure (since C++11), so the
+# converter routes through ``fortran::io::read_list_item`` which saves
+# the destination and restores it if ``>>`` fails.
+READ_SLASH_TERMINATOR_F = """\
+      program p
+      integer a, b, c
+      a = 10
+      b = 20
+      c = 30
+      read(*, *) a, b, c
+      write(*, *) a, b, c
+      end
+"""
+
+
 READ_END_LABEL_F = """\
       program p
       integer x, n, buf(10)
@@ -212,6 +229,33 @@ class FileIoRunTests(unittest.TestCase):
             parts = run.stdout.split()
             self.assertEqual(parts[0], "42")
             self.assertEqual(parts[1], "3.5")
+
+    def test_slash_terminator_preserves_current_values(self) -> None:
+        # ``read(*, *) a, b, c`` with input ``5 /`` reads a=5, leaves b
+        # and c at their previous values (10 and 30 from initialization).
+        with tempfile.TemporaryDirectory() as d:
+            cpp = Path(d) / "out.cpp"
+            cpp.write_text(_convert(READ_SLASH_TERMINATOR_F))
+            exe = Path(d) / "out"
+            cxx = (
+                shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+            )
+            assert cxx is not None
+            comp = subprocess.run(
+                [cxx, "-std=c++20", "-I", str(RUNTIME_INCLUDE),
+                 str(cpp), "-o", str(exe)],
+                capture_output=True, text=True, check=False,
+            )
+            if comp.returncode != 0:
+                self.fail(f"compile failed:\n{comp.stderr}\n{cpp.read_text()}")
+            run = subprocess.run(
+                [str(exe)], capture_output=True, text=True, check=False, cwd=d,
+                input="5 /\n",
+            )
+            self.assertEqual(run.returncode, 0, msg=run.stderr)
+            parts = run.stdout.split()
+            # a was read (5); b and c keep their initial values (20, 30).
+            self.assertEqual(parts, ["5", "20", "30"])
 
     def test_format_cycling_read_runs(self) -> None:
         # A FORMAT whose data-descriptor count is less than the item list
