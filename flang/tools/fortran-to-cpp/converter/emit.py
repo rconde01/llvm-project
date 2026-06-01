@@ -433,9 +433,20 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
     alias_bindings = [b for b in sub.state_bindings if not b.param]
     for b in param_bindings:
         if b.view is not None:
-            # Reshaped view of a shared COMMON field (storage association):
-            # an ArrayRef of this routine's own shape over the field bytes.
-            out.write(f"  auto {b.name} = {b.view};\n")
+            # Reshaped view of a shared COMMON field (storage association).
+            # Two flavours:
+            #   * ArrayRef<...>(field.data() + N, ...) -- an array sub-view;
+            #     ArrayRef has value semantics (cheap pointer + bounds), so
+            #     bind by value.
+            #   * field(N) -- a scalar reference to one canonical element
+            #     (the routine declares it as a scalar at a fixed byte
+            #     offset inside an array canonical, e.g. ``ST0`` at C1(1)).
+            #     Bind by reference so writes through the canonical (e.g.
+            #     RECALC updating C1) are visible to this routine's name.
+            if b.view.lstrip().startswith("fortran::ArrayRef<"):
+                out.write(f"  auto {b.name} = {b.view};\n")
+            else:
+                out.write(f"  auto& {b.name} = {b.view};\n")
         else:
             out.write(f"  auto& {b.name} = {b.param}.{b.field};\n")
 
