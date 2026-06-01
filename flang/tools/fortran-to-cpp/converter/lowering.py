@@ -1007,6 +1007,45 @@ def _lower_derived_type_def(node: Node) -> "IRDerivedType | None":
 # ---------------------------------------------------------------------------
 
 
+def _subprogram_leading_comments(node: Node, stmt_kind: str) -> list[Comment]:
+    """Pull a subprogram's header doc-comments from its parse tree.
+
+    Comments **above** a ``SUBROUTINE`` / ``FUNCTION`` / ``PROGRAM`` /
+    ``BLOCK DATA`` statement are attached by the annotator to the first
+    child ``Statement`` node (the one containing the *Stmt) since the
+    outer subprogram-subprogram node has no source range.  Comments
+    **below** the *Stmt and above the first declaration form the
+    routine's "header" doc-block (think of ``! Compute ...`` after
+    ``subroutine s()``); the annotator hangs those on the first
+    ``DeclarationConstruct``'s inner ``Statement`` node.  We
+    concatenate the two so the emitter writes them as one comment block
+    above the routine's C++ definition.
+    """
+    out: list[Comment] = []
+    out.extend(node.leading_comments)
+
+    # Comments above the *Stmt land on the Statement child that wraps it.
+    header_stmt: Node | None = None
+    for child in node.children:
+        if child.kind == "Statement" and child.first_child(stmt_kind) is not None:
+            header_stmt = child
+            out.extend(child.leading_comments)
+            break
+
+    # Comments between the *Stmt and the first decl land on the inner
+    # Statement of the first DeclarationConstruct in the SpecificationPart.
+    for child in node.children:
+        if child.kind != "SpecificationPart":
+            continue
+        for spec in child.children:
+            inner_stmt = spec.find_first("Statement") if spec is not None else None
+            if inner_stmt is not None and inner_stmt is not header_stmt:
+                out.extend(inner_stmt.leading_comments)
+                return out
+        break
+    return out
+
+
 def _lower_main_program(node: Node) -> IRSubprogram:
     """Lower a ``PROGRAM`` unit to an ``IRSubprogram`` with ``kind="main"``.
 
@@ -1027,7 +1066,7 @@ def _lower_main_program(node: Node) -> IRSubprogram:
         name=body_name,
         display_name=name,
         kind="main",
-        leading_comments=list(node.leading_comments),
+        leading_comments=_subprogram_leading_comments(node, "ProgramStmt"),
         source=node.source,
     )
     _lower_specification_and_execution(node, sub)
@@ -1047,7 +1086,7 @@ def _lower_function(node: Node) -> IRSubprogram:
         name=_safe_name(name),
         display_name=name,
         kind="function",
-        leading_comments=list(node.leading_comments),
+        leading_comments=_subprogram_leading_comments(node, "FunctionStmt"),
         source=node.source,
     )
 
@@ -1085,7 +1124,7 @@ def _lower_block_data(node: Node) -> IRSubprogram | None:
         name="block_data_init_" + _safe_name(name),
         display_name=name,
         kind="block_data",
-        leading_comments=list(node.leading_comments),
+        leading_comments=_subprogram_leading_comments(node, "BlockDataStmt"),
         source=node.source,
     )
     _lower_specification_and_execution(node, sub)
@@ -1108,7 +1147,7 @@ def _lower_subroutine(node: Node) -> IRSubprogram:
         name=_safe_name(name),
         display_name=name,
         kind="subroutine",
-        leading_comments=list(node.leading_comments),
+        leading_comments=_subprogram_leading_comments(node, "SubroutineStmt"),
         source=node.source,
     )
     dummy_arg_names = _extract_subroutine_dummy_args(node)
