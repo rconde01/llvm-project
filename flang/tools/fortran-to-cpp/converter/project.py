@@ -31,6 +31,7 @@ from .lowering import (
     _drop_external_function_locals,
     _infer_readonly_scalar_params,
     _materialize_value_args,
+    _prepend_block_data_calls_to_main,
     _reshape_sequence_associated_args,
     lower_program,
 )
@@ -114,6 +115,12 @@ def convert_files(
     # Dummy procedures need no signature inference: a procedure-taking
     # routine is emitted as a function template and each actual is wrapped in
     # a generic lambda, so the compiler deduces every callback type.
+    # Re-run the BLOCK DATA prelude insert now that all files' main
+    # programs and BLOCK DATA units are visible together: a per-file
+    # lower_program could only see its own file's BLOCK DATAs, but in
+    # the IRI configuration the main program lives in iritest.f while
+    # GTD7BK lives in cira.f -- the single-file pass missed the call.
+    _prepend_block_data_calls_to_main(combined)
     plumb_state(combined)
 
     results: dict[Path, str] = {
