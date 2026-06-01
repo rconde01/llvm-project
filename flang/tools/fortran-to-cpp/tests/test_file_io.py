@@ -82,6 +82,32 @@ c     come out as "-99257.0").  A naive ``stream >> v`` would misparse it.
 """
 
 
+# A FORMAT whose data-descriptor count is less than the item list cycles
+# to a new record per cycle (MSIS-86 reads its 1464-element coefficient
+# table with ``FORMAT(1X,5E13.6)`` over 293 lines).  The converter must
+# emit one ``std::getline`` per format cycle instead of giving up and
+# falling back to ``>>``.
+READ_FORMAT_CYCLING_F = """\
+      program p
+      real a(7), b(2,3)
+      open(13, file='cycle.dat', status='replace')
+      write(13, '(3F8.2)') 1.0, 2.0, 3.0
+      write(13, '(3F8.2)') 4.0, 5.0, 6.0
+      write(13, '(3F8.2)') 7.0, 11.0, 21.0
+      write(13, '(3F8.2)') 12.0, 22.0, 13.0
+      write(13, '(3F8.2)') 23.0, 0.0, 0.0
+      close(13)
+
+c     The FORMAT below has 3 data descriptors but the item list expands
+c     to 7 + 6 = 13 items.  Cycling reads 5 records: 3+3+3+3+1.
+      open(13, file='cycle.dat', status='old')
+      read(13, '(3F8.2)') a, b
+      close(13)
+      write(*, *) a(1), a(7), b(1,1), b(2,3)
+      end
+"""
+
+
 READ_END_LABEL_F = """\
       program p
       integer x, n, buf(10)
@@ -186,6 +212,36 @@ class FileIoRunTests(unittest.TestCase):
             parts = run.stdout.split()
             self.assertEqual(parts[0], "42")
             self.assertEqual(parts[1], "3.5")
+
+    def test_format_cycling_read_runs(self) -> None:
+        # A FORMAT whose data-descriptor count is less than the item list
+        # cycles to a new record per cycle.  Without cycling support the
+        # converter falls back to ``>>`` and reads garbage.
+        with tempfile.TemporaryDirectory() as d:
+            cpp = Path(d) / "out.cpp"
+            cpp.write_text(_convert(READ_FORMAT_CYCLING_F))
+            exe = Path(d) / "out"
+            cxx = (
+                shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+            )
+            assert cxx is not None
+            comp = subprocess.run(
+                [cxx, "-std=c++20", "-I", str(RUNTIME_INCLUDE),
+                 str(cpp), "-o", str(exe)],
+                capture_output=True, text=True, check=False,
+            )
+            if comp.returncode != 0:
+                self.fail(f"compile failed:\n{comp.stderr}\n{cpp.read_text()}")
+            run = subprocess.run(
+                [str(exe)], capture_output=True, text=True, check=False, cwd=d
+            )
+            self.assertEqual(run.returncode, 0, msg=run.stderr)
+            parts = run.stdout.split()
+            # a(1)=1.0, a(7)=7.0, b(1,1)=11.0 (8th item), b(2,3)=23.0 (13th)
+            self.assertAlmostEqual(float(parts[0]), 1.0)
+            self.assertAlmostEqual(float(parts[1]), 7.0)
+            self.assertAlmostEqual(float(parts[2]), 11.0)
+            self.assertAlmostEqual(float(parts[3]), 23.0)
 
     def test_formatted_fixed_width_read_runs(self) -> None:
         # Round-trip: write a column-packed record via FORMAT, then read

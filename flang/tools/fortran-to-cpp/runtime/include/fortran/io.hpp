@@ -87,7 +87,9 @@ protected:
       return c;
     }
     ch_ = static_cast<char>(c);
-    if (ch_ == ',' || ch_ == '/' || ch_ == '\t') {
+    if (ch_ == ',' || ch_ == '\t') {
+      // Comma and tab: Fortran list-directed input treats them as
+      // field separators (equivalent to whitespace).
       ch_ = ' ';
     } else if (ch_ == 'D' || ch_ == 'd') {
       // Fortran double-precision exponent: ``2.71319D+02`` for 271.319.

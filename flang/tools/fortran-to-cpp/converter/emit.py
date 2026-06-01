@@ -799,14 +799,21 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         # List-directed READ is record-based: once the items are filled,
         # the rest of the current record is discarded so the next READ
         # starts on a new line.  C++ stream extraction does not advance
-        # past trailing data on the line, so do that explicitly.  Skip
-        # this for ``std::cin`` (interactive input has no useful trailing
-        # data and tests sometimes pipe items lazily across lines).
-        if stmt.stream != "std::cin":
-            out.write(
-                f"\n{pad}{stmt.stream}.ignore("
-                f"std::numeric_limits<std::streamsize>::max(), '\\n');"
-            )
+        # past trailing data on the line, so do that explicitly.  Clear
+        # the failbit too: Fortran's ``/`` terminator in list-directed
+        # input leaves remaining items at their current values rather
+        # than fatally failing the next READ -- ``>>`` sets failbit on a
+        # ``/`` (or on any non-numeric character), so we must recover so
+        # the next statement starts cleanly.  Preserve eofbit so a
+        # well-formed EOF still terminates END=-labelled loops.
+        out.write(
+            f"\n{pad}if ({stmt.stream}.fail() && !{stmt.stream}.eof()) "
+            f"{stmt.stream}.clear();"
+        )
+        out.write(
+            f"\n{pad}{stmt.stream}.ignore("
+            f"std::numeric_limits<std::streamsize>::max(), '\\n');"
+        )
         _emit_trailing(out, stmt.trailing_comments)
         return
     if isinstance(stmt, IRStop):
