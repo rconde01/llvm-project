@@ -84,6 +84,28 @@ end program
 """
 
 
+# Fortran ``BLOCK DATA`` -- a load-time initializer for COMMON blocks.
+# Lowers to a synthetic ``block_data_init_<name>`` routine; main calls
+# it before the body runs.  Supports the same-layout case (BLOCK DATA
+# and routines declare matching variables at matching positions); the
+# multi-layout case (e.g. NRLMSISE's PT1/PT2/PT3 overlaying canonical
+# PT) needs byte-offset COMMON modeling and is a known gap.
+BLOCK_DATA_F77 = """\
+      block data myinit
+      common /c/ alpha, beta, n
+      real alpha, beta
+      integer n
+      data alpha/3.14/, beta/2.71/, n/42/
+      end
+      program p
+      common /c/ alpha, beta, n
+      real alpha, beta
+      integer n
+      print *, alpha, beta, n
+      end
+"""
+
+
 # The same COMMON block declared with different layouts in two routines,
 # where a name (K, IY) appears at *different positions* (IRI's igrf
 # ``/C1/`` pattern).  Each position is distinct storage, so the merged
@@ -197,6 +219,13 @@ class StateEmitTests(unittest.TestCase):
             cpp,
         )
 
+    def test_block_data_emits_init_routine(self) -> None:
+        # BLOCK DATA myinit -> ``block_data_init_myinit(c_common)``; main
+        # calls it before its own body so the COMMON struct is initialized.
+        cpp = self._convert(BLOCK_DATA_F77)
+        self.assertIn("void block_data_init_myinit(CCommon& c_common)", cpp)
+        self.assertIn("block_data_init_myinit(c_common);", cpp)
+
     def test_common_repeated_name_at_two_offsets_disambiguated(self) -> None:
         # K/IY at different positions in the two layouts must not produce
         # duplicate struct members; the second occurrence is renamed and
@@ -260,6 +289,14 @@ class StateRunTests(unittest.TestCase):
             self._run(COMMON_RESHAPE_F90).split(),
             ["1.5", "2.5", "3.5", "6.5"],
         )
+
+    def test_block_data_runs(self) -> None:
+        # The BLOCK DATA-initialized COMMON values reach the main body
+        # before any executable statement (loaded by the synthetic init).
+        out = self._run(BLOCK_DATA_F77).split()
+        self.assertAlmostEqual(float(out[0]), 3.14, places=2)
+        self.assertAlmostEqual(float(out[1]), 2.71, places=2)
+        self.assertEqual(out[2], "42")
 
     def test_common_repeated_name_runs(self) -> None:
         # With the duplicate member disambiguated, the program builds; K/IY
