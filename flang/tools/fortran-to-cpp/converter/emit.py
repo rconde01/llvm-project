@@ -652,11 +652,17 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
                         trailing_comments=stmt.trailing_comments,
                     )
                 else:
-                    raise ConversionError(
-                        "WRITE with FORMAT",
-                        note="implied-do bounds are not compile-time constants",
-                        source="",
+                    # Implied-do bounds aren't compile-time constants:
+                    # route through the runtime format interpreter, which
+                    # cycles the format string over a runtime-built
+                    # ``std::vector<FmtArg>`` so each item gets the right
+                    # descriptor regardless of when the loop's count is
+                    # known.  ``vformat_record`` then renders the cycled
+                    # record into the output stream.
+                    _emit_runtime_formatted_implied_do(
+                        out, stmt, indent=indent
                     )
+                    return
             else:
                 _emit_io_with_implied_do(out, stmt, write=True, indent=indent)
                 return
@@ -1119,6 +1125,61 @@ def _emit_unformatted_item(
             f"{pad}fortran::io::append_bytes({rec_var}, "
             f"{_render_expr(item)});\n"
         )
+
+
+def _emit_runtime_formatted_implied_do(
+    out: StringIO, stmt: "IRPrint", *, indent: int
+) -> None:
+    """Emit a formatted WRITE with runtime-bounded implied-do items via
+    the runtime format interpreter.  Builds a ``std::vector<FmtArg>``
+    at run time (scalars push one arg, implied-do items push one per
+    iteration), then routes through ``vformat_record(fmt, args)`` which
+    cycles the format over the args.
+    """
+    pad = "  " * indent
+    _emit_comment_block(out, stmt.leading_comments, indent=indent)
+    out.write(f"{pad}{{\n")
+    out.write(f"{pad}  std::vector<fortran::io::FmtArg> _args;\n")
+
+    def push_item(item, ind: int) -> None:
+        ipad = "  " * ind
+        if isinstance(item, IRImpliedDo):
+            var = item.var
+            lo = _render_expr(item.lower)
+            hi = _render_expr(item.upper)
+            step = _render_expr(item.step) if item.step is not None else "1"
+            cond = (
+                f"{var} <= {hi}" if step == "1"
+                else f"({step} >= 0 ? {var} <= {hi} : {var} >= {hi})"
+            )
+            incr = f"++{var}" if step == "1" else f"{var} += {step}"
+            out.write(
+                f"{ipad}for (fortran::index_t {var} = {lo}; "
+                f"{cond}; {incr}) {{\n"
+            )
+            for sub in item.items:
+                push_item(sub, ind + 1)
+            out.write(f"{ipad}}}\n")
+        else:
+            rendered = _render_expr(item)
+            out.write(
+                f"{ipad}_args.push_back("
+                f"fortran::io::make_fmt_arg({rendered}));\n"
+            )
+
+    for it in stmt.items:
+        push_item(it, indent + 1)
+    if stmt.format_expr is not None:
+        fmt_expr = _render_expr(stmt.format_expr)
+    else:
+        from .format import _cpp_string_literal as _csl
+        fmt_expr = _csl(stmt.format)
+    out.write(
+        f"{pad}  {stmt.stream} << "
+        f"fortran::io::vformat_record({fmt_expr}, _args) << '\\n';\n"
+    )
+    out.write(f"{pad}}}")
+    _emit_trailing(out, stmt.trailing_comments)
 
 
 def _emit_io_with_implied_do(out, stmt, *, write: bool, indent: int) -> None:
