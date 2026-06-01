@@ -739,6 +739,9 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         if stmt.internal_unit is not None:
             _emit_internal_read(out, stmt, indent=indent)
             return
+        if stmt.fields is not None and stmt.unit_text is not None:
+            _emit_formatted_sequential_read(out, stmt, indent=indent)
+            return
         if any(isinstance(it, IRImpliedDo) for it in stmt.items):
             _emit_io_with_implied_do(out, stmt, write=False, indent=indent)
             return
@@ -926,6 +929,44 @@ def _render_format_record(stmt: "IRPrint") -> str:
     args = [_render_expr(stmt.format_expr)]
     args.extend(_render_expr(it) for it in stmt.items)
     return f"fortran::io::format_record({', '.join(args)})"
+
+
+def _emit_formatted_sequential_read(
+    out: StringIO, stmt: "IRRead", *, indent: int
+) -> None:
+    """Sequential ``READ(unit, fmt)`` with a fixed-width FORMAT (e.g.
+    ``FORMAT(3I3,9I3,I3,3F5.1)``).  Reads one record via ``getline`` and
+    slices each item by its pre-resolved offset/width using the existing
+    ``read_field_int`` / ``read_field_real`` helpers -- matching Fortran's
+    column-positional semantics instead of the ``>>`` chain's
+    space-tokenizing.
+
+    ``stmt.fields`` was populated at lowering time; if it is set the unit
+    is a real file unit (not stdin) and the record-read fits one line.
+    Multi-record format cycling is left to a future refinement (none of
+    the current corpora's formatted-sequential reads hit it)."""
+    assert stmt.fields is not None and stmt.unit_text is not None
+    pad = "  " * indent
+    _emit_comment_block(out, stmt.leading_comments, indent=indent)
+    out.write(f"{pad}{{\n")
+    out.write(
+        f"{pad}  std::string _rec;\n"
+        f"{pad}  std::getline(_units.in({stmt.unit_text}), _rec);\n"
+    )
+    for target, kind, off, width, dec in stmt.fields:
+        tgt = _render_expr(target)
+        if kind == "int":
+            out.write(
+                f"{pad}  {tgt} = static_cast<std::int32_t>("
+                f"fortran::io::read_field_int(_rec, {off}, {width}));\n"
+            )
+        else:
+            out.write(
+                f"{pad}  {tgt} = static_cast<float>("
+                f"fortran::io::read_field_real(_rec, {off}, {width}, {dec}));\n"
+            )
+    out.write(f"{pad}}}")
+    _emit_trailing(out, stmt.trailing_comments)
 
 
 def _emit_internal_read(out: StringIO, stmt: "IRRead", *, indent: int) -> None:

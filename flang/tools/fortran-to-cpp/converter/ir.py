@@ -306,6 +306,19 @@ class IRRead:
     # When set, this is an *internal file* read: items are parsed from
     # this (character-variable) lvalue rather than from ``stream``.
     internal_unit: "IRExpr | None" = None
+    # ``unit_text``: the unit number (or ``*``/``"*"``) for a unit-directed
+    # read.  Filled when emitting fixed-width formatted reads so we can
+    # call ``_units.in(<unit>)`` rather than reach into ``stream`` text.
+    unit_text: str | None = None
+    # Fixed-width formatted read: pre-resolved field slices.  Each entry
+    # is ``(target, kind, off, width, dec)`` where ``kind`` is ``"int"`` or
+    # ``"real"``.  Set by lowering when a sequential ``READ(unit, fmt)``
+    # has a compile-time format spec that maps to fixed-width columns; the
+    # emitter reads one record (``getline``) and slices fields by offset
+    # rather than the list-directed ``>>`` chain (which space-tokenizes
+    # and ignores column widths, producing wrong values for files like
+    # SPICE/IRI's ``apf107.dat``).
+    fields: "list[tuple[IRExpr, str, int, int, int]] | None" = None
     # Fortran ``END=label`` -- jump to label on end-of-file.  Captured by
     # lowering; expanded into a synthetic IRIf+IRGoto by
     # ``_expand_io_label_jumps`` before the structuring pass, so the
