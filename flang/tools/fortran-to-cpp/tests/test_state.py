@@ -227,15 +227,20 @@ class StateEmitTests(unittest.TestCase):
         self.assertIn("block_data_init_myinit(c_common);", cpp)
 
     def test_common_repeated_name_at_two_offsets_disambiguated(self) -> None:
-        # K/IY at different positions in the two layouts must not produce
-        # duplicate struct members; the second occurrence is renamed and
-        # routine ``two`` binds its K to that distinct field.
+        # K/IY at different byte offsets in the two layouts.  Byte-offset
+        # COMMON modeling picks the longer layout (``two``'s p,q,r,s,t,k,iy)
+        # as canonical and binds ``one``'s shorter list (p,q,k,iy) to the
+        # canonical fields that occupy those byte offsets: ``one``'s k
+        # binds to canonical ``r`` (offset 8) and its iy to ``s`` (offset
+        # 12), while ``two``'s k and iy bind to the canonical ``k`` /
+        # ``iy`` at offsets 20/24.
         cpp = self._convert(COMMON_ALIAS_F90)
         self.assertIn("struct C1Common {", cpp)
-        # Exactly one member literally named ``k`` (``std::int32_t k{};``);
-        # the second-offset occurrence is disambiguated (``k__p*``).
+        # No disambiguated field needed -- each offset has one canonical name.
         self.assertEqual(cpp.count("std::int32_t k{};"), 1)
-        self.assertIn("k__p", cpp)
+        # one()'s "k" and "iy" land on canonical "r" and "s" (same offsets).
+        self.assertIn("auto& k = c1_common.r;", cpp)
+        self.assertIn("auto& iy = c1_common.s;", cpp)
 
 
 @unittest.skipUnless(

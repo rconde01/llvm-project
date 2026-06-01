@@ -226,70 +226,151 @@ def _build_module_structs(tu: IRTranslationUnit) -> None:
 # ---------------------------------------------------------------------------
 
 
+_EXTENT_LITERAL_RE = re.compile(r"^[\s\d\+\-\*\(\)]+$")
+
+
+def _eval_constant_extent(text: str) -> int:
+    """Parse a small constant-arithmetic extent expression to an int.
+
+    Restricted to digits and ``+ - * ( )`` so a malformed extent can't
+    execute arbitrary code through eval.  Raises ``ValueError`` for
+    anything else."""
+    text = text.strip()
+    if not _EXTENT_LITERAL_RE.match(text):
+        raise ValueError(f"non-constant extent: {text!r}")
+    return int(eval(text, {"__builtins__": {}}, {}))
+
+
+def _common_elem_size(t: IRType) -> int:
+    """Bytes-per-element for a Fortran scalar type, for COMMON layout.
+
+    Defaults to 4 (Fortran default REAL/INTEGER) when the type isn't a
+    known fixed-width spelling.  Character types are sized by the C++
+    spelling's character count when feasible; otherwise 1."""
+    cpp = (t.element_type_cpp or t.cpp).strip()
+    sizes = {
+        "bool": 1, "char": 1, "signed char": 1, "unsigned char": 1,
+        "std::int8_t": 1, "std::uint8_t": 1,
+        "std::int16_t": 2, "std::uint16_t": 2,
+        "std::int32_t": 4, "std::uint32_t": 4,
+        "std::int64_t": 8, "std::uint64_t": 8,
+        "float": 4, "double": 8, "long double": 16,
+    }
+    if cpp in sizes:
+        return sizes[cpp]
+    if cpp.startswith("fortran::FortranString<"):
+        try:
+            n = int(cpp[cpp.index("<") + 1 : cpp.rindex(">")])
+            return n
+        except ValueError:
+            return 1
+    return 4
+
+
+def _common_member_byte_size(t: IRType | None) -> int | None:
+    """Total byte size of a COMMON member's type: ``elem_size *
+    product(extents)``.  Returns ``None`` for unknown shape (deferred
+    or assumed).  Extents are usually plain integers, occasionally
+    simple arithmetic (``"(23) - (0) + 1"`` for ``A(0:23)``)."""
+    if t is None:
+        return None
+    elem = _common_elem_size(t)
+    if not t.is_array:
+        return elem
+    if not t.array_extent_exprs or not t.array_static:
+        return None
+    try:
+        n = 1
+        for e in t.array_extent_exprs:
+            n *= _eval_constant_extent(e)
+        return elem * n
+    except (ValueError, TypeError, SyntaxError):
+        return None
+
+
 def _build_common_structs(tu: IRTranslationUnit) -> None:
     """A common block is shared storage declared (re-)independently in
-    each routine that uses it.  Fortran COMMON members are *positional*:
-    one routine's ``common /c/ umr`` and another's ``common /c/ dtr``
-    name the same first-slot storage, and a routine that lists more
-    members extends the layout with later slots.  We model the block by
-    its positional layout — the longest member list wins on length, and
-    each position takes the first declared name we see as its canonical
-    spelling.  A routine that uses an alternate name for a slot binds it
-    via ``auto& <its-name> = c.<canonical>;`` so reads/writes all hit the
-    same field.  Crucially, a routine binds (and has dropped from its
-    locals) only the slots *it itself* declared — never the whole union
-    — so a routine that never put a slot in the block keeps its own
-    local of that name instead of having it shadowed."""
-    # Per block: list of (canonical-name, IRType) at each position.
-    block_slots: dict[str, list[tuple[str, IRType | None]]] = {}
-    # Per (sub index, block): list of (local-name, position) the routine
-    # itself put in the block.
-    own: dict[int, dict[str, list[tuple[str, int]]]] = {}
+    each routine that uses it.  Fortran COMMON members are positional in
+    *byte storage*: one routine's ``common /c/ pt`` and another's
+    ``common /c/ pt1, pt2, pt3`` over the same block describe the same
+    bytes partitioned differently.  We track byte offsets rather than
+    declaration position so a finer-grained user (e.g. IRI NRLMSISE-00's
+    BLOCK DATA, which declares ``PT1(50)/PT2(50)/PT3(50)`` overlaying
+    canonical ``PT(150)``) can bind each variable to a *sub-view* of the
+    canonical field that contains it.
+
+    The canonical layout is the one covering the largest total byte
+    span, ties broken by COARSER (fewest members) — so the canonical
+    fits every other routine's storage, and a finer-grained user's
+    variable doesn't span multiple canonical fields."""
+    # Per (sub index, block_name): list of (name, byte-offset, byte-size,
+    # IRType) -- the layout this routine declared for this block.
+    per_use_layout: dict[
+        tuple[int, str],
+        list[tuple[str, int, int | None, IRType | None]],
+    ] = {}
     for idx, sub in enumerate(tu.subprograms):
         local_types = {loc.name: loc.type for loc in sub.locals}
         for use in sub.common_uses:
-            slots = block_slots.setdefault(use.block_name, [])
-            mine = own.setdefault(idx, {}).setdefault(use.block_name, [])
-            for pos, m in enumerate(use.member_names):
+            layout: list[tuple[str, int, int | None, IRType | None]] = []
+            off = 0
+            for m in use.member_names:
                 lt = local_types.get(m)
-                mine.append((m, pos, lt))
-                if pos >= len(slots):
-                    slots.append((m, lt))
-                else:
-                    canon, canon_t = slots[pos]
-                    # Upgrade the slot's type when this routine's
-                    # declaration is more specific (CHARACTER over
-                    # implicit-typed real/integer).
-                    if lt is not None and (
-                        canon_t is None
-                        or (lt.is_character and not canon_t.is_character)
-                    ):
-                        slots[pos] = (canon, lt)
-    if not block_slots:
+                sz = _common_member_byte_size(lt)
+                layout.append((m, off, sz, lt))
+                if sz is None:
+                    break
+                off += sz
+            per_use_layout[(idx, use.block_name)] = layout
+
+    if not per_use_layout:
         return
 
+    # Pick a canonical layout per block: largest total bytes (so every
+    # other layout's storage fits), ties broken by COARSER (fewest
+    # members).  A coarser canonical lets a finer-grained user map each
+    # variable to a sub-view of the canonical field that contains it.
+    canonicals: dict[str, list[tuple[str, int, int | None, IRType | None]]] = {}
+    for (idx, block_name), layout in per_use_layout.items():
+        current = canonicals.get(block_name)
+        layout_sized = layout and all(sz is not None for _, _, sz, _ in layout)
+        current_sized = (
+            current is not None and current
+            and all(sz is not None for _, _, sz, _ in current)
+        )
+        layout_total = (
+            sum(sz for _, _, sz, _ in layout if sz is not None)
+            if layout_sized else 0
+        )
+        current_total = (
+            sum(sz for _, _, sz, _ in current if sz is not None)
+            if current_sized else 0
+        )
+        if current is None:
+            canonicals[block_name] = layout
+        elif layout_sized and not current_sized:
+            canonicals[block_name] = layout
+        elif layout_sized and current_sized:
+            if layout_total > current_total or (
+                layout_total == current_total and len(layout) < len(current)
+            ):
+                canonicals[block_name] = layout
+
     struct_for_block: dict[str, IRStateStruct] = {}
-    # Per block: canonical-name list, indexable by position.
-    canon_for_block: dict[str, list[str]] = {}
-    # Per block: canonical IRType per position (for shape/type comparison).
-    canon_type_for_block: dict[str, list[IRType | None]] = {}
-    for block_name, slots in block_slots.items():
-        # The same source name can legitimately land at two *different*
-        # positions when routines declare the block with different layouts
-        # (IRI's ``/C1/`` lists ``...,K,IY,BB`` in one routine and
-        # ``...,K,IY,BA`` far later in another -- distinct storage at
-        # distinct offsets that happen to reuse the names K/IY).  Each
-        # position is its own field, so disambiguate a repeated name rather
-        # than emit a duplicate struct member; the per-routine binding uses
-        # the position's unique name, so each routine still reaches the slot
-        # it declared.
+    # Per block: canonical layout list of (name, off, sz, type).
+    canon_layout_for_block: dict[
+        str, list[tuple[str, int, int | None, IRType | None]]
+    ] = {}
+    for block_name, slots in canonicals.items():
         used: set[str] = set()
-        canon_names: list[str] = []
         fields: list[IRLocal] = []
-        for pos, (canon, t) in enumerate(slots):
+        canon_layout: list[tuple[str, int, int | None, IRType | None]] = []
+        for pos, (canon, off, sz, t) in enumerate(slots):
+            # The same source name can land at two distinct offsets when
+            # other declarations diverge -- disambiguate by position.
             name = canon if canon not in used else f"{canon}__p{pos}"
             used.add(name)
-            canon_names.append(name)
+            canon_layout.append((name, off, sz, t))
             fields.append(
                 IRLocal(
                     name=name,
@@ -299,41 +380,40 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
         struct_for_block[block_name] = IRStateStruct(
             cpp_type=_common_struct_name(block_name), fields=fields
         )
-        canon_for_block[block_name] = canon_names
-        canon_type_for_block[block_name] = [t for _, t in slots]
+        canon_layout_for_block[block_name] = canon_layout
     for struct in struct_for_block.values():
         tu.common_structs.append(struct)
 
     for idx, sub in enumerate(tu.subprograms):
         param_names = {p.name for p in sub.parameters}
-        for block_name, members in own.get(idx, {}).items():
+        for block_name in {b for (i, b) in per_use_layout if i == idx}:
             struct = struct_for_block[block_name]
-            canon = canon_for_block[block_name]
-            canon_types = canon_type_for_block[block_name]
+            canon_layout = canon_layout_for_block[block_name]
             param = _common_param_name(block_name)
+            members = per_use_layout[(idx, block_name)]
+            member_set = {m for m, _, _, _ in members}
             # This routine's own common members are also declared as
-            # locals in Fortran; drop those (only the ones *this* routine
-            # put in the block — a like-named local elsewhere stays).
-            member_set = {m for m, _, _ in members}
+            # locals in Fortran; drop them.
             sub.locals = [
                 loc for loc in sub.locals if loc.name not in member_set
             ]
-            # Bind each local name to its slot's canonical field.  Use a
-            # plain name when they match, the tuple form otherwise so the
-            # routine reads/writes via its own spelling but storage is
-            # the shared field.  Skip slots shadowed by a same-named
-            # dummy argument — that local can't refer to the common.
             bound: list[str | tuple[str, str] | tuple[str, str, str]] = []
-            for local_name, pos, lt in members:
+            for local_name, off, sz, lt in members:
                 if local_name in param_names:
                     continue
-                field = canon[pos]
-                view = _common_reshape_view(lt, canon_types[pos], param, field)
+                match = _canon_field_for_offset(
+                    canon_layout, off, sz, lt, param
+                )
+                if match is None:
+                    continue  # unmappable (unknown size or spans fields)
+                field, view = match
                 if view is not None:
                     bound.append((local_name, field, view))
                 else:
-                    bound.append(local_name if local_name == field
-                                 else (local_name, field))
+                    bound.append(
+                        local_name if local_name == field
+                        else (local_name, field)
+                    )
             _attach_state(
                 sub,
                 struct_type=struct.cpp_type,
@@ -341,6 +421,78 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
                 owned_by="__common_" + block_name,
                 bound_fields=bound,
             )
+
+
+def _canon_field_for_offset(
+    canon_layout: list[tuple[str, int, int | None, IRType | None]],
+    off: int,
+    sz: int | None,
+    routine_type: IRType | None,
+    param: str,
+) -> tuple[str, str | None] | None:
+    """Map a routine's COMMON member at byte ``off`` (size ``sz``, type
+    ``routine_type``) to a canonical field name + optional view expression.
+
+    Returns ``(field_name, None)`` for an exact-match rename binding, or
+    ``(field_name, view_expr)`` for a sub-view (e.g. routine's PT1(50)
+    over canonical PT(150) at offset 0).  Returns ``None`` when no
+    suitable canonical exists -- the size is unknown, or the routine
+    variable spans multiple canonical fields."""
+    for cname, coff, csz, ctype in canon_layout:
+        if csz is None:
+            continue
+        if coff == off and csz == sz:
+            # Same offset + size: rename, or same-element shape reshape.
+            view = _common_reshape_view(routine_type, ctype, param, cname)
+            return (cname, view)
+        if coff <= off < coff + csz:
+            if sz is None or off + sz > coff + csz:
+                return None  # spans multiple canonical fields
+            view = _common_subview(
+                routine_type, ctype, param, cname, off - coff, sz
+            )
+            if view is None:
+                return None
+            return (cname, view)
+    return None
+
+
+def _common_subview(
+    routine_type: IRType | None,
+    canon_type: IRType | None,
+    param: str,
+    field: str,
+    byte_off_within: int,
+    byte_size: int,
+) -> str | None:
+    """Build an ArrayRef sub-view (or scalar reference) for a routine
+    variable that lies *inside* a canonical COMMON field at byte offset
+    ``byte_off_within`` covering ``byte_size`` bytes (the IRI
+    NRLMSISE-00 ``PT1(50)`` overlay on canonical ``PT(150)`` at offset
+    0)."""
+    if routine_type is None or canon_type is None:
+        return None
+    if (routine_type.element_type_cpp or routine_type.cpp) != (
+        canon_type.element_type_cpp or canon_type.cpp
+    ):
+        return None  # element-type mismatch (pun) -- not modeled here
+    elem = _common_elem_size(routine_type)
+    if elem == 0 or byte_off_within % elem != 0 or byte_size % elem != 0:
+        return None
+    elem_off = byte_off_within // elem
+    elem_count = byte_size // elem
+    if not routine_type.is_array:
+        # A scalar routine variable inside an array canonical: emit a
+        # reference to the appropriate element (Fortran 1-based).
+        return f"{param}.{field}(static_cast<fortran::index_t>({elem_off + 1}))"
+    if not routine_type.array_extent_exprs:
+        return None
+    rank = routine_type.array_rank
+    ext_list = ", ".join(routine_type.array_extent_exprs)
+    return (
+        f"fortran::ArrayRef<{routine_type.element_type_cpp}, {rank}>("
+        f"{param}.{field}.data() + {elem_off}, {{{ext_list}}})"
+    )
 
 
 def _common_reshape_view(
