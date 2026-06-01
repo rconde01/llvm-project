@@ -233,6 +233,13 @@ def _map_statement_children(
                 if stmt.internal_unit is not None
                 else None
             ),
+            end_label=stmt.end_label,
+            err_label=stmt.err_label,
+            iostat_target=(
+                _e(stmt.iostat_target, on_expr)
+                if stmt.iostat_target is not None
+                else None
+            ),
             leading_comments=stmt.leading_comments,
             trailing_comments=stmt.trailing_comments,
         )

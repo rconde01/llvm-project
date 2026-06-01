@@ -306,6 +306,16 @@ class IRRead:
     # When set, this is an *internal file* read: items are parsed from
     # this (character-variable) lvalue rather than from ``stream``.
     internal_unit: "IRExpr | None" = None
+    # Fortran ``END=label`` -- jump to label on end-of-file.  Captured by
+    # lowering; expanded into a synthetic IRIf+IRGoto by
+    # ``_expand_io_label_jumps`` before the structuring pass, so the
+    # label resolves through the normal goto-structuring path.
+    end_label: int | None = None
+    # Fortran ``ERR=label`` -- jump to label on a (non-EOF) I/O error.
+    err_label: int | None = None
+    # Fortran ``IOSTAT=var`` -- target to receive the read's status: 0 on
+    # success, -1 on EOF, positive on error.  Assigned after the read.
+    iostat_target: "IRExpr | None" = None
     leading_comments: list[Comment] = field(default_factory=list)
     trailing_comments: list[Comment] = field(default_factory=list)
 
