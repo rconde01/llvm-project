@@ -198,7 +198,32 @@ def lower_program(
     _infer_readonly_scalar_params(tu)
     _materialize_value_args(tu)
     _apply_logical_print_format(tu)
+    _prepend_block_data_calls_to_main(tu)
     return tu
+
+
+def _prepend_block_data_calls_to_main(tu: IRTranslationUnit) -> None:
+    """Insert ``CALL block_data_init_xyz`` at the top of each main program.
+
+    Fortran ``BLOCK DATA`` is evaluated at load time; in C++ the
+    equivalent is to call the synthetic init routines before the user
+    code runs.  State plumbing will subsequently thread the touched
+    COMMON structs through these calls, so the args resolve.
+
+    A non-main translation unit (a library of subroutines that another
+    file's main calls) carries the block_data subprograms but no main of
+    its own; the calls are then prepended by the multi-file pipeline
+    when the main is found."""
+    block_data_names = [s.name for s in tu.subprograms if s.kind == "block_data"]
+    if not block_data_names:
+        return
+    for sub in tu.subprograms:
+        if sub.kind != "main":
+            continue
+        prelude = [
+            IRCall(callee=name, args=[]) for name in block_data_names
+        ]
+        sub.body = prelude + sub.body
 
 
 def _drop_external_function_locals(tu: IRTranslationUnit) -> None:
@@ -814,6 +839,15 @@ def _collect_units(
             sub.parent_module = parent_module
             _add_inherited_uses(sub, inherited_uses)
             _append_with_entries(tu, sub, inherited_uses)
+        elif kind == "BlockData":
+            # BLOCK DATA: a Fortran load-time initializer for COMMON
+            # blocks.  Lower it as a synthetic init routine; the main
+            # program calls it before the body runs so the COMMON
+            # struct fields hold the initialized values that GTS7's
+            # coefficient tables / similar code depend on.
+            sub = _lower_block_data(child)
+            if sub is not None:
+                tu.subprograms.append(sub)
         else:
             # Descend through containers (Program, ProgramUnit,
             # ModuleSubprogramPart, ModuleSubprogram, ...).
@@ -1007,6 +1041,39 @@ def _lower_function(node: Node) -> IRSubprogram:
     _lower_specification_and_execution(node, sub)
     _separate_parameters(sub, dummy_arg_names, node)
     _lift_function_return(sub, prefix_return_type, node)
+    return sub
+
+
+def _lower_block_data(node: Node) -> IRSubprogram | None:
+    """Lower a Fortran ``BLOCK DATA`` unit to a synthetic init subroutine.
+
+    ``BLOCK DATA`` is a special program unit whose entire purpose is to
+    initialize the contents of ``COMMON`` blocks at program load time --
+    no executable statements, just ``COMMON`` + ``DATA`` declarations.
+    NRLMSISE-00 (IRI's MSIS atmosphere model) stuffs ~70 large coefficient
+    tables into ``COMMON /PARM7/`` etc. here; without this initialization
+    the C++ MSIS produces NaN temperatures and the IRI output table is
+    junk.
+
+    Lowering models it as a subroutine whose body is the DATA-derived
+    assignments to its declared COMMON members.  State plumbing later
+    threads each touched ``COMMON`` struct into it, and emission orders
+    the main program to call it before the user body runs (see
+    :func:`_emit_cpp_main`)."""
+    name = (_extract_subprogram_name(node, "BlockDataStmt")
+            or "block_data_anon")
+    sub = IRSubprogram(
+        name="block_data_init_" + _safe_name(name),
+        display_name=name,
+        kind="block_data",
+        leading_comments=list(node.leading_comments),
+        source=node.source,
+    )
+    _lower_specification_and_execution(node, sub)
+    _separate_parameters(sub, [], node)
+    # A BLOCK DATA's COMMON members are not real locals -- they belong to
+    # the shared struct.  ``state_plumbing`` will drop them and rewrite
+    # references to the threaded ``<block>_common.field``.
     return sub
 
 
