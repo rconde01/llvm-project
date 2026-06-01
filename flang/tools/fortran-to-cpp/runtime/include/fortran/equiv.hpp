@@ -219,6 +219,16 @@ inline ArrayRef<T, 1> elem_tail(EquivArray<T, N, O> &a, Idx... idx) noexcept {
   return elem_tail(a.ref(), idx...);
 }
 
+/// Same as ``elem_tail`` but with an explicit extent ``n`` for the
+/// resulting view — matches the dummy's declared size in
+/// :func:`elem_tail_n` so the dummy can be longer than the actual's
+/// remaining slice when the call is well-formed.
+template <typename T, std::size_t N, std::size_t O, typename... Idx>
+inline ArrayRef<T, 1> elem_tail_n(EquivArray<T, N, O> &a, index_t n,
+                                  Idx... idx) noexcept {
+  return elem_tail_n(a.ref(), n, idx...);
+}
+
 /// Free helper for an explicit ``bit_cast`` between same-size,
 /// trivially-copyable types.  Used by the emitter for Fortran's
 /// ``TRANSFER`` intrinsic and for any place where the source code

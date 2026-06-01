@@ -504,6 +504,26 @@ ArrayRef<T, 1> elem_tail(const ArrayRef<T, R> &a, Idx... idx) {
   return ArrayRef<T, 1>(base, {a.size() - static_cast<index_t>(base - a.data())});
 }
 
+/// Sequence-association view of an array element with the dummy's
+/// declared extent.  When a Fortran call site passes ``A(I)`` to a
+/// dummy declared ``DIMENSION X(N)``, the dummy sees N elements
+/// starting at ``&A(I)`` -- not the remainder of ``A``.  NRLMSISE-00's
+/// driver passes ``AP(I)`` to GTD7's ``DIMENSION AP(7)``; the bounded
+/// view must report size 7 (matching the callee's declaration) so the
+/// callee's internal indexing into ap(1..7) is in range, even when
+/// ``A`` has only ``I-1+7`` elements.  Underlying storage validity is
+/// the caller's responsibility (same as Fortran's sequence assoc).
+template <typename T, std::size_t R, typename... Idx>
+ArrayRef<T, 1> elem_tail_n(Array<T, R> &a, index_t n, Idx... idx) {
+  T *base = &a(static_cast<index_t>(idx)...);
+  return ArrayRef<T, 1>(base, {n});
+}
+template <typename T, std::size_t R, typename... Idx>
+ArrayRef<T, 1> elem_tail_n(const ArrayRef<T, R> &a, index_t n, Idx... idx) {
+  T *base = &a(static_cast<index_t>(idx)...);
+  return ArrayRef<T, 1>(base, {n});
+}
+
 /// Fortran sequence association: view a contiguous rank-1 actual as a
 /// higher-rank, explicit-shape dummy.  Fortran lets a contiguous array
 /// (or array section) be passed to a dummy of a different rank; the

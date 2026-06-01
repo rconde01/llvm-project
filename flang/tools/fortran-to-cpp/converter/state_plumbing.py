@@ -361,10 +361,29 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
         elif layout_sized and not current_sized:
             canonicals[block_name] = layout
         elif layout_sized and current_sized:
-            if layout_total > current_total or (
-                layout_total == current_total and len(layout) < len(current)
-            ):
+            # Tie-breaker: prefer a layout that contains CHARACTER members
+            # over one that has only implicit-typed numeric members at the
+            # same offsets.  This avoids the NRLMSISE-00 DATIM7 case where
+            # BLOCK DATA declares CHARACTER*4 ISDATE/ISTIME/NAME at the
+            # same offsets the driver's other routines (implicitly) declare
+            # them as INTEGER -- picking the INTEGER layout would force a
+            # string_view->int assignment that doesn't compile.
+            layout_has_char = any(
+                t is not None and t.is_character for _, _, _, t in layout
+            )
+            current_has_char = any(
+                t is not None and t.is_character for _, _, _, t in current
+            )
+            if layout_total > current_total:
                 canonicals[block_name] = layout
+            elif layout_total == current_total:
+                if layout_has_char and not current_has_char:
+                    canonicals[block_name] = layout
+                elif (
+                    layout_has_char == current_has_char
+                    and len(layout) < len(current)
+                ):
+                    canonicals[block_name] = layout
 
     struct_for_block: dict[str, IRStateStruct] = {}
     # Per block: canonical layout list of (name, off, sz, type).
@@ -456,8 +475,22 @@ def _canon_field_for_offset(
             view = _common_reshape_view(routine_type, ctype, param, cname)
             return (cname, view)
         if coff <= off < coff + csz:
-            if sz is None or off + sz > coff + csz:
-                return None  # spans multiple canonical fields
+            if sz is None:
+                return None
+            if off + sz > coff + csz:
+                # Routine variable spans multiple canonical fields -- the
+                # NRLMSISE-00 pattern where the driver declares
+                # ``COMMON/GTS3C/DL(16)`` (one 16-float array) but the
+                # subroutine declares ``GTS3C`` as 17 separate scalars
+                # (TLB, S, DB04, ...).  Express it as an ArrayRef over the
+                # consecutive canonical fields' storage, taking advantage
+                # of the C++ struct's contiguous same-typed scalar layout.
+                view = _common_spanview(
+                    routine_type, canon_layout, off, sz, param
+                )
+                if view is None:
+                    return None
+                return (cname, view)
             view = _common_subview(
                 routine_type, ctype, param, cname, off - coff, sz
             )
@@ -465,6 +498,61 @@ def _canon_field_for_offset(
                 return None
             return (cname, view)
     return None
+
+
+def _common_spanview(
+    routine_type: IRType | None,
+    canon_layout: list[tuple[str, int, int | None, IRType | None]],
+    off: int,
+    sz: int,
+    param: str,
+) -> str | None:
+    """A routine's array variable that spans multiple consecutive canonical
+    scalar fields -- emit an ArrayRef view starting at the first canonical
+    field that falls inside the routine variable's byte range.
+
+    Requires the canonical fields the variable covers to all share the
+    same scalar element type and to be laid out consecutively in the
+    struct (same type implies same alignment with no padding between
+    members of a POD struct in standard layout)."""
+    if routine_type is None or not routine_type.is_array:
+        return None
+    elem_cpp = routine_type.element_type_cpp
+    if not elem_cpp:
+        return None
+    elem = _common_elem_size(routine_type)
+    if elem == 0 or sz % elem != 0:
+        return None
+    # Find canonical fields covering [off, off+sz).  Require every covered
+    # field to have the same element type as the routine's; require the
+    # span to start *at* a canonical field's offset (so we anchor the view).
+    covered: list[tuple[str, int, int]] = []
+    for cname, coff, csz, ctype in canon_layout:
+        if csz is None:
+            continue
+        if coff >= off + sz:
+            break
+        if coff + csz <= off:
+            continue
+        # Overlaps -- require full containment within [off, off+sz).
+        if coff < off or coff + csz > off + sz:
+            return None
+        if ctype is None or (ctype.element_type_cpp or ctype.cpp) != elem_cpp:
+            return None
+        covered.append((cname, coff, csz))
+    if not covered or covered[0][1] != off:
+        return None
+    if covered[-1][1] + covered[-1][2] != off + sz:
+        return None
+    extents = routine_type.array_extent_exprs
+    if not extents:
+        return None
+    ext_list = ", ".join(extents)
+    anchor = covered[0][0]
+    return (
+        f"fortran::ArrayRef<{elem_cpp}, {routine_type.array_rank}>("
+        f"&{param}.{anchor}, {{{ext_list}}})"
+    )
 
 
 def _common_subview(

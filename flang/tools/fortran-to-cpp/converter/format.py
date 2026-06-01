@@ -282,11 +282,20 @@ def _render_data(act: _Action, item: str) -> str:
         if act.scale and w is not None and d is not None:
             return f"fortran::io::fmt_F_with_scale({item}, {act.scale}, {w}, {d})"
         if w is not None and d is not None:
-            return f'std::format("{{:{w}.{d}f}}", {item})'
+            # ``#`` keeps a trailing decimal point when d=0 — Fortran F
+            # always prints the radix point, but C++ std::format with
+            # ``.0f`` drops it without the alternate-form flag.
+            return f'std::format("{{:#{w}.{d}f}}", {item})'
         return f'std::format("{{}}", {item})'
     if letter == "A":
-        spec = f"{{:>{w}}}" if w is not None else "{}"
-        return f'std::format("{spec}", {item})'
+        # ``fortran::io::fmt_A`` reinterprets a numeric item's bytes as a
+        # character buffer (Fortran semantics for A applied to INTEGER /
+        # REAL items holding packed character data — common in F77).
+        # For genuine character items it does the right-justify /
+        # truncate behavior of the Aw descriptor.
+        if w is not None:
+            return f"fortran::io::fmt_A({item}, {w})"
+        return f"fortran::io::fmt_A_default({item})"
     if letter == "L":
         # Fortran prints logicals right-justified as T / F.
         w_arg = w if w is not None else 1
@@ -294,10 +303,13 @@ def _render_data(act: _Action, item: str) -> str:
     if letter in ("E", "D"):
         ww = w if w is not None else 15
         dd = d if d is not None else 6
-        if act.scale:
-            return f"fortran::io::fmt_E_with_scale({item}, {act.scale}, {ww}, {dd})"
         exp = act.exp_digits
         exp_arg = f", {exp}" if exp is not None else ""
+        if act.scale:
+            return (
+                f"fortran::io::fmt_E_with_scale("
+                f"{item}, {act.scale}, {ww}, {dd}{exp_arg})"
+            )
         return f"fortran::io::fmt_E({item}, {ww}, {dd}{exp_arg})"
     if letter == "G":
         ww = w if w is not None else 15

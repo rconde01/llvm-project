@@ -862,12 +862,47 @@ inline std::string fmt_G(double value, int w, int d,
 // ---------------------------------------------------------------------------
 
 inline std::string fmt_F_with_scale(double value, int scale, int w, int d) {
-  return std::format("{0:{1}.{2}f}", value * std::pow(10.0, scale), w, d);
+  // Fortran F format always shows the decimal point — ``#`` is the
+  // matching std::format alternate-form flag.
+  return std::format("{0:#{1}.{2}f}", value * std::pow(10.0, scale), w, d);
 }
 
-inline std::string fmt_E_with_scale(double value, int scale, int w, int d) {
-  return std::format("{0:>{1}.{2}e}", value * std::pow(10.0, scale), w,
-                     d > 0 ? d - 1 : 0);
+inline std::string fmt_E_with_scale(double value, int scale, int w, int d,
+                                    std::optional<int> e = std::nullopt) {
+  // Fortran ``kP, Ew.d`` shows the mantissa with ``k`` digits before
+  // the decimal and ``d`` digits after; the labeled exponent decreases
+  // by ``k`` so the printed value still equals the input.
+  const int edigits = e.value_or(2);
+  const bool neg = std::signbit(value);
+  double a = std::abs(value);
+
+  int exp = 0;
+  if (a != 0.0) {
+    exp = static_cast<int>(std::floor(std::log10(a))) + 1;  // 0.x * 10^exp
+    a /= std::pow(10.0, exp);
+    if (a >= 1.0) {
+      a /= 10.0;
+      ++exp;
+    }
+  }
+  // Shift the mantissa left by ``scale`` and reduce the exponent by
+  // the same amount so the represented value is unchanged.  Zero has no
+  // exponent to scale — leave it at the default ``0`` so the printed
+  // form is ``0.00E+00`` rather than ``0.00E-k``.
+  if (value != 0.0) {
+    a *= std::pow(10.0, scale);
+    exp -= scale;
+  }
+  // ``a`` now has ``scale`` digits before the decimal (in the typical
+  // 1P case: in [1.0, 10.0)).  Format with ``d`` digits after.
+  std::string mant = std::format("{:.{}f}", a, d);
+  std::string exp_str = std::format("{:0{}d}", std::abs(exp), edigits);
+  std::string body = (neg ? "-" : "") + mant + "E" +
+                     (exp < 0 ? "-" : "+") + exp_str;
+  if (static_cast<int>(body.size()) < w) {
+    body.insert(body.begin(), w - body.size(), ' ');
+  }
+  return body;
 }
 
 // ---------------------------------------------------------------------------
@@ -906,6 +941,74 @@ inline std::string fmt_int_force_sign(long long value, int w) {
 inline std::string fmt_int_no_sign(long long value, int w) {
   // SS: never show '+', and never show ' ' either; only '-' for negatives.
   return std::format("{0:{1}d}", value, w);
+}
+
+// ---------------------------------------------------------------------------
+// A edit descriptor — character output.  When the item is a character
+// string we right-justify (Fortran's behavior for ``Aw`` when the item
+// is shorter than the field) or truncate (longer).  When the item is a
+// numeric type, Fortran reinterprets its underlying bytes as characters
+// — common in F77 code that stores text in INTEGER variables via DATA
+// statements.
+// ---------------------------------------------------------------------------
+
+inline std::string fmt_A(std::string_view s, int w) {
+  if (static_cast<int>(s.size()) >= w) {
+    return std::string(s.substr(s.size() - w, w));
+  }
+  std::string out(w - s.size(), ' ');
+  out.append(s);
+  return out;
+}
+
+inline std::string fmt_A_default(std::string_view s) {
+  return std::string(s);
+}
+
+template <std::size_t N>
+inline std::string fmt_A(const FortranString<N> &v, int w) {
+  return fmt_A(v.view(), w);
+}
+
+template <std::size_t N>
+inline std::string fmt_A_default(const FortranString<N> &v) {
+  return std::string(v.view());
+}
+
+template <typename T,
+          std::enable_if_t<std::is_integral_v<T> || std::is_floating_point_v<T>,
+                           int> = 0>
+inline std::string fmt_A(const T &v, int w) {
+  // Reinterpret ``v``'s bytes as a character buffer.  Fortran is
+  // little-endian on x86 but stores characters in source order, so the
+  // bytes of a left-aligned ASCII pack form the character record.
+  // ``w`` may exceed the size of T (pad with spaces) or be smaller
+  // (truncate to the leading bytes — Fortran A descriptor truncates
+  // from the right).
+  constexpr std::size_t bytes = sizeof(T);
+  unsigned char buf[bytes];
+  std::memcpy(buf, &v, bytes);
+  std::string text;
+  text.reserve(bytes);
+  for (std::size_t i = 0; i < bytes; ++i) {
+    text.push_back(static_cast<char>(buf[i]));
+  }
+  return fmt_A(std::string_view(text), w);
+}
+
+template <typename T,
+          std::enable_if_t<std::is_integral_v<T> || std::is_floating_point_v<T>,
+                           int> = 0>
+inline std::string fmt_A_default(const T &v) {
+  constexpr std::size_t bytes = sizeof(T);
+  unsigned char buf[bytes];
+  std::memcpy(buf, &v, bytes);
+  std::string text;
+  text.reserve(bytes);
+  for (std::size_t i = 0; i < bytes; ++i) {
+    text.push_back(static_cast<char>(buf[i]));
+  }
+  return text;
 }
 
 // ---------------------------------------------------------------------------
@@ -1063,7 +1166,7 @@ inline void fmt_emit_data(FmtCursor &cur, char letter, int w, bool has_w,
     if (cur.scale)
       cur.out += fmt_F_with_scale(v, cur.scale, w, has_d ? d : 0);
     else if (has_w && has_d)
-      cur.out += std::format("{0:{1}.{2}f}", v, w, d);
+      cur.out += std::format("{0:#{1}.{2}f}", v, w, d);
     else
       cur.out += std::format("{}", v);
     break;

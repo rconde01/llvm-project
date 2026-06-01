@@ -524,13 +524,32 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
             elif p.type.array_rank == 1 and _is_array_element(actual, params_by_name):
                 # ``call s(a(i,j))`` with an array dummy: the dummy views
                 # the storage from that element onward (sequence assoc).
-                out[i] = IRFunctionCall(
-                    callee="fortran::elem_tail",
-                    args=(
-                        IRName(name=actual.callee, fortran=actual.callee),
-                        *actual.args,
-                    ),
+                # When the dummy has an explicit extent (``DIMENSION X(7)``)
+                # use it for the view size -- the callee's internal
+                # indexing into x(1..7) needs that bound, even when the
+                # caller's source array has fewer than 7 elements behind
+                # the chosen base.  Falls back to ``elem_tail`` (remaining
+                # storage) for assumed-shape / unknown-extent dummies.
+                extent_exprs = _subst_dummy_bounds(
+                    list(p.type.array_extent_exprs or ()), params, out
                 )
+                if extent_exprs and len(extent_exprs) == 1:
+                    out[i] = IRFunctionCall(
+                        callee="fortran::elem_tail_n",
+                        args=(
+                            IRName(name=actual.callee, fortran=actual.callee),
+                            IRRaw(extent_exprs[0]),
+                            *actual.args,
+                        ),
+                    )
+                else:
+                    out[i] = IRFunctionCall(
+                        callee="fortran::elem_tail",
+                        args=(
+                            IRName(name=actual.callee, fortran=actual.callee),
+                            *actual.args,
+                        ),
+                    )
         return out
 
     for sub in tu.subprograms:
@@ -3970,17 +3989,29 @@ def _lower_assignment(node: Node) -> IRStatement:
 
 def _lower_print(node: Node) -> IRPrint:
     fmt_kind, fmt_payload = _classify_format(node)
+    expand = fmt_kind == "const"
     return IRPrint(
-        items=_lower_io_items(node, "OutputItem", "OutputImpliedDo"),
+        items=_lower_io_items(
+            node, "OutputItem", "OutputImpliedDo", expand_whole_arrays=expand
+        ),
         format=fmt_payload if fmt_kind == "const" else None,
         format_expr=fmt_payload if fmt_kind == "runtime" else None,
     )
 
 
 def _lower_io_items(
-    node: Node, item_kind: str, implied_kind: str
+    node: Node, item_kind: str, implied_kind: str,
+    *, expand_whole_arrays: bool = False,
 ) -> list[IRExpr]:
-    """Lower a print/read item list, handling implied-do items."""
+    """Lower a print/read item list, handling implied-do items.
+
+    When ``expand_whole_arrays`` is true, a whole-array reference in the
+    item list (``DL`` for a rank-1 array) is expanded into one item per
+    element so a labeled FORMAT cycles correctly across the array's
+    elements.  Off by default — unformatted record I/O (which writes the
+    whole array as one contiguous blob) and list-directed I/O (whose
+    runtime ``<<`` / ``>>`` overloads iterate elements themselves) want
+    the whole-array item preserved."""
     items: list[IRExpr] = []
     for sub in node.children:
         if sub.kind == item_kind:
@@ -3997,10 +4028,71 @@ def _lower_io_items(
             # an array subscript (the ``i`` in ``a(i)``).
             expr = sub.first_child("Expr") or sub.first_child("Variable")
             if expr is not None:
-                items.append(_lower_expression(expr))
+                expanded = (
+                    _expand_whole_array_io_item(expr)
+                    if expand_whole_arrays else None
+                )
+                if expanded is not None:
+                    items.extend(expanded)
+                else:
+                    items.append(_lower_expression(expr))
         elif sub.kind == implied_kind:
             items.append(_lower_io_implied_do(sub, item_kind, implied_kind))
     return items
+
+
+def _expand_whole_array_io_item(expr: Node) -> list[IRExpr] | None:
+    """If *expr* is a whole-array reference with a compile-time-known
+    shape, return one IRExpr per element (Fortran array-element order:
+    leftmost subscript varies fastest).  Returns ``None`` otherwise."""
+    if expr.kind == "Expr":
+        if expr.first_child("LiteralConstant") is not None:
+            return None
+        inner = expr.find_first("Designator") or expr.first_child("Name")
+    else:
+        inner = expr
+    if inner is None:
+        return None
+    name = inner if inner.kind == "Name" else None
+    if name is None and inner.kind == "Designator":
+        # A bare-Name designator: no DataRef components, no subscripts.
+        dref = inner.first_child("DataRef")
+        if dref is not None and len(dref.children) == 1:
+            cand = dref.children[0]
+            if cand.kind == "Name":
+                name = cand
+        else:
+            cand = inner.first_child("Name")
+            if cand is not None:
+                name = cand
+    if name is None:
+        return None
+    rank = name.rank
+    if rank is None or rank < 1:
+        return None
+    shape = name.shape
+    if shape is None or len(shape) != rank:
+        return None
+    base = _lower_expression(expr)
+    if not isinstance(base, IRName):
+        return None
+
+    def cm_indices(dims_left: list[tuple[int, int]]) -> list[tuple[int, ...]]:
+        if not dims_left:
+            return [()]
+        lo, hi = dims_left[0]
+        rest = cm_indices(dims_left[1:])
+        result: list[tuple[int, ...]] = []
+        for outer in rest:
+            for i in range(lo, hi + 1):
+                result.append((i,) + outer)
+        return result
+
+    out: list[IRExpr] = []
+    for idx in cm_indices(list(shape)):
+        args = tuple(IRLiteral(cpp_text=str(i)) for i in idx)
+        out.append(IRFunctionCall(callee=base.name, args=args))
+    return out
 
 
 def _lower_io_implied_do(
@@ -4025,14 +4117,13 @@ def _lower_write(
     without a FORMAT it lowers to :class:`IRUnformattedDirectWrite`
     (raw-byte record).  Other (file) units write through the units table.
     """
+    io_unit = _find_io_unit(node)
+    fmt_kind, fmt_payload = _classify_format(node)
+    rec_expr = _extract_rec(node)
     # ``_lower_io_items`` already handles both plain items and
     # OutputImpliedDo wrappers; using it here keeps the read- and
     # write-sides symmetric and lets implied-do items reach IR for
     # unformatted-direct write expansion.
-    items = _lower_io_items(node, "OutputItem", "OutputImpliedDo")
-    io_unit = _find_io_unit(node)
-    fmt_kind, fmt_payload = _classify_format(node)
-    rec_expr = _extract_rec(node)
     if rec_expr is not None:
         unit_text = _unit_text(io_unit)
         if unit_text is None:
@@ -4049,12 +4140,27 @@ def _lower_write(
             )
         fmt_str = fmt_payload if fmt_kind == "const" else None
         if fmt_str is None:
+            # Unformatted record: keep whole-array items intact so
+            # ``append_bytes(_wrec, drec)`` writes them as one contiguous
+            # blob.
+            items = _lower_io_items(node, "OutputItem", "OutputImpliedDo")
             return IRUnformattedDirectWrite(
                 unit_text=unit_text, rec=rec_expr, items=items
             )
+        items = _lower_io_items(
+            node, "OutputItem", "OutputImpliedDo", expand_whole_arrays=True
+        )
         return IRDirectWrite(
             unit_text=unit_text, rec=rec_expr, items=items, format=fmt_str
         )
+    # Sequential write: only the formatted case needs whole-array
+    # expansion (so format cycling counts each element as a separate
+    # item).  List-directed writes stream the whole array via
+    # ``operator<<``.
+    expand = fmt_kind == "const"
+    items = _lower_io_items(
+        node, "OutputItem", "OutputImpliedDo", expand_whole_arrays=expand,
+    )
     internal = _internal_file_unit(io_unit)
     stream = _stream_for_unit(io_unit)
     return IRPrint(

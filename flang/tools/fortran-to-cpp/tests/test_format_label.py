@@ -64,7 +64,7 @@ class FormatLabelEmitTests(unittest.TestCase):
         cpp = _convert(FMT_F)
         # The labelled FORMAT is resolved like an inline format string.
         self.assertIn('std::format("{:3d}", n)', cpp)
-        self.assertIn('std::format("{:6.3f}", x)', cpp)
+        self.assertIn('std::format("{:#6.3f}", x)', cpp)
 
     def test_format_statement_dropped(self) -> None:
         cpp = _convert(FMT_F)

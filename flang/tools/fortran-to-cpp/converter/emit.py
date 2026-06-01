@@ -633,8 +633,33 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
             _emit_internal_write(out, stmt, indent=indent)
             return
         if any(isinstance(it, IRImpliedDo) for it in stmt.items):
-            _emit_io_with_implied_do(out, stmt, write=True, indent=indent)
-            return
+            # A formatted WRITE with implied-do items: expand the
+            # implied-do at translation time when its bounds are integer
+            # literals.  This lets the existing format renderer (with its
+            # array-element overloads of fmt_E / fmt_F / ...) handle the
+            # mixed item list as a flat sequence.  Falls back to the
+            # list-directed implied-do emitter when no format is in play.
+            if stmt.format is not None or stmt.format_expr is not None:
+                expanded = _expand_constant_implied_dos(list(stmt.items))
+                if expanded is not None:
+                    stmt = IRPrint(
+                        items=expanded,
+                        stream=stmt.stream,
+                        format=stmt.format,
+                        format_expr=stmt.format_expr,
+                        internal_unit=stmt.internal_unit,
+                        leading_comments=stmt.leading_comments,
+                        trailing_comments=stmt.trailing_comments,
+                    )
+                else:
+                    raise ConversionError(
+                        "WRITE with FORMAT",
+                        note="implied-do bounds are not compile-time constants",
+                        source="",
+                    )
+            else:
+                _emit_io_with_implied_do(out, stmt, write=True, indent=indent)
+                return
         _emit_comment_block(out, stmt.leading_comments, indent=indent)
         out.write(f"{pad}{stmt.stream}")
         suppress_nl = False
@@ -882,6 +907,50 @@ def _emit_block(out: StringIO, node: IRBlock, *, indent: int) -> None:
         _emit_statement(out, s, indent=indent + 1)
     out.write(f"{pad}}}\n")
     _emit_trailing(out, node.trailing_comments)
+
+
+def _expand_constant_implied_dos(items: list[IRExpr]) -> list[IRExpr] | None:
+    """Expand IRImpliedDo entries with integer-literal bounds into a flat
+    item list, substituting the loop variable with each integer value.
+
+    Returns the expanded list, or ``None`` if any implied-do has bounds
+    the translator can't resolve at compile time."""
+    from .transform import map_expr
+
+    def lit_int(e: IRExpr) -> int | None:
+        if isinstance(e, IRLiteral):
+            try:
+                return int(e.cpp_text)
+            except ValueError:
+                return None
+        return None
+
+    def substitute(expr: IRExpr, var: str, value: int) -> IRExpr:
+        def swap(e: IRExpr) -> IRExpr:
+            if isinstance(e, IRName) and e.name == var:
+                return IRLiteral(cpp_text=str(value))
+            return e
+        return map_expr(expr, swap)
+
+    out: list[IRExpr] = []
+    for it in items:
+        if isinstance(it, IRImpliedDo):
+            lo = lit_int(it.lower)
+            hi = lit_int(it.upper)
+            step = lit_int(it.step) if it.step is not None else 1
+            if lo is None or hi is None or step is None or step == 0:
+                return None
+            inner_expanded = _expand_constant_implied_dos(list(it.items))
+            if inner_expanded is None:
+                return None
+            i = lo
+            while (step > 0 and i <= hi) or (step < 0 and i >= hi):
+                for sub in inner_expanded:
+                    out.append(substitute(sub, it.var, i))
+                i += step
+        else:
+            out.append(it)
+    return out
 
 
 def _emit_formatted_chunks(out: StringIO, stmt: "IRPrint") -> bool:

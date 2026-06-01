@@ -36,7 +36,7 @@ class FormatParserTests(unittest.TestCase):
 
     def test_fixed_float(self) -> None:
         chunks, _ = render_format("(F8.2)", ["x"])
-        self.assertEqual(chunks, ['std::format("{:8.2f}", x)'])
+        self.assertEqual(chunks, ['std::format("{:#8.2f}", x)'])
 
     def test_mixed_with_spacing(self) -> None:
         chunks, _ = render_format("(I5, 1X, F8.2)", ["n", "x"])
@@ -45,7 +45,7 @@ class FormatParserTests(unittest.TestCase):
             [
                 'std::format("{:5d}", n)',
                 '" "sv',
-                'std::format("{:8.2f}", x)',
+                'std::format("{:#8.2f}", x)',
             ],
         )
 
@@ -88,9 +88,9 @@ class FormatParserTests(unittest.TestCase):
             chunks,
             [
                 'std::format("{:3d}", a)',
-                'std::format("{:5.1f}", b)',
+                'std::format("{:#5.1f}", b)',
                 'std::format("{:3d}", c)',
-                'std::format("{:5.1f}", d)',
+                'std::format("{:#5.1f}", d)',
             ],
         )
 
@@ -147,7 +147,7 @@ class FormatEmitTests(unittest.TestCase):
     def test_inline_std_format_for_clean_descriptors(self) -> None:
         cpp = self._convert(IO_F90)
         self.assertIn('std::format("{:5d}", n)', cpp)
-        self.assertIn('std::format("{:10.4f}", x)', cpp)
+        self.assertIn('std::format("{:#10.4f}", x)', cpp)
 
     def test_runtime_helper_for_e(self) -> None:
         cpp = self._convert(IO_F90)

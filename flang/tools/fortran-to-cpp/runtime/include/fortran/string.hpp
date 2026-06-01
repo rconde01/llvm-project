@@ -142,6 +142,26 @@ public:
   }
   constexpr operator std::string_view() const noexcept { return view(); }
 
+  /// Fortran's classic CHARACTER<->INTEGER type pun in COMMON: a routine
+  /// that declares a slot as CHARACTER*N can hand its bytes to a sibling
+  /// routine that declares the same slot as INTEGER (or vice versa) and
+  /// both see the same bit pattern.  NRLMSISE-00 does this for the
+  /// ISDATE/ISTIME/NAME identification strings in /DATIM7/ vs /DATIME/.
+  /// Surface the conversion as a bit-pattern reinterpretation when N
+  /// matches a standard integer width, so an ``int = FortranString<4>``
+  /// assignment in the generated C++ compiles and produces the same bit
+  /// pattern Fortran would have transferred.
+  template <typename I,
+            std::enable_if_t<std::is_integral_v<I> && sizeof(I) == N, int> = 0>
+  constexpr operator I() const noexcept {
+    I out{};
+    for (std::size_t i = 0; i < N; ++i) {
+      reinterpret_cast<unsigned char *>(&out)[i] =
+          static_cast<unsigned char>(data_[i]);
+    }
+    return out;
+  }
+
   /// View without trailing blanks.  Fortran's ``TRIM`` intrinsic.
   constexpr std::string_view trimmed() const noexcept {
     return detail::rstrip_blanks(view());
