@@ -78,7 +78,9 @@ class PointerEmitTests(unittest.TestCase):
     def test_array_pointer_is_arrayref(self) -> None:
         cpp = _convert(ARRAY_PTR_F90)
         self.assertIn("fortran::ArrayRef<float, 1> p;", cpp)
-        self.assertIn("p = a.section(2, 8, 2);", cpp)
+        # POINTER assignment ``p => target`` rebinds the view; element-wise
+        # ``=`` would copy data instead (the IRI read_data_SD pattern).
+        self.assertIn("p.rebind(a.section(2, 8, 2));", cpp)
 
 
 @unittest.skipUnless(

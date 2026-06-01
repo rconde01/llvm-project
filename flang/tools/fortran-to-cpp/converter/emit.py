@@ -802,11 +802,18 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         if stmt.target is None:
             # nullify / => null()
             rhs = "{}" if stmt.is_array else "nullptr"
+            out.write(f"{pad}{stmt.pointer} = {rhs};")
         elif stmt.is_array:
-            rhs = _render_expr(stmt.target)  # ArrayRef view
+            # Fortran ``p => target(...)``: rebind ``p``'s view to the
+            # target's storage (share, don't copy elements).  Use the
+            # ArrayRef rebind method explicitly because ``=`` now does
+            # element-wise copy (the IRI ``read_data_SD`` semantics).
+            out.write(
+                f"{pad}{stmt.pointer}.rebind({_render_expr(stmt.target)});"
+            )
         else:
             rhs = f"&{_render_expr(stmt.target)}"  # take target's address
-        out.write(f"{pad}{stmt.pointer} = {rhs};")
+            out.write(f"{pad}{stmt.pointer} = {rhs};")
         _emit_trailing(out, stmt.trailing_comments)
         return
     if isinstance(stmt, IRReturn):

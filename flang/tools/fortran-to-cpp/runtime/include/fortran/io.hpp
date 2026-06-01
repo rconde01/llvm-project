@@ -89,6 +89,15 @@ protected:
     ch_ = static_cast<char>(c);
     if (ch_ == ',' || ch_ == '/' || ch_ == '\t') {
       ch_ = ' ';
+    } else if (ch_ == 'D' || ch_ == 'd') {
+      // Fortran double-precision exponent: ``2.71319D+02`` for 271.319.
+      // ``std::istream::operator>>`` only understands ``E``/``e``, so the
+      // ``D`` is translated on the wire so reads of D-format real fields
+      // (mcsat coefficient tables, ig_rz indices, etc.) succeed.
+      // Translating ``D``/``d`` -> ``E``/``e`` everywhere on input is
+      // benign for non-numeric data: a CHARACTER ``READ(unit, '(A)')``
+      // goes through ``getline`` which does not consult the filter.
+      ch_ = (ch_ == 'D') ? 'E' : 'e';
     }
     setg(&ch_, &ch_, &ch_ + 1);
     return traits_type::to_int_type(ch_);
@@ -731,6 +740,12 @@ inline double read_field_real(std::string_view rec, std::size_t pos,
     return 0.0;
   }
   std::string text(buf.substr(a, b - a));
+  // Fortran double-precision exponent: ``2.71319D+02`` for 271.319.
+  // ``std::stod`` only understands ``E``/``e``, so translate before parse.
+  for (char &c : text) {
+    if (c == 'D') c = 'E';
+    else if (c == 'd') c = 'e';
+  }
   bool has_dot{text.find('.') != std::string::npos};
   try {
     double v{std::stod(text)};
