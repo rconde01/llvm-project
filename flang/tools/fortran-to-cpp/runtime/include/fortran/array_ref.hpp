@@ -187,6 +187,35 @@ public:
     }
     return *this;
   }
+  /// Whole-array copy from another ArrayRef (a section or another view).
+  /// Fortran ``a = b(:,:,k)`` where both ``a`` and ``b(:,:,k)`` are array
+  /// expressions: copy element-by-element through both views' strides.
+  /// Without this overload, the compiler-generated copy assignment would
+  /// silently *rebind* this view's pointer to the source's storage --
+  /// the IRI ``read_data_SD`` pattern where ``coeff_month`` is a routine
+  /// dummy and a section of a 3-D save array is the source.
+  const ArrayRef &operator=(const ArrayRef &src) {
+    for (index_t i = 0; i < size(); ++i) {
+      linear_at(i) = src.linear_at(i);
+    }
+    return *this;
+  }
+  template <typename U>
+  const ArrayRef &operator=(const ArrayRef<U, Rank> &src) {
+    for (index_t i = 0; i < size(); ++i) {
+      linear_at(i) = static_cast<T>(src.linear_at(i));
+    }
+    return *this;
+  }
+  /// Rebind this view's metadata (pointer, bounds, strides) to ``src``'s
+  /// storage -- the Fortran POINTER associate ``p => target(...)``.
+  /// Element-wise ``=`` copies data; rebind shares it.
+  void rebind(const ArrayRef &src) noexcept {
+    data_ = src.data_;
+    lower_ = src.lower_;
+    extents_ = src.extents_;
+    strides_ = src.strides_;
+  }
 
   /// Element at 0-based column-major logical position ``k``, honoring this
   /// view's (possibly non-contiguous) strides.  Lets the elementwise
