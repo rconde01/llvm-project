@@ -230,17 +230,23 @@ class StateEmitTests(unittest.TestCase):
         # K/IY at different byte offsets in the two layouts.  Byte-offset
         # COMMON modeling picks the longer layout (``two``'s p,q,r,s,t,k,iy)
         # as canonical and binds ``one``'s shorter list (p,q,k,iy) to the
-        # canonical fields that occupy those byte offsets: ``one``'s k
-        # binds to canonical ``r`` (offset 8) and its iy to ``s`` (offset
-        # 12), while ``two``'s k and iy bind to the canonical ``k`` /
-        # ``iy`` at offsets 20/24.
+        # canonical fields that occupy those byte offsets: ``one``'s k /
+        # iy land on canonical ``r`` / ``s`` (offsets 8/12), reinterpreted
+        # to ``one``'s INTEGER element type (Fortran storage association
+        # preserves the routine's view of the bytes).  Routine ``two``'s
+        # k / iy bind to canonical ``k`` / ``iy`` at offsets 20/24.
         cpp = self._convert(COMMON_ALIAS_F90)
         self.assertIn("struct C1Common {", cpp)
         # No disambiguated field needed -- each offset has one canonical name.
         self.assertEqual(cpp.count("std::int32_t k{};"), 1)
-        # one()'s "k" and "iy" land on canonical "r" and "s" (same offsets).
-        self.assertIn("auto& k = c1_common.r;", cpp)
-        self.assertIn("auto& iy = c1_common.s;", cpp)
+        # one()'s "k" and "iy" land on canonical "r" and "s" via a type-pun
+        # reinterpret so the routine's INTEGER writes land as INTEGER bytes.
+        self.assertIn(
+            "auto& k = *reinterpret_cast<std::int32_t*>(&c1_common.r);", cpp
+        )
+        self.assertIn(
+            "auto& iy = *reinterpret_cast<std::int32_t*>(&c1_common.s);", cpp
+        )
 
 
 @unittest.skipUnless(

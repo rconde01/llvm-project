@@ -570,26 +570,60 @@ def _common_subview(
     0)."""
     if routine_type is None or canon_type is None:
         return None
-    if (routine_type.element_type_cpp or routine_type.cpp) != (
-        canon_type.element_type_cpp or canon_type.cpp
-    ):
-        return None  # element-type mismatch (pun) -- not modeled here
+    routine_elem_cpp = routine_type.element_type_cpp or routine_type.cpp
+    canon_elem_cpp = canon_type.element_type_cpp or canon_type.cpp
+    type_pun = routine_elem_cpp != canon_elem_cpp
     elem = _common_elem_size(routine_type)
-    if elem == 0 or byte_off_within % elem != 0 or byte_size % elem != 0:
+    if elem == 0:
         return None
-    elem_off = byte_off_within // elem
-    elem_count = byte_size // elem
+    if not type_pun:
+        # Same element type: require element-aligned offset / size so the
+        # ArrayRef sub-view starts at an element boundary.
+        if byte_off_within % elem != 0 or byte_size % elem != 0:
+            return None
+        elem_off = byte_off_within // elem
+        elem_count = byte_size // elem
+        if not routine_type.is_array:
+            # A scalar routine variable inside an array canonical: emit a
+            # reference to the appropriate element (Fortran 1-based).
+            return (
+                f"{param}.{field}"
+                f"(static_cast<fortran::index_t>({elem_off + 1}))"
+            )
+        if not routine_type.array_extent_exprs:
+            return None
+        rank = routine_type.array_rank
+        ext_list = ", ".join(routine_type.array_extent_exprs)
+        return (
+            f"fortran::ArrayRef<{routine_type.element_type_cpp}, {rank}>("
+            f"{param}.{field}.data() + {elem_off}, {{{ext_list}}})"
+        )
+    # Type pun: the routine's view interprets the canonical field's bytes
+    # as a different element type (the F77 ``CHARACTER ISDATE(3)`` view
+    # over an implicit-typed ``INTEGER ISDATE(3)`` storage in MSIS-86's
+    # DATIME common).  Emit a ``reinterpret_cast`` view -- safe as long
+    # as the source and destination element types are trivially copyable
+    # PODs, which the runtime's scalar types and ``FortranString<N>`` are.
+    # The byte offset may be unaligned to the routine's element when the
+    # routine view straddles a canonical field at a different element
+    # size (PRMSG5's ``CHARACTER*4 ISTIME(2)`` at byte 3, inside the
+    # canonical ``INTEGER ISDATE(3)``).  ``FortranString<N>`` and ``char``
+    # have alignof 1 so a byte-offset reinterpret is well-defined.
     if not routine_type.is_array:
-        # A scalar routine variable inside an array canonical: emit a
-        # reference to the appropriate element (Fortran 1-based).
-        return f"{param}.{field}(static_cast<fortran::index_t>({elem_off + 1}))"
+        return (
+            f"*reinterpret_cast<{routine_elem_cpp}*>("
+            f"reinterpret_cast<unsigned char*>({param}.{field}.data())"
+            f" + {byte_off_within})"
+        )
     if not routine_type.array_extent_exprs:
         return None
     rank = routine_type.array_rank
     ext_list = ", ".join(routine_type.array_extent_exprs)
     return (
-        f"fortran::ArrayRef<{routine_type.element_type_cpp}, {rank}>("
-        f"{param}.{field}.data() + {elem_off}, {{{ext_list}}})"
+        f"fortran::ArrayRef<{routine_elem_cpp}, {rank}>("
+        f"reinterpret_cast<{routine_elem_cpp}*>("
+        f"reinterpret_cast<unsigned char*>({param}.{field}.data())"
+        f" + {byte_off_within}), {{{ext_list}}})"
     )
 
 
@@ -600,38 +634,60 @@ def _common_reshape_view(
     field: str,
 ) -> str | None:
     """Build a reshaped ``ArrayRef`` view of a shared COMMON field when this
-    routine declares the member with a *different array shape* than the
-    block's canonical field (storage association -- IRI's ``/BLWRK/``
-    declares ``WA(216)`` in one routine and ``WA(36,6)`` in another over
-    the same storage).  Returns the view expression, or ``None`` when no
-    reshape is needed (the routine's shape matches the canonical field).
+    routine declares the member with a *different array shape* or *element
+    type* than the block's canonical field (storage association).
 
-    Phase 1 handles the same-element-type case: the view reinterprets the
-    canonical field's contiguous storage as the routine's own rank/extents.
-    Differing element *types* (a genuine type pun) are left to the plain
-    binding for now."""
+    Same element type, different shape (IRI's ``/BLWRK/`` declares
+    ``WA(216)`` in one routine and ``WA(36,6)`` in another over the same
+    storage): emit a reshaped ArrayRef.
+
+    Different element type at the same offset and total size (MSIS-86's
+    PRMSG5 declares ``CHARACTER*4 ISDATE(3)`` over the canonical
+    ``INTEGER ISDATE(3)``): emit a reinterpret_cast ArrayRef so PRMSG5
+    writes characters into the canonical integer storage.
+    """
     if member_type is None or canon_type is None:
         return None
     if not (member_type.is_array and canon_type.is_array):
-        return None
-    # Only a same-element-type reshape is well-defined here (no aliasing
-    # pun): the storage is a contiguous run of the same scalar type.
-    if member_type.element_type_cpp != canon_type.element_type_cpp:
-        return None
-    same_shape = (
-        member_type.array_rank == canon_type.array_rank
-        and member_type.array_extent_exprs == canon_type.array_extent_exprs
-    )
-    if same_shape:
+        # Scalar pun on a scalar canonical field: emit a reinterpreted
+        # reference so the routine can assign through it.
+        if (
+            not member_type.is_array
+            and not canon_type.is_array
+            and member_type.cpp != canon_type.cpp
+        ):
+            return (
+                f"*reinterpret_cast<{member_type.cpp}*>("
+                f"&{param}.{field})"
+            )
         return None
     extents = member_type.array_extent_exprs
     if not extents or len(extents) != member_type.array_rank:
         return None
+    same_element = (
+        member_type.element_type_cpp == canon_type.element_type_cpp
+    )
+    same_shape = (
+        member_type.array_rank == canon_type.array_rank
+        and member_type.array_extent_exprs == canon_type.array_extent_exprs
+    )
+    if same_element and same_shape:
+        return None
     elem = member_type.element_type_cpp
     ext_list = ", ".join(extents)
+    if same_element:
+        # Reshape only.
+        return (
+            f"fortran::ArrayRef<{elem}, {member_type.array_rank}>("
+            f"{param}.{field}.data(), {{{ext_list}}})"
+        )
+    # Type pun: same offset (0) and total size; differ only in element
+    # type.  The canonical field's storage is contiguous bytes; reinterpret
+    # them as the routine's element type.
     return (
         f"fortran::ArrayRef<{elem}, {member_type.array_rank}>("
-        f"{param}.{field}.data(), {{{ext_list}}})"
+        f"reinterpret_cast<{elem}*>({param}.{field}.data()), "
+        f"{{{ext_list}}})"
     )
 
 

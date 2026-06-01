@@ -318,7 +318,11 @@ class IRRead:
     # rather than the list-directed ``>>`` chain (which space-tokenizes
     # and ignores column widths, producing wrong values for files like
     # SPICE/IRI's ``apf107.dat``).
-    fields: "list[tuple[IRExpr, str, int, int, int]] | None" = None
+    fields: "list[list[tuple[IRExpr, str, int, int, int]]] | None" = None
+    """A list of records; each record is a list of
+    ``(target, kind, offset, width, decimals)`` tuples.  Multi-record
+    formats (item count exceeds a single format cycle) read one record
+    per cycle."""
     # Fortran ``END=label`` -- jump to label on end-of-file.  Captured by
     # lowering; expanded into a synthetic IRIf+IRGoto by
     # ``_expand_io_label_jumps`` before the structuring pass, so the

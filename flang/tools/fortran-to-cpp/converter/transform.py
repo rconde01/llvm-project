@@ -235,8 +235,11 @@ def _map_statement_children(
             ),
             unit_text=stmt.unit_text,
             fields=(
-                [(_e(tgt, on_expr), kind, off, width, dec)
-                 for tgt, kind, off, width, dec in stmt.fields]
+                [
+                    [(_e(tgt, on_expr), kind, off, width, dec)
+                     for tgt, kind, off, width, dec in record]
+                    for record in stmt.fields
+                ]
                 if stmt.fields is not None
                 else None
             ),

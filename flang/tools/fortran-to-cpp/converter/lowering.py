@@ -4203,14 +4203,15 @@ def _lower_read(
             return IRUnformattedDirectRead(
                 unit_text=unit_text, rec=rec_expr, items=items
             )
-        fields = _build_direct_read_fields(node, fmt_str)
-        if fields is None:
+        records = _build_direct_read_fields(node, fmt_str)
+        if records is None or len(records) != 1:
             raise ConversionError(
                 "direct-access READ",
-                note="unsupported FORMAT for a REC= read",
+                note="unsupported FORMAT for a REC= read"
+                " (multi-record cycling has no record number to step)",
                 source=node.source.text if node.source else "",
             )
-        return IRDirectRead(unit_text=unit_text, rec=rec_expr, fields=fields)
+        return IRDirectRead(unit_text=unit_text, rec=rec_expr, fields=records[0])
     items = _lower_io_items(node, "InputItem", "InputImpliedDo")
     internal = _internal_file_unit(io_unit)
     stream = _input_stream_for_unit(io_unit)
@@ -4309,13 +4310,18 @@ def _find_io_unit(node: Node) -> Node | None:
 
 def _build_direct_read_fields(
     node: Node, fmt_str: str
-) -> list[tuple[IRExpr, str, int, int, int]] | None:
-    """Pair the parsed FORMAT with the InputItem list, returning one
-    ``(target, kind, offset, width, decimals)`` tuple per scalar item, or
-    ``None`` if the format has descriptors we don't slice (newline,
-    character, nested groups we can't flatten — caller then falls back to
-    list-directed).  Whole-array items expand element-by-element across the
-    format's repeat counts (``8I3`` over an ``INTEGER(8)`` array)."""
+) -> list[list[tuple[IRExpr, str, int, int, int]]] | None:
+    """Pair the parsed FORMAT with the InputItem list, returning a list
+    of records where each record is a list of
+    ``(target, kind, offset, width, decimals)`` tuples, or ``None`` when
+    the format has descriptors we don't slice (character / unsupported —
+    caller then falls back to list-directed).
+
+    When the item list exceeds the format's data-descriptor count the
+    format cycles to a new record (Fortran ``(1X,5E13.6)`` reading 1464
+    items reads 293 lines).  Whole-array items expand element-by-element
+    across the format's repeat counts (``8I3`` over an ``INTEGER(8)``
+    array)."""
     from .format import parse_format, FormatParseError
 
     try:
@@ -4331,54 +4337,96 @@ def _build_direct_read_fields(
             continue
         lowered = _lower_expression(expr)
         targets.extend(_expand_array_target(lowered, expr))
-    fields: list[tuple[IRExpr, str, int, int, int]] = []
+    # Pre-scan: a format with only character/unsupported descriptors fails
+    # the whole resolution.  Detect supported descriptors only.
+    for a in actions:
+        if a.kind == "data":
+            letter = a.letter.upper()
+            if letter not in ("I", "F", "E", "D", "G", "X"):
+                return None
+    records: list[list[tuple[IRExpr, str, int, int, int]]] = []
+    current: list[tuple[IRExpr, str, int, int, int]] = []
     pos = 0
     ti = 0
-    for a in actions:
-        if a.kind == "literal":
-            pos += len(a.text)
-            continue
-        if a.kind == "space":
-            pos += a.count
-            continue
-        if a.kind == "newline":
-            return None  # multi-record format isn't direct-read material
-        if a.kind != "data":
-            return None
-        width = a.width or 0
-        letter = a.letter.upper()
-        if letter == "X":
+
+    def flush_record() -> None:
+        nonlocal current, pos
+        records.append(current)
+        current = []
+        pos = 0
+
+    while ti < len(targets):
+        for a in actions:
+            if ti >= len(targets):
+                break
+            if a.kind == "literal":
+                pos += len(a.text)
+                continue
+            if a.kind == "space":
+                pos += a.count
+                continue
+            if a.kind == "newline":
+                flush_record()
+                continue
+            if a.kind != "data":
+                return None
+            width = a.width or 0
+            letter = a.letter.upper()
+            if letter == "X":
+                pos += width
+                continue
+            if letter == "I":
+                kind = "int"
+            elif letter in ("F", "E", "D", "G"):
+                kind = "real"
+            else:
+                return None
+            current.append((targets[ti], kind, pos, width, a.decimals or 0))
+            ti += 1
             pos += width
-            continue
-        if letter == "I":
-            kind = "int"
-        elif letter in ("F", "E", "D", "G"):
-            kind = "real"
-        else:
-            return None  # character / unsupported descriptor
-        if ti >= len(targets):
-            return None
-        fields.append((targets[ti], kind, pos, width, a.decimals or 0))
-        ti += 1
-        pos += width
+        # End of one format cycle -- flush a record so cycling reads the
+        # next line for the next batch of items.
+        if ti < len(targets):
+            flush_record()
+    if current:
+        records.append(current)
     if ti != len(targets):
         return None
-    return fields
+    return records
 
 
 def _expand_array_target(lowered: IRExpr, expr_node: Node) -> list[IRExpr]:
     """A whole-array input item reads one value per element; expand ``a``
-    into ``a(1) ... a(N)`` so each maps 1:1 to a format descriptor.
-    Returns ``[lowered]`` for scalars or arrays of unknown size."""
+    into ``a(1) ... a(N)`` (or ``a(i,j)`` for rank-N) so each maps 1:1 to
+    a format descriptor.  Iteration order is Fortran column-major
+    (leftmost subscript varies fastest).  Returns ``[lowered]`` for
+    scalars or arrays of unknown size."""
     name = expr_node.find_first("Name")
-    if name is None or not name.sym_type or name.rank != 1:
+    if name is None or not name.sym_type or name.rank is None or name.rank < 1:
         return [lowered]
-    size = _array_size_from_sym(name)
-    if size is None or size <= 0:
+    shape = name.shape
+    if shape is None or len(shape) != name.rank:
         return [lowered]
-    if isinstance(lowered, IRName):
-        return [IRRaw(f"{lowered.name}({i})") for i in range(1, size + 1)]
-    return [lowered]
+    if not isinstance(lowered, IRName):
+        return [lowered]
+    # Column-major: leftmost index varies fastest.
+    def cm_indices(
+        dims_left: list[tuple[int, int]],
+    ) -> list[tuple[int, ...]]:
+        if not dims_left:
+            return [()]
+        lo, hi = dims_left[0]
+        rest = cm_indices(dims_left[1:])
+        out: list[tuple[int, ...]] = []
+        for outer in rest:
+            for i in range(lo, hi + 1):
+                out.append((i,) + outer)
+        return out
+
+    return [
+        IRRaw(f"{lowered.name}({', '.join(str(i) for i in idx)})")
+        for idx in cm_indices(list(shape))
+    ]
 
 
 def _array_size_from_sym(name: Node) -> int | None:
