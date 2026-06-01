@@ -1524,11 +1524,15 @@ def _expand_io_label_jumps(body: list[IRStatement]) -> None:
                 else stmt.stream
             )
             # Replace the IRRead with one that no longer carries the
-            # status spec (so emit doesn't try to handle it).
+            # status spec (so emit doesn't try to handle it).  Preserve
+            # every other field so a labeled read still picks the
+            # fixed-width emit path when ``fields`` is set.
             cleaned = IRRead(
                 items=stmt.items,
                 stream=stmt.stream,
                 internal_unit=stmt.internal_unit,
+                unit_text=stmt.unit_text,
+                fields=stmt.fields,
                 leading_comments=stmt.leading_comments,
                 trailing_comments=stmt.trailing_comments,
             )
@@ -4038,10 +4042,33 @@ def _lower_read(
     internal = _internal_file_unit(io_unit)
     stream = _input_stream_for_unit(io_unit)
     end_label, err_label, iostat_target = _extract_io_status_specs(node)
+    # A sequential ``READ(unit, format)`` with a compile-time format spec
+    # that maps to fixed-width column slices: pre-resolve fields so the
+    # emitter slices ``getline``'d bytes by offset rather than ``>>``
+    # (which space-tokenizes -- wrong for files like apf107.dat whose
+    # records are column-packed, e.g. ``-11257.0262.5241.9``).
+    fmt_kind, fmt_payload = _classify_format(node)
+    fields = None
+    unit_text = None
+    if (
+        fmt_kind == "const"
+        and isinstance(fmt_payload, str)
+        and internal is None
+    ):
+        ut = _unit_text(io_unit)
+        # Only file units route through ``_units.in(<n>)``; stdin (``*``,
+        # ``5``) stays a plain ``>>`` chain (interactive / piped tests).
+        if ut is not None and ut not in ("5", "*"):
+            built = _build_direct_read_fields(node, fmt_payload)
+            if built:
+                fields = built
+                unit_text = ut
     return IRRead(
         items=items,
         stream=stream,
         internal_unit=internal,
+        unit_text=unit_text,
+        fields=fields,
         end_label=end_label,
         err_label=err_label,
         iostat_target=iostat_target,

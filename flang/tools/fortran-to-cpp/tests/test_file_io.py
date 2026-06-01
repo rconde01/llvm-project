@@ -56,6 +56,32 @@ ROUNDTRIP_F = """\
 # honored, the C++ loops forever reading past the file end (writing
 # garbage values, overflowing the destination array, then segfaulting
 # or hitting the runtime bounds check).
+# Sequential ``READ(unit, fmt)`` with a fixed-width FORMAT.  The naive
+# ``stream >> v`` translation space-tokenizes, which would misparse a
+# column-packed record like ``-11257.0262.5241.9`` (no whitespace between
+# fields).  The converter slices by offset using read_field_int /
+# read_field_real instead, matching Fortran's column-positional semantics.
+READ_FORMATTED_FIXED_WIDTH_F = """\
+      program p
+      integer ny, nm, nd, ix
+      real    fa, fb, fc
+
+      open(13, file='packed.dat', status='replace')
+c     One column-packed record with no whitespace between fields --
+c     I3 ints and F5.1 floats run flush against each other (-99 + 257.0
+c     come out as "-99257.0").  A naive ``stream >> v`` would misparse it.
+      write(13, '(3I3,I3,3F5.1)') 58, 1, 1, -99, 257.0, 262.5, 241.9
+      close(13)
+
+      open(13, file='packed.dat', status='old')
+      read(13, 10) ny, nm, nd, ix, fa, fb, fc
+ 10   format(3I3,I3,3F5.1)
+      close(13)
+      write(*, *) ny, nm, nd, ix, fa, fb, fc
+      end
+"""
+
+
 READ_END_LABEL_F = """\
       program p
       integer x, n, buf(10)
@@ -119,6 +145,18 @@ class FileIoEmitTests(unittest.TestCase):
         cpp = _convert(READ_END_LABEL_F)
         self.assertIn("(!_units.in(13))", cpp)
 
+    def test_formatted_fixed_width_read_uses_field_slicer(self) -> None:
+        # A sequential READ with a constant fixed-width FORMAT must route
+        # through ``getline`` + ``read_field_int`` / ``read_field_real``
+        # so column-packed records (no whitespace between fields) parse
+        # correctly -- not the ``>>`` chain, which would space-tokenize.
+        cpp = _convert(READ_FORMATTED_FIXED_WIDTH_F)
+        self.assertIn("std::getline(_units.in(13), _rec)", cpp)
+        self.assertIn("fortran::io::read_field_int(_rec,", cpp)
+        self.assertIn("fortran::io::read_field_real(_rec,", cpp)
+        # And no ``>>`` chain for the fixed-width read.
+        self.assertNotIn("_units.in(13) >> ny", cpp)
+
 
 @unittest.skipUnless(
     _have_flang() and _have_cxx(), "need flang and a C++20 compiler"
@@ -148,6 +186,37 @@ class FileIoRunTests(unittest.TestCase):
             parts = run.stdout.split()
             self.assertEqual(parts[0], "42")
             self.assertEqual(parts[1], "3.5")
+
+    def test_formatted_fixed_width_read_runs(self) -> None:
+        # Round-trip: write a column-packed record via FORMAT, then read
+        # it back via FORMAT.  The C++ must reproduce the integer (-112)
+        # and the three floats (257.0, 262.5, 241.9) exactly.
+        with tempfile.TemporaryDirectory() as d:
+            cpp = Path(d) / "out.cpp"
+            cpp.write_text(_convert(READ_FORMATTED_FIXED_WIDTH_F))
+            exe = Path(d) / "out"
+            cxx = (
+                shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+            )
+            assert cxx is not None
+            comp = subprocess.run(
+                [cxx, "-std=c++20", "-I", str(RUNTIME_INCLUDE),
+                 str(cpp), "-o", str(exe)],
+                capture_output=True, text=True, check=False,
+            )
+            if comp.returncode != 0:
+                self.fail(f"compile failed:\n{comp.stderr}\n{cpp.read_text()}")
+            run = subprocess.run(
+                [str(exe)], capture_output=True, text=True, check=False, cwd=d
+            )
+            self.assertEqual(run.returncode, 0, msg=run.stderr)
+            parts = run.stdout.split()
+            self.assertEqual(parts[:4], ["58", "1", "1", "-99"])
+            # Floats round-trip numerically; list-directed print may
+            # drop a trailing zero, so compare via float().
+            self.assertEqual(float(parts[4]), 257.0)
+            self.assertEqual(float(parts[5]), 262.5)
+            self.assertAlmostEqual(float(parts[6]), 241.9, places=1)
 
     def test_read_end_label_runs(self) -> None:
         # Read until EOF and report n + first/last value -- 5, 10, 50.

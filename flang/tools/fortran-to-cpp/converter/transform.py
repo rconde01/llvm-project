@@ -233,6 +233,13 @@ def _map_statement_children(
                 if stmt.internal_unit is not None
                 else None
             ),
+            unit_text=stmt.unit_text,
+            fields=(
+                [(_e(tgt, on_expr), kind, off, width, dec)
+                 for tgt, kind, off, width, dec in stmt.fields]
+                if stmt.fields is not None
+                else None
+            ),
             end_label=stmt.end_label,
             err_label=stmt.err_label,
             iostat_target=(
