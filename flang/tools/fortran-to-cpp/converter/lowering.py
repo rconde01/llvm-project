@@ -1476,6 +1476,12 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     # entry onward) as its own subprogram before goto-structuring, which
     # rewrites the body irreversibly.
     _split_entry_points(sub, node, data_inits)
+    # ``READ(..., END=label, ERR=label, IOSTAT=v)`` -- expand each labeled
+    # status spec into a synthetic ``if (!stream) goto label;`` right
+    # after the read, so the goto-structuring pass below converts it
+    # uniformly along with every other goto.  Done at this point because
+    # the structurer is what turns goto into ``_pc`` state transitions.
+    _expand_io_label_jumps(sub.body)
     # Eliminate goto in favor of structured control flow.
     sub.body, used_dispatch = structure_gotos(sub.body)
     # ``structure_gotos`` only reports the *top-level* dispatch; nested
@@ -1492,6 +1498,86 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
                 type=IRType(cpp="int", fortran="integer", is_integer=True),
             )
         )
+
+
+def _expand_io_label_jumps(body: list[IRStatement]) -> None:
+    """Rewrite each ``IRRead`` carrying ``end_label``/``err_label`` into a
+    plain ``IRRead`` followed by a synthetic conditional ``IRGoto`` that
+    jumps when the stream signals end-of-file (or, for ERR=, any non-EOF
+    failure).  Also assigns ``IOSTAT=`` after the read.  Operates in
+    place, recursively into every nested child body."""
+    from .structure import _child_bodies  # local: structure imports from lowering too
+
+    i = 0
+    while i < len(body):
+        stmt = body[i]
+        for child in _child_bodies(stmt):
+            _expand_io_label_jumps(child)
+        if isinstance(stmt, IRRead) and (
+            stmt.end_label is not None
+            or stmt.err_label is not None
+            or stmt.iostat_target is not None
+        ):
+            stream = (
+                _render_expr_inline(stmt.internal_unit)
+                if stmt.internal_unit is not None
+                else stmt.stream
+            )
+            # Replace the IRRead with one that no longer carries the
+            # status spec (so emit doesn't try to handle it).
+            cleaned = IRRead(
+                items=stmt.items,
+                stream=stmt.stream,
+                internal_unit=stmt.internal_unit,
+                leading_comments=stmt.leading_comments,
+                trailing_comments=stmt.trailing_comments,
+            )
+            inserts: list[IRStatement] = [cleaned]
+            if stmt.iostat_target is not None:
+                # iostat: 0 on success, -1 on EOF, 1 on other failure.
+                inserts.append(
+                    IRAssignment(
+                        target=stmt.iostat_target,
+                        value=IRRaw(
+                            f"({stream}.fail() ? "
+                            f"({stream}.eof() ? -1 : 1) : 0)"
+                        ),
+                    )
+                )
+            if stmt.end_label is not None and stmt.err_label is not None:
+                # Two distinct labels: EOF goes to end, non-EOF failure to err.
+                inserts.append(
+                    IRGoto(
+                        target=stmt.end_label,
+                        condition=IRRaw(f"({stream}.eof())"),
+                    )
+                )
+                inserts.append(
+                    IRGoto(
+                        target=stmt.err_label,
+                        condition=IRRaw(
+                            f"({stream}.fail() && !{stream}.eof())"
+                        ),
+                    )
+                )
+            elif stmt.end_label is not None:
+                inserts.append(
+                    IRGoto(
+                        target=stmt.end_label,
+                        condition=IRRaw(f"(!{stream})"),
+                    )
+                )
+            elif stmt.err_label is not None:
+                inserts.append(
+                    IRGoto(
+                        target=stmt.err_label,
+                        condition=IRRaw(f"(!{stream})"),
+                    )
+                )
+            body[i : i + 1] = inserts
+            i += len(inserts)
+            continue
+        i += 1
 
 
 def _split_entry_points(
@@ -3951,7 +4037,49 @@ def _lower_read(
     items = _lower_io_items(node, "InputItem", "InputImpliedDo")
     internal = _internal_file_unit(io_unit)
     stream = _input_stream_for_unit(io_unit)
-    return IRRead(items=items, stream=stream, internal_unit=internal)
+    end_label, err_label, iostat_target = _extract_io_status_specs(node)
+    return IRRead(
+        items=items,
+        stream=stream,
+        internal_unit=internal,
+        end_label=end_label,
+        err_label=err_label,
+        iostat_target=iostat_target,
+    )
+
+
+def _extract_io_status_specs(
+    node: Node,
+) -> tuple[int | None, int | None, "IRExpr | None"]:
+    """Pull ``END=label``, ``ERR=label`` and ``IOSTAT=var`` out of a
+    READ/WRITE's IoControlSpec children.  Returns ``(end_label, err_label,
+    iostat_target)``; any unset spec is ``None``."""
+    end_label: int | None = None
+    err_label: int | None = None
+    iostat_target: "IRExpr | None" = None
+    for spec in node.children_of_kind("IoControlSpec"):
+        end = spec.first_child("EndLabel")
+        if end is not None:
+            lbl = end.first_child("uint64_t")
+            if lbl is not None and lbl.fortran:
+                try:
+                    end_label = int(lbl.fortran)
+                except ValueError:
+                    pass
+        err = spec.first_child("ErrLabel")
+        if err is not None:
+            lbl = err.first_child("uint64_t")
+            if lbl is not None and lbl.fortran:
+                try:
+                    err_label = int(lbl.fortran)
+                except ValueError:
+                    pass
+        iost = spec.first_child("IoStat") or spec.first_child("StatVariable")
+        if iost is not None:
+            iv = iost.first_child("Variable") or iost.first_child("Expr")
+            if iv is not None:
+                iostat_target = _lower_expression(iv)
+    return end_label, err_label, iostat_target
 
 
 def _extract_rec(node: Node) -> IRExpr | None:

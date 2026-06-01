@@ -51,6 +51,32 @@ ROUNDTRIP_F = """\
 """
 
 
+# A read loop that uses ``END=label`` to break on EOF, the Numerical
+# Recipes / IRI readapf107 pattern.  Without the END= clause being
+# honored, the C++ loops forever reading past the file end (writing
+# garbage values, overflowing the destination array, then segfaulting
+# or hitting the runtime bounds check).
+READ_END_LABEL_F = """\
+      program p
+      integer x, n, buf(10)
+      open(13, file='end_test.dat', status='replace')
+      do n=1,5
+        write(13,*) n*10
+      end do
+      close(13)
+
+      open(13, file='end_test.dat', status='old')
+      n = 0
+  1   read(13, *, end=21) x
+      n = n + 1
+      buf(n) = x
+      goto 1
+ 21   close(13)
+      write(*,*) n, buf(1), buf(n)
+      end
+"""
+
+
 def _convert(src: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".f", delete=False, encoding="utf-8"
@@ -84,6 +110,15 @@ class FileIoEmitTests(unittest.TestCase):
         self.assertIn("fortran::io::Units _units", cpp)  # owned by main
         self.assertIn("wr(_units);", cpp)
 
+    def test_read_end_label_emits_eof_jump(self) -> None:
+        # READ(..., END=21) must produce a synthetic ``if (!stream) goto
+        # 21;`` so the EOF terminates the read loop rather than spinning
+        # forever past the file end.  The structuring pass converts the
+        # goto to a state-machine arm, so we just assert that the stream
+        # is checked.
+        cpp = _convert(READ_END_LABEL_F)
+        self.assertIn("(!_units.in(13))", cpp)
+
 
 @unittest.skipUnless(
     _have_flang() and _have_cxx(), "need flang and a C++20 compiler"
@@ -113,6 +148,31 @@ class FileIoRunTests(unittest.TestCase):
             parts = run.stdout.split()
             self.assertEqual(parts[0], "42")
             self.assertEqual(parts[1], "3.5")
+
+    def test_read_end_label_runs(self) -> None:
+        # Read until EOF and report n + first/last value -- 5, 10, 50.
+        # Without END= honored this loops forever / segfaults.
+        with tempfile.TemporaryDirectory() as d:
+            cpp = Path(d) / "out.cpp"
+            cpp.write_text(_convert(READ_END_LABEL_F))
+            exe = Path(d) / "out"
+            cxx = (
+                shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+            )
+            assert cxx is not None
+            comp = subprocess.run(
+                [cxx, "-std=c++20", "-I", str(RUNTIME_INCLUDE),
+                 str(cpp), "-o", str(exe)],
+                capture_output=True, text=True, check=False,
+            )
+            if comp.returncode != 0:
+                self.fail(f"compile failed:\n{comp.stderr}\n{cpp.read_text()}")
+            run = subprocess.run(
+                [str(exe)], capture_output=True, text=True, check=False, cwd=d
+            )
+            self.assertEqual(run.returncode, 0, msg=run.stderr)
+            parts = run.stdout.split()
+            self.assertEqual(parts, ["5", "10", "50"])
 
 
 if __name__ == "__main__":
