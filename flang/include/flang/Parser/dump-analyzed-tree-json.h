@@ -38,11 +38,16 @@ namespace Fortran::parser {
 // resolved-symbol facts and analyzed-expression facts that semantics
 // computed — so a downstream tool reads structure and semantics in one
 // pass.  Each Name carries its resolved type/rank/shape, classification
-// (object/proc/assoc), and full attribute set; each node with an analyzed
-// ``typedExpr`` (Expr / Variable / DataStmtConstant / AllocateObject /
-// PointerObject) carries the expression's type, rank, category
-// (variable / constant / expression), and folded scalar-integer value
-// when applicable.
+// (object/proc/assoc), full attribute set, implicit-typing flag, and —
+// when applicable — its declaring source location, owning derived type,
+// COMMON-block name, EQUIVALENCE-class index, and resolved procedure-
+// interface name.  Each node with an analyzed ``typedExpr`` (Expr /
+// Variable / DataStmtConstant / AllocateObject / PointerObject) carries
+// the expression's type, rank, category (variable / constant /
+// expression), and folded scalar value (decimal-string for integers,
+// Fortran rendering for other scalar constants).
+//
+// See ``flang/docs/AnalyzedTreeJSONDumper.md`` for the full schema.
 //
 // Each parse tree node is emitted as a JSON object of the form:
 //   { "kind": "<name>",
@@ -203,6 +208,13 @@ public:
       if (!first) {
         out_ << ']';
       }
+      // Implicit typing: a symbol whose type came from IMPLICIT rules
+      // (rather than an explicit declaration) carries Flag::Implicit.
+      // Reformatting tools want this to tell apart names that need a
+      // generated explicit declaration when adding IMPLICIT NONE.
+      if (sym.test(semantics::Symbol::Flag::Implicit)) {
+        out_ << ",\"implicit\":true";
+      }
       // Association: a name whose resolved symbol lives outside the
       // enclosing program unit's scope is module/host state, not a local.
       if (x.symbol->has<semantics::UseDetails>()) {
@@ -211,6 +223,69 @@ public:
         out_ << ",\"assoc\":\"host\"";
       } else if (unitScope_ && !OwnedBy(sym, *unitScope_)) {
         out_ << ",\"assoc\":\"host\"";
+      }
+      // Defining source location.  ``sym.name()`` is the SourceName
+      // (CharBlock) of the symbol's declaring occurrence.  Emit it when
+      // this Name is a *use* (i.e. its own source range differs from the
+      // declaration's), so jump-to-definition tools can resolve names
+      // without rebuilding a symbol table.
+      const parser::CharBlock &defined{sym.name()};
+      if (!defined.empty() && defined.begin() != x.source.begin()) {
+        EmitDefinedAt(defined);
+      }
+      // Owner of a component: when the symbol's scope is a derived type,
+      // emit the type's name so a tool walking ``rec%field`` can ask "what
+      // type owns ``field``?" without traversing the parent ``DataRef``.
+      if (sym.owner().IsDerivedType()) {
+        if (const semantics::Symbol *owner{sym.owner().symbol()}) {
+          out_ << ",\"defined_in\":\"";
+          EmitJSONString(owner->name().ToString());
+          out_ << "\"";
+        }
+      }
+      // COMMON-block membership for an Object: the consumer doesn't have
+      // to walk the parse-tree COMMON statements to know which block a
+      // variable lives in.
+      if (const auto *obj{sym.detailsIf<semantics::ObjectEntityDetails>()}) {
+        if (const semantics::Symbol * cb{obj->commonBlock()}) {
+          out_ << ",\"common_block\":\"";
+          EmitJSONString(cb->name().ToString());
+          out_ << "\"";
+        }
+      }
+      // EQUIVALENCE-class index: 0-based position within the owning
+      // scope's equivalenceSets() list.  ``equivalence_class`` lets a
+      // storage-analysis tool group co-aliased variables in one pass.
+      if (sym.has<semantics::ObjectEntityDetails>()) {
+        std::size_t setIndex{0};
+        bool found{false};
+        for (const semantics::EquivalenceSet &set : sym.owner().equivalenceSets()) {
+          for (const semantics::EquivalenceObject &eo : set) {
+            if (&eo.symbol == &sym) {
+              found = true;
+              break;
+            }
+          }
+          if (found) {
+            break;
+          }
+          ++setIndex;
+        }
+        if (found) {
+          out_ << ",\"equivalence_class\":" << setIndex;
+        }
+      }
+      // Procedure-interface link: a ``procedure(iface), pointer :: p``
+      // declares ``p`` whose ProcEntityDetails carries the resolved
+      // interface symbol.  Emit the interface's name so cross-reference
+      // tools can resolve the indirect call without searching for an
+      // interface block by hand.
+      if (const auto *pe{sym.detailsIf<semantics::ProcEntityDetails>()}) {
+        if (const semantics::Symbol * iface{pe->procInterface()}) {
+          out_ << ",\"proc_interface\":\"";
+          EmitJSONString(iface->name().ToString());
+          out_ << "\"";
+        }
       }
     }
     return true;
@@ -415,6 +490,28 @@ private:
     out_ << "}";
   }
 
+  // Same shape as ``source`` but emitted as ``defined_at`` for a Name's
+  // declaration site (pointing back at the symbol from a use site).
+  void EmitDefinedAt(const CharBlock &source) {
+    if (source.empty()) {
+      return;
+    }
+    out_ << ",\"defined_at\":{\"text\":\"";
+    EmitJSONString(source.ToString());
+    out_ << "\"";
+    if (allCooked_) {
+      if (auto range{allCooked_->GetSourcePositionRange(source)}) {
+        const SourcePosition &begin = range->first;
+        const SourcePosition &end = range->second;
+        out_ << ",\"file\":\"";
+        EmitJSONString(begin.path.get());
+        out_ << "\",\"line\":" << begin.line << ",\"col\":" << begin.column
+             << ",\"endLine\":" << end.line << ",\"endCol\":" << end.column;
+      }
+    }
+    out_ << "}";
+  }
+
   // Mirrors ParseTreeDumper::AsFortran: emit a "fortran" string when the node
   // carries semantic information that can be rendered as Fortran source.
   template <typename T> void EmitOptionalFortran(const T &x) {
@@ -488,16 +585,35 @@ private:
       }
       out_ << ",\"rank\":" << e.Rank();
       const char *cat;
+      bool isConstant{false};
       if (evaluate::IsVariable(e)) {
         cat = "variable";
       } else if (evaluate::IsConstantExpr(e)) {
         cat = "constant";
+        isConstant = true;
       } else {
         cat = "expression";
       }
       out_ << ",\"category\":\"" << cat << "\"";
+      // ``value`` for a scalar integer constant -- the common case for
+      // array bounds, kinds, and PARAMETER values.
       if (auto v{evaluate::ToInt64(e)}) {
         out_ << ",\"value\":\"" << *v << "\"";
+      } else if (isConstant && e.Rank() == 0) {
+        // Render any other scalar constant (REAL, LOGICAL, CHARACTER,
+        // COMPLEX) via the expression's own Fortran rendering.  The
+        // separator-less form is what a tool wants when extracting
+        // PARAMETER tables; the ``fortran`` field nearby duplicates the
+        // analyzed-source spelling for round-trip readability.
+        std::string buf;
+        llvm::raw_string_ostream ss{buf};
+        e.AsFortran(ss);
+        ss.flush();
+        if (!buf.empty()) {
+          out_ << ",\"value\":\"";
+          EmitJSONString(buf);
+          out_ << "\"";
+        }
       }
     }
   }

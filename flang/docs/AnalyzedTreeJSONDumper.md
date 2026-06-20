@@ -58,15 +58,21 @@ information.
 
 `Name` nodes whose symbol is resolved add:
 
-| Field    | Type            | Description                                                  |
-| -------- | --------------- | ------------------------------------------------------------ |
-| `type`   | string          | Resolved type (e.g. `"INTEGER(4)"`, `"REAL(8)"`, `"CHARACTER(LEN=8,KIND=1)"`). |
-| `rank`   | integer         | Resolved rank.  `0` for scalars; `1..7` for arrays.          |
-| `shape`  | array of pairs  | `[[lo,hi],…]` per dimension — only when every bound is a constant-foldable integer (Fortran-deferred shapes, assumed shapes, and run-time-bound arrays omit this). |
-| `object` | boolean (`true`) | Symbol classifies as an object entity (a variable / parameter / dummy data). |
-| `proc`   | boolean (`true`) | Symbol classifies as a procedure (subroutine, function, external, or intrinsic). |
-| `attrs`  | array of strings | The resolved-symbol attribute set, lowercased.  See [Attributes](#attributes). |
-| `assoc`  | string          | `"use"` if module-use-associated, `"host"` if host-associated. Omitted for local symbols. |
+| Field               | Type            | Description                                                  |
+| ------------------- | --------------- | ------------------------------------------------------------ |
+| `type`              | string          | Resolved type (e.g. `"INTEGER(4)"`, `"REAL(8)"`, `"CHARACTER(LEN=8,KIND=1)"`). |
+| `rank`              | integer         | Resolved rank.  `0` for scalars; `1..7` for arrays.          |
+| `shape`             | array of pairs  | `[[lo,hi],…]` per dimension — only when every bound is a constant-foldable integer (Fortran-deferred shapes, assumed shapes, and run-time-bound arrays omit this). |
+| `object`            | boolean (`true`) | Symbol classifies as an object entity (a variable / parameter / dummy data). |
+| `proc`              | boolean (`true`) | Symbol classifies as a procedure (subroutine, function, external, or intrinsic). |
+| `attrs`             | array of strings | The resolved-symbol attribute set, lowercased.  See [Attributes](#attributes). |
+| `implicit`          | boolean (`true`) | Symbol got its type from implicit-typing rules rather than an explicit declaration.  Tools that reformat to ``IMPLICIT NONE`` need this to know which names need a synthesized declaration. |
+| `assoc`             | string          | `"use"` if module-use-associated, `"host"` if host-associated. Omitted for local symbols. |
+| `defined_at`        | object          | Source location of the symbol's *declaring* occurrence — same sub-object shape as `source`.  Omitted on the declaring Name itself, and on Names with no source range. Lets jump-to-definition tools resolve a use site without rebuilding a symbol table. |
+| `defined_in`        | string          | Owning derived-type name when the symbol is a type component (so `q%x` carries `defined_in:"pt"` on `x`).  Omitted when the symbol isn't a component. |
+| `common_block`      | string          | Name of the COMMON block this object lives in.  Omitted for objects not in any COMMON. |
+| `equivalence_class` | integer         | 0-based index within the owning scope's equivalence-set list.  All symbols sharing storage through an `EQUIVALENCE` statement carry the same `equivalence_class`.  Omitted for symbols not in any EQUIVALENCE. |
+| `proc_interface`    | string          | For a procedure entity declared `procedure(iface), …`, the name of the resolved interface.  Omitted when there is no explicit interface (implicit-interface external, no interface block). |
 
 Nodes whose analyzed `typedExpr` is populated (`Expr`, `Variable`,
 `DataStmtConstant`, `AllocateObject`, `PointerObject`) add:
@@ -76,7 +82,7 @@ Nodes whose analyzed `typedExpr` is populated (`Expr`, `Variable`,
 | `type`     | string  | Resolved expression type.                                    |
 | `rank`     | integer | Resolved expression rank.                                    |
 | `category` | string  | `"variable"` — an assignable designator (LHS of an assignment, an actual passed to an output dummy); `"constant"` — a folded compile-time value; `"expression"` — a computed value. |
-| `value`    | string  | Folded value as a decimal integer string — only for scalar integer constants that fold.  Other constants (real, complex, logical) carry no `value`. |
+| `value`    | string  | Folded scalar value.  Integer constants are emitted as a decimal-string (e.g. `"value":"625"`).  REAL, LOGICAL, COMPLEX and CHARACTER scalar constants are emitted as their Fortran rendering (e.g. `"value":"3.14_4"`, `"value":".true._4"`, `"value":"\"hello\"_1"`), so a tool extracting PARAMETER tables can read the constant without re-running semantics.  Omitted for non-constant expressions and for rank ≥ 1 constants. |
 
 ### Source ranges
 
