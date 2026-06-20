@@ -588,27 +588,26 @@ def _rewrite_call_sites(tu: IRTranslationUnit) -> None:
             return extra
 
         def proc_lambda(actual_name: str, arity: int) -> IRRaw:
-            """A state-capturing lambda adapting ``actual_name`` (a procedure
-            passed as an argument) to a ``std::function`` dummy.  Its
-            parameters mirror the actual procedure's own parameter types so
-            that ``double`` / ``logical`` outputs bind correctly; captured
-            state is prepended to the forwarded call."""
+            """A state-capturing *generic* lambda adapting ``actual_name`` (a
+            procedure passed as an argument) to a dummy-procedure parameter.
+
+            The receiving routine takes the callback as a deduced template
+            type, so the lambda needs no fixed parameter signature: it accepts
+            whatever the callee invokes it with (``auto&&...``) and forwards
+            those after the captured state arguments.  A generic lambda is a
+            concrete object with its own type, so even a higher-order routine
+            (itself a template) can be passed this way — deduction latches
+            onto the closure, not the un-instantiable template name."""
             sargs = state_args(actual_name) or []
-            forwarded = [e.name for e in sargs if isinstance(e, IRName)]
+            state = "".join(
+                f"{e.name}, " for e in sargs if isinstance(e, IRName)
+            )
             actual = by_name.get(actual_name)
-            if actual is not None:
-                lam_params = [
-                    f"{pp.cpp_param_type()} _a{k}"
-                    for k, pp in enumerate(actual.parameters)
-                ]
-                forwarded += [f"_a{k}" for k in range(len(actual.parameters))]
-            else:
-                lam_params = [f"float _a{k}" for k in range(arity)]
-                forwarded += [f"_a{k}" for k in range(arity)]
-            params = ", ".join(lam_params)
-            call = f"{actual_name}({', '.join(forwarded)})"
-            ret = "" if actual is not None and actual.kind != "function" else "return "
-            return IRRaw(f"[&]({params}) {{ {ret}{call}; }}")
+            ret = "return " if (actual is not None and actual.kind == "function") else ""
+            return IRRaw(
+                f"[&](auto&&... _a) {{ {ret}{actual_name}("
+                f"{state}std::forward<decltype(_a)>(_a)...); }}"
+            )
 
         def wrap_proc_args(callee_name: str, args) -> list[IRExpr]:
             """Replace any actual that is a bare procedure name passed to a

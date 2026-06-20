@@ -87,8 +87,14 @@ def emit_translation_unit(
         _emit_local_state_structs(out, tu)
         _emit_prototypes(out, tu)
     # With a shared header the structs and prototypes are declared there;
-    # this file only carries the routine definitions.
+    # this file only carries the routine definitions.  A procedure-taking
+    # routine is a template, though, and a template's definition must be
+    # visible at every call site — so those live in the shared header
+    # (emit_shared_header), not here.  In single-file mode (no shared
+    # header) everything is one TU, so templates are defined here as usual.
     for sub in tu.subprograms:
+        if shared_header is not None and _is_template_sub(sub):
+            continue
         out.write("\n")
         _emit_subprogram(out, sub)
     _emit_cpp_main(out, tu)
@@ -114,6 +120,18 @@ def emit_shared_header(tu: IRTranslationUnit, *, guard: str) -> str:
     _emit_common_structs(out, tu)
     _emit_local_state_structs(out, tu)
     _emit_prototypes(out, tu)
+    # Procedure-taking routines are function templates: their definitions
+    # must be visible wherever they're called, so they live here in the
+    # shared header (the per-file ``.cpp`` skips them).  Prototypes above
+    # already forward-declare them, so a template that calls another
+    # template resolves regardless of definition order.
+    seen: set[str] = set()
+    for sub in tu.subprograms:
+        if not _is_template_sub(sub) or sub.name in seen:
+            continue
+        seen.add(sub.name)
+        out.write("\n")
+        _emit_subprogram(out, sub)
     out.write(f"\n#endif  // {guard}\n")
     return out.getvalue()
 
@@ -258,6 +276,32 @@ def _emit_cpp_main(out: StringIO, tu: IRTranslationUnit) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _proc_param_indices(sub: IRSubprogram) -> list[int]:
+    """Positions of ``sub``'s dummy-procedure parameters."""
+    return [i for i, p in enumerate(sub.parameters) if p.type.is_procedure]
+
+
+def _is_template_sub(sub: IRSubprogram) -> bool:
+    """A routine that takes a dummy procedure is emitted as a function
+    template: each procedure parameter becomes a deduced type ``F<k>``
+    rather than a fixed ``std::function``.  This sidesteps cross-program
+    signature inference entirely — the compiler deduces the callback type
+    from whatever is actually passed, and a forwarded callback keeps its
+    (already deduced) type down the chain.  (Procedure *actuals* are wrapped
+    in a generic lambda at the call site so even a higher-order routine
+    passed as a callback is a concrete object the deduction can latch onto.)"""
+    return sub.kind != "main" and bool(_proc_param_indices(sub))
+
+
+def _template_prefix(sub: IRSubprogram) -> str:
+    """``template <class F0, class F1, ...>`` for a procedure-taking
+    routine, one type parameter per dummy procedure; ``""`` otherwise."""
+    n = len(_proc_param_indices(sub))
+    if not n:
+        return ""
+    return "template <" + ", ".join(f"class F{k}" for k in range(n)) + ">\n"
+
+
 def _signature(sub: IRSubprogram, *, with_defaults: bool = True) -> str:
     if sub.kind == "function" and sub.return_type is not None:
         ret = sub.return_type.cpp
@@ -276,11 +320,18 @@ def _signature(sub: IRSubprogram, *, with_defaults: bool = True) -> str:
             default_from = i
         else:
             break
+    # A procedure-taking routine is a template; render each dummy procedure
+    # as its deduced type ``const F<k>&`` instead of a concrete std::function.
+    proc_pos = {idx: k for k, idx in enumerate(_proc_param_indices(sub))}
     for i, p in enumerate(params):
-        parts.append(
-            p.cpp_param_decl(with_default=with_defaults and i >= default_from)
-        )
+        if i in proc_pos:
+            parts.append(f"const F{proc_pos[i]}& {p.name}")
+        else:
+            parts.append(
+                p.cpp_param_decl(with_default=with_defaults and i >= default_from)
+            )
     return f"{ret} {sub.name}({', '.join(parts)})"
+
 
 
 def _emit_prototypes(out: StringIO, tu: IRTranslationUnit) -> None:
@@ -295,12 +346,13 @@ def _emit_prototypes(out: StringIO, tu: IRTranslationUnit) -> None:
         if sub.name in seen:
             continue
         seen.add(sub.name)
-        out.write(f"{_signature(sub)};\n")
+        out.write(f"{_template_prefix(sub)}{_signature(sub)};\n")
 
 
 def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
     _emit_comment_block(out, sub.leading_comments, indent=0)
     # The prototype carries default arguments; the definition omits them.
+    out.write(_template_prefix(sub))
     out.write(_signature(sub, with_defaults=False))
     out.write(" {\n")
 

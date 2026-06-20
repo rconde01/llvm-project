@@ -43,13 +43,18 @@ end program
 
 @unittest.skipUnless(have_flang(), "flang binary not available")
 class DummyProcedureEmitTests(unittest.TestCase):
-    def test_dummy_is_std_function_param(self) -> None:
+    def test_dummy_is_a_template_param(self) -> None:
+        # A procedure-taking routine is a function template; the dummy is a
+        # deduced type, not a fixed std::function — so the compiler infers
+        # the callback type from whatever is passed.
         cpp = convert(DUMMY_PROC_F90)
-        self.assertIn("std::function<float(float)>", cpp)
+        self.assertIn("template <class F0>", cpp)
+        self.assertIn("const F0& f", cpp)
 
-    def test_actual_is_wrapped_in_a_lambda(self) -> None:
+    def test_actual_is_wrapped_in_a_generic_lambda(self) -> None:
         cpp = convert(DUMMY_PROC_F90)
-        self.assertIn("apply_twice([", cpp)  # square passed as a lambda
+        # square is passed as a generic lambda forwarding to it.
+        self.assertIn("apply_twice([&](auto&&... _a)", cpp)
 
 
 @unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
@@ -60,10 +65,11 @@ class DummyProcedureRunTests(unittest.TestCase):
 
 
 # A dummy procedure that the receiving routine only *forwards* (never calls
-# locally) gives the per-routine pass no argument count or types to work
-# from.  The whole-program signature inference recovers them from the actual
-# routine passed in — here a 3-argument callback whose third argument is a
-# ``double`` *output*, which a float-based wrapper could not bind.
+# locally) gives no local clue to its signature.  Because the routine is a
+# template, no inference is needed: ``driver`` and ``engine`` are templates
+# on the callback type, and the deduced type flows through the forward to
+# wherever it is finally called.  The third argument is a ``double`` output,
+# which the generic-lambda wrapper writes through correctly.
 FORWARDED_PROC_F90 = """\
       subroutine engine(refn, lo, hi, mid)
       external refn
@@ -94,11 +100,12 @@ FORWARDED_PROC_F90 = """\
 
 @unittest.skipUnless(have_flang(), "flang binary not available")
 class ForwardedDummyProcedureEmitTests(unittest.TestCase):
-    def test_signature_inferred_from_actual(self) -> None:
+    def test_forwarder_is_a_template(self) -> None:
         cpp = convert_project(FORWARDED_PROC_F90)
-        # The forwarder's callback type carries the actual's real types,
-        # not float — including the double& output parameter.
-        self.assertIn("std::function<void(const double&, const double&, double&)>", cpp)
+        # Both the caller-of and the forwarder-of the callback are templates
+        # on its type; no concrete std::function signature is committed to.
+        self.assertIn("template <class F0>\nvoid engine(", cpp)
+        self.assertIn("template <class F0>\nvoid driver(", cpp)
 
 
 @unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
@@ -157,18 +164,16 @@ NESTED_PROC_F77 = """\
 
 @unittest.skipUnless(have_flang(), "flang binary not available")
 class NestedDummyProcedureEmitTests(unittest.TestCase):
-    def test_forwarded_nested_signature_matches(self) -> None:
+    def test_nested_callbacks_are_templates(self) -> None:
         cpp = convert_project(NESTED_PROC_F77, suffix=".f")
-        nested = (
-            "const std::function<void(const std::function<void(const double&, "
-            "double&)>&, const double&, bool&)>& ufb"
-        )
-        # Both the routine that *calls* ufb and the one that only forwards it
-        # land on the identical nested type (forward declaration + definition
-        # for each = 4), so the forwarded call binds.
-        self.assertEqual(cpp.count(nested), 4)
-        # The unrefined float-default nested form must not survive.
-        self.assertNotIn("std::function<void(const std::function<void(float)>", cpp)
+        # ``boolf`` takes a callback (its own ``uf``); ``solver``/``driver``
+        # take both a scalar callback and a procedure-of-procedure (``ufb``).
+        # All are templates on their callback types — the nested case needs
+        # no signature inference at all, because the compiler deduces the
+        # whole nested type from whatever is passed.
+        self.assertIn("template <class F0>\nvoid boolf(", cpp)
+        self.assertIn("template <class F0, class F1>\nvoid solver(", cpp)
+        self.assertIn("template <class F0, class F1>\nvoid driver(", cpp)
 
 
 @unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
@@ -209,12 +214,12 @@ ENTRY_SHARED_PROC_F77 = """\
 class EntrySharedProcedureDummyTests(unittest.TestCase):
     def test_sibling_entry_declares_proc_local(self) -> None:
         cpp = convert(ENTRY_SHARED_PROC_F77, suffix=".f")
-        # ``second`` takes ``cmp`` as a parameter ...
-        self.assertIn(
-            "void second(const std::function<bool(float)>& cmp", cpp
-        )
+        # ``second`` takes ``cmp`` as a (template) callback parameter ...
+        self.assertIn("template <class F0>\nvoid second(const F0& cmp", cpp)
         # ... while ``first`` (which doesn't) declares it as an empty local
-        # for the RETURN-guarded dead call carried over from ``second``.
+        # ``std::function`` for the RETURN-guarded dead call carried over
+        # from ``second`` — a local can't be a template parameter, so it
+        # keeps a concrete (never-called) type.
         self.assertIn("std::function<bool(float)> cmp{};", cpp)
 
 
