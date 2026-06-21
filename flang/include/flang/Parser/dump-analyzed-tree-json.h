@@ -168,6 +168,16 @@ public:
         out_ << ",\"type\":\"";
         EmitJSONString(type->AsFortran());
         out_ << "\"";
+        // Polymorphism marker: ``CLASS(t)`` / ``CLASS(*)`` / ``TYPE(*)``
+        // -- the ``type`` string already encodes the spelling, but
+        // ``polymorphic`` and ``unlimited_polymorphic`` let a consumer
+        // branch on the property directly without parsing the spelling.
+        if (type->IsPolymorphic()) {
+          out_ << ",\"polymorphic\":true";
+        }
+        if (type->IsUnlimitedPolymorphic()) {
+          out_ << ",\"unlimited_polymorphic\":true";
+        }
       }
       out_ << ",\"rank\":" << sym.Rank();
       EmitShape(sym);
@@ -454,6 +464,23 @@ public:
       // its Fortran rendering so a tool gets the constant directly,
       // without re-running expression analysis on the declaration's
       // Initialization node.
+      // Module / submodule classification.  ``module:true`` on every
+      // module-scope symbol so a tool can quickly filter modules from
+      // ordinary subprograms; ``submodule:true`` on submodules with the
+      // parent module name available via ``parent_module``.
+      if (const auto *md{sym.detailsIf<semantics::ModuleDetails>()}) {
+        out_ << ",\"module\":true";
+        if (md->isSubmodule()) {
+          out_ << ",\"submodule\":true";
+          if (const semantics::Scope * parent{md->parent()}) {
+            if (const semantics::Symbol * ps{parent->symbol()}) {
+              out_ << ",\"parent_module\":\"";
+              EmitJSONString(ps->name().ToString());
+              out_ << "\"";
+            }
+          }
+        }
+      }
       if (const auto *obj{sym.detailsIf<semantics::ObjectEntityDetails>()}) {
         if (obj->init()) {
           std::string buf;

@@ -91,6 +91,11 @@ information.
 | `pass_name`            | string           | On a type-bound procedure binding with `PASS(arg)`, the argument name explicitly named.  Omitted for default PASS (no name was given) and for NOPASS bindings. |
 | `finals`               | array of strings | On a derived-type Name (`DerivedTypeDetails`), the FINAL subroutines bound to the type, in declaration order. |
 | `sequence_type`        | boolean (`true`) | On a derived-type Name, `true` when the type was declared with `SEQUENCE`. |
+| `polymorphic`          | boolean (`true`) | On a Name whose declared type is `CLASS(t)`, `CLASS(*)`, or `TYPE(*)`. |
+| `unlimited_polymorphic`| boolean (`true`) | Stronger form for `CLASS(*)` / `TYPE(*)` only. |
+| `module`               | boolean (`true`) | On a module / submodule Name (any symbol with `ModuleDetails`). |
+| `submodule`            | boolean (`true`) | On a submodule Name only. |
+| `parent_module`        | string           | On a submodule Name, the parent module's name. |
 
 `OmpDirectiveName` and `OmpClause` nodes add an identifying field so a
 downstream OpenMP analyzer can read the construct/clause kind without
