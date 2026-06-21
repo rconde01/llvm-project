@@ -88,6 +88,18 @@ information.
 | `assoc_rank`           | integer / string | On a SELECT RANK construct entity, the rank case: an integer for `RANK(n)`, the string `"*"` for `RANK(*)`, omitted for `RANK DEFAULT`. |
 | `type_guard`           | boolean (`true`) | On a SELECT TYPE construct entity, `true` for `TYPE IS` / `CLASS IS` guards (omitted for `CLASS(DEFAULT)`). |
 | `init`                 | string           | For an Object whose declaration carried an initializer (`integer :: i = 0`, `real, parameter :: pi = 3.14`), the analyzed initializer's Fortran rendering -- the folded form, so `0` appears as `"0_4"` and `3.14` as `"3.1400001049041748_4"`. |
+| `pass_name`            | string           | On a type-bound procedure binding with `PASS(arg)`, the argument name explicitly named.  Omitted for default PASS (no name was given) and for NOPASS bindings. |
+| `finals`               | array of strings | On a derived-type Name (`DerivedTypeDetails`), the FINAL subroutines bound to the type, in declaration order. |
+| `sequence_type`        | boolean (`true`) | On a derived-type Name, `true` when the type was declared with `SEQUENCE`. |
+
+`OmpDirectiveName` and `OmpClause` nodes add an identifying field so a
+downstream OpenMP analyzer can read the construct/clause kind without
+consulting an OpenMP-version table:
+
+| Field        | Type   | Description                                                  |
+| ------------ | ------ | ------------------------------------------------------------ |
+| `directive`  | string | On an `OmpDirectiveName` node, the directive's name string (e.g. `"parallel do"`, `"target teams"`).  Sourced from `llvm::omp::getOpenMPDirectiveName`. |
+| `clause`     | string | On an `OmpClause` node, the clause's name string (e.g. `"reduction"`, `"schedule"`, `"private"`).  Sourced from `llvm::omp::getOpenMPClauseName`. |
 
 Nodes whose analyzed `typedExpr` is populated (`Expr`, `Variable`,
 `DataStmtConstant`, `AllocateObject`, `PointerObject`) add:

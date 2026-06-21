@@ -37,3 +37,10 @@ end program
 ! as a regular Name node -- so type / attrs / etc. are available exactly
 ! as they are anywhere else.
 ! CHECK-DAG: "fortran":"s","type":"REAL(4)"
+
+! The OmpDirectiveName node surfaces the construct's directive string
+! (``parallel do``); each OmpClause carries the clause-name discriminant
+! (``reduction``).  Lets a consumer identify constructs and clauses
+! without consulting an OpenMP-version table.
+! CHECK-DAG: "directive":"parallel do"
+! CHECK-DAG: "clause":"reduction"

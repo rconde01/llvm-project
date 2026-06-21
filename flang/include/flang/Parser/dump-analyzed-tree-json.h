@@ -23,6 +23,7 @@
 #include "flang/Semantics/type.h"
 #include "flang/Evaluate/fold.h"
 #include "flang/Evaluate/tools.h"
+#include "llvm/Frontend/OpenMP/OMP.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cctype>
 #include <string>
@@ -342,6 +343,27 @@ public:
       // ``common_block_layout`` field for derived types.
       if (const auto *dt{sym.detailsIf<semantics::DerivedTypeDetails>()}) {
         EmitDerivedTypeLayout(sym, *dt);
+        // FINAL subroutines bound to the type, in the order semantics
+        // recorded them.  Each name is the bound subprogram's symbol
+        // name.  Emitting this here mirrors ``binds_to`` for ordinary
+        // type-bound procedures.
+        if (!dt->finals().empty()) {
+          out_ << ",\"finals\":[";
+          bool first{true};
+          for (const auto &kv : dt->finals()) {
+            if (!first) {
+              out_ << ',';
+            }
+            first = false;
+            out_ << "\"";
+            EmitJSONString(kv.second->name().ToString());
+            out_ << "\"";
+          }
+          out_ << "]";
+        }
+        if (dt->sequence()) {
+          out_ << ",\"sequence_type\":true";
+        }
       }
       // Generic-interface resolution: a generic name (an INTERFACE block,
       // a defined-operator generic, or a type-bound generic) carries the
@@ -372,6 +394,14 @@ public:
         out_ << ",\"binds_to\":\"";
         EmitJSONString(pb->symbol().name().ToString());
         out_ << "\"";
+        // ``PASS(arg)`` selects which dummy receives the passed-object;
+        // omit on ``NOPASS`` and on default PASS (the binding still
+        // takes the first dummy).
+        if (auto pn{pb->passName()}) {
+          out_ << ",\"pass_name\":\"";
+          EmitJSONString(pn->ToString());
+          out_ << "\"";
+        }
       }
       // NAMELIST membership: a NAMELIST-group symbol's NamelistDetails
       // carries its object list in declared order.  Emit as a name array
@@ -440,6 +470,41 @@ public:
     }
     return true;
   }
+
+  // OpenMP directive: surface the directive-name string (``"parallel
+  // do"`` / ``"target teams"`` / ...) so a tool reading the JSON can
+  // tell what construct is in front of it without consulting an
+  // OpenMP-version table.
+  bool Pre(const OmpDirectiveName &x) {
+    OpenNode("OmpDirectiveName");
+    EmitSource(x.source);
+    llvm::StringRef name{llvm::omp::getOpenMPDirectiveName(x.v,
+        llvm::omp::FallbackVersion)};
+    if (!name.empty()) {
+      out_ << ",\"directive\":\"";
+      EmitJSONString(name);
+      out_ << "\"";
+    }
+    return true;
+  }
+  void Post(const OmpDirectiveName &) { CloseNode(); }
+
+  // OpenMP clause: surface the clause-name discriminant on the
+  // OmpClause node so consumers can tell ``reduction`` from
+  // ``schedule`` without inspecting the child's parse-tree class.
+  bool Pre(const OmpClause &x) {
+    OpenNode("OmpClause");
+    EmitSource(x.source);
+    llvm::StringRef name{llvm::omp::getOpenMPClauseName(x.Id(),
+        llvm::omp::FallbackVersion)};
+    if (!name.empty()) {
+      out_ << ",\"clause\":\"";
+      EmitJSONString(name);
+      out_ << "\"";
+    }
+    return true;
+  }
+  void Post(const OmpClause &) { CloseNode(); }
 
   template <typename T> bool Pre(const common::Indirection<T> &) {
     return true;

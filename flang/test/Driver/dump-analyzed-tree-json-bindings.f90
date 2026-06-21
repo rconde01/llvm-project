@@ -27,7 +27,14 @@ module m
 
   type :: shape
   contains
-    procedure :: describe => shape_describe
+    procedure, pass(self) :: describe => shape_describe
+    final :: shape_finalize
+  end type
+
+  type :: legacy_layout
+    sequence
+    integer :: tag
+    real    :: payload
   end type
 
   integer :: ia, ib, ic
@@ -37,6 +44,10 @@ contains
   subroutine shape_describe(self)
     class(shape), intent(in) :: self
     print *, "shape"
+  end subroutine
+
+  subroutine shape_finalize(self)
+    type(shape), intent(inout) :: self
   end subroutine
 
   subroutine demo
@@ -63,10 +74,24 @@ end module
 
 ! ----------------------------------------------------------------------
 ! Type-bound procedure binding: ``describe`` resolves to
-! ``shape_describe``.
+! ``shape_describe`` and carries the explicit PASS(self) target.
 ! ----------------------------------------------------------------------
 ! CHECK-DAG: "fortran":"describe"
 ! CHECK-DAG: "binds_to":"shape_describe"
+! CHECK-DAG: "pass_name":"self"
+
+! ----------------------------------------------------------------------
+! The ``shape`` derived type has a FINAL subroutine attached.
+! ``finals`` exposes the bound subprogram name in declaration order.
+! ----------------------------------------------------------------------
+! CHECK-DAG: "fortran":"shape"
+! CHECK-DAG: "finals":["shape_finalize"]
+
+! ----------------------------------------------------------------------
+! A SEQUENCE-typed derived type carries ``sequence_type:true``.
+! ----------------------------------------------------------------------
+! CHECK-DAG: "fortran":"legacy_layout"
+! CHECK-DAG: "sequence_type":true
 
 ! ----------------------------------------------------------------------
 ! NAMELIST group ``nl`` enumerates ia / ib / ic in declaration order.
