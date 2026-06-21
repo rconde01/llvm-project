@@ -623,6 +623,7 @@ public:
     return lower_ + count_ - 1;
   }
   constexpr char *data() const noexcept { return base_; }
+  constexpr std::size_t elem_len() const noexcept { return elem_len_; }
 
 private:
   char *base_;
@@ -630,6 +631,17 @@ private:
   index_t lower_;
   index_t count_;
 };
+
+/// Character-array overload of :func:`elem_tail_n`: a SPICE call site
+/// passes ``CELL(I)`` to an assumed-length CHARACTER array dummy
+/// ``CHARACTER*(*) DUMMY(N)``.  The dummy sees ``n`` elements starting at
+/// element ``i`` of the caller's ``CharArrayRef``, with the caller's
+/// element length carried through.
+inline CharArrayRef elem_tail_n(CharArrayRef &a, index_t n, index_t i) {
+  const index_t off = i - a.lbound();
+  return CharArrayRef(a.data() + off * static_cast<index_t>(a.elem_len()),
+                      a.elem_len(), 1, n);
+}
 
 /// Sequence association of a character-cell element actual to a character
 /// array dummy: ``call s(cell(i))`` views the cell from element ``i`` on.

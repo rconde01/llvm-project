@@ -961,6 +961,24 @@ inline bool read_list_item(S &stream, T &v) {
   return true;
 }
 
+/// Character-view proxy overload: ``Substring`` / ``CharRef`` are pass-
+/// by-value proxies that write through to the underlying buffer.  The
+/// general lvalue form above can't bind them (they arise as rvalues from
+/// ``s(lo,hi)`` substring expressions and ``arr(i)`` element accesses),
+/// and copying the proxy doesn't capture the buffer's text, so we save /
+/// restore the characters via ``string_view`` instead.
+template <class S, class T>
+  requires requires { typename std::remove_cvref_t<T>::fortran_char_view_proxy; }
+inline bool read_list_item(S &stream, T &&v) {
+  std::string save{static_cast<std::string_view>(v)};
+  stream >> v;
+  if (stream.fail()) {
+    v = std::string_view{save};
+    return false;
+  }
+  return true;
+}
+
 inline std::string fmt_int_force_sign(long long value, int w) {
   return std::format("{0:+{1}d}", value, w);  // SP
 }
