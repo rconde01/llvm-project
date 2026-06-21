@@ -3015,6 +3015,8 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
                 intent=intent,
                 is_optional=is_optional,
                 is_pointer=is_pointer,
+                common_block=name_node.common_block,
+                equivalence_class=name_node.equivalence_class,
             )
         )
     return out

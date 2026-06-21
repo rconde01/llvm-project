@@ -211,6 +211,37 @@ class Node:
     ``(lower, upper)`` pair per dimension.  ``None`` for scalars or when a
     bound isn't a compile-time constant."""
 
+    common_block: str | None = None
+    """Name of the COMMON block this Object belongs to (``"blk"`` for
+    ``common /blk/ x``).  ``None`` for symbols not in any COMMON.  Set by
+    the dumper from the resolved symbol's ``ObjectEntityDetails::commonBlock()``,
+    so the converter does not need to walk ``CommonStmt`` parse-tree
+    nodes to discover membership."""
+
+    equivalence_class: int | None = None
+    """0-based index within the owning scope's equivalence-set list, for
+    objects that participate in an ``EQUIVALENCE`` statement.  All
+    co-aliased symbols share the same index.  ``None`` for symbols not
+    in any EQUIVALENCE."""
+
+    defined_in: str | None = None
+    """Owning derived-type name when the resolved symbol is a type
+    component (``"pt"`` on ``x`` for ``type :: pt; real :: x; end type``).
+    ``None`` when the symbol is not a component."""
+
+    proc_interface: str | None = None
+    """For a procedure entity declared ``procedure(iface), …``, the
+    resolved interface symbol's name.  ``None`` when there is no
+    explicit interface."""
+
+    is_implicit: bool = False
+    """True when a ``Name``'s symbol was typed by implicit-typing rules
+    rather than an explicit declaration."""
+
+    defined_at: SourceRange | None = None
+    """Declaring source location for a Name's use site.  Same sub-object
+    shape as ``source``.  Omitted on the declaring Name itself."""
+
     children: list[Node] = field(default_factory=list)
     """Direct sub-nodes, in source order."""
 
@@ -253,6 +284,12 @@ class Node:
             if isinstance(trailing_raw, list)
             else []
         )
+        defined_at_raw = raw.get("defined_at")
+        defined_at = (
+            SourceRange.from_json(defined_at_raw)
+            if isinstance(defined_at_raw, dict)
+            else None
+        )
         return cls(
             kind=kind,
             source=source,
@@ -267,6 +304,12 @@ class Node:
             category=_opt_str(raw.get("category")),
             value=_opt_str(raw.get("value")),
             shape=_opt_shape(raw.get("shape")),
+            common_block=_opt_str(raw.get("common_block")),
+            equivalence_class=_opt_int(raw.get("equivalence_class")),
+            defined_in=_opt_str(raw.get("defined_in")),
+            proc_interface=_opt_str(raw.get("proc_interface")),
+            is_implicit=raw.get("implicit") is True,
+            defined_at=defined_at,
             children=children,
             leading_comments=leading,
             trailing_comments=trailing,
@@ -299,6 +342,18 @@ class Node:
             out["value"] = self.value
         if self.shape is not None:
             out["shape"] = [[lo, hi] for lo, hi in self.shape]
+        if self.common_block is not None:
+            out["common_block"] = self.common_block
+        if self.equivalence_class is not None:
+            out["equivalence_class"] = self.equivalence_class
+        if self.defined_in is not None:
+            out["defined_in"] = self.defined_in
+        if self.proc_interface is not None:
+            out["proc_interface"] = self.proc_interface
+        if self.is_implicit:
+            out["implicit"] = True
+        if self.defined_at is not None:
+            out["defined_at"] = self.defined_at.to_json()
         if self.leading_comments:
             out["leadingComments"] = [c.to_json() for c in self.leading_comments]
         if self.trailing_comments:

@@ -420,11 +420,20 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
             canon_layout = canon_layout_for_block[block_name]
             param = _common_param_name(block_name)
             members = per_use_layout[(idx, block_name)]
+            # Drop locals that are members of this COMMON block.  Two
+            # sources of truth, unioned: the parse-tree-walk ``members``
+            # list (covers explicit ``TYPE :: x`` declarations through
+            # ``_lower_type_declaration``, which propagates ``common_block``
+            # onto each IRLocal) AND the dumper's ``common_block`` field
+            # on each Name (covers implicit-typed locals whose IRLocals
+            # are minted without the type-decl path, like an undeclared
+            # member of ``COMMON /BLK/ N`` under default integer typing).
+            # The parse-tree-derived ``members`` list is still
+            # authoritative for *layout*, but membership is the union.
             member_set = {m for m, _, _, _ in members}
-            # This routine's own common members are also declared as
-            # locals in Fortran; drop them.
             sub.locals = [
-                loc for loc in sub.locals if loc.name not in member_set
+                loc for loc in sub.locals
+                if loc.common_block != block_name and loc.name not in member_set
             ]
             bound: list[str | tuple[str, str] | tuple[str, str, str]] = []
             for local_name, off, sz, lt in members:

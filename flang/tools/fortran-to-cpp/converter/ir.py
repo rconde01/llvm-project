@@ -723,6 +723,18 @@ class IRLocal:
     is_optional: bool = False
     """True for ``OPTIONAL`` dummy arguments."""
 
+    common_block: str | None = None
+    """Name of the COMMON block this local lives in, when any -- read
+    straight off the resolved symbol via the dumper's ``common_block``
+    field.  Lets the state-plumbing pass group locals by block without
+    re-parsing ``CommonStmt``."""
+
+    equivalence_class: int | None = None
+    """0-based index within the owning scope's equivalence-set list, for
+    locals that participate in an ``EQUIVALENCE`` statement.  All
+    co-aliased locals share the same index.  Read from the dumper's
+    ``equivalence_class`` field."""
+
     leading_comments: list[Comment] = field(default_factory=list)
     """Comments that appeared immediately above this declaration."""
 
