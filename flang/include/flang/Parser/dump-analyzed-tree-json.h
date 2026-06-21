@@ -329,6 +329,40 @@ public:
       if (const auto *cb{sym.detailsIf<semantics::CommonBlockDetails>()}) {
         EmitCommonBlockLayout(*cb);
       }
+      // Procedure signature: for a SUBROUTINE / FUNCTION symbol, emit the
+      // ordered dummy-argument list (with each dummy's intent, type, rank,
+      // optionality) plus the function result.  Lets a call-site analyzer
+      // resolve overload / actual-to-dummy matching without walking the
+      // routine's specification part.
+      if (const auto *sp{sym.detailsIf<semantics::SubprogramDetails>()}) {
+        EmitProcedureSignature(*sp);
+      }
+      // Derived-type component summary: ordered component list with
+      // per-component type / rank / size / offset.  Mirrors the
+      // ``common_block_layout`` field for derived types.
+      if (const auto *dt{sym.detailsIf<semantics::DerivedTypeDetails>()}) {
+        EmitDerivedTypeLayout(sym, *dt);
+      }
+      // Generic-interface resolution: a generic name (an INTERFACE block,
+      // a defined-operator generic, or a type-bound generic) carries the
+      // list of specific procedures plus the optional same-named specific
+      // / derivedType companions.  Emitting these lets a tool resolve
+      // generic invocations without searching for the interface block.
+      if (const auto *gn{sym.detailsIf<semantics::GenericDetails>()}) {
+        EmitGeneric(*gn);
+      }
+      // USE-association rename: a ``use mm, foo => bar`` brings ``bar``
+      // in as ``foo`` -- the local Symbol is named ``foo`` but its
+      // UseDetails points at ``bar``.  Surface the source name when it
+      // differs so a tool can map back to the originating declaration.
+      if (const auto *use{x.symbol->detailsIf<semantics::UseDetails>()}) {
+        const std::string from{use->symbol().name().ToString()};
+        if (from != x.source.ToString()) {
+          out_ << ",\"from_name\":\"";
+          EmitJSONString(from);
+          out_ << "\"";
+        }
+      }
     }
     return true;
   }
@@ -478,6 +512,163 @@ private:
         out_ << "}";
       }
       out_ << "]";
+    }
+    out_ << "}";
+  }
+
+  // Emit a per-symbol fact block for one dummy or result: name, intent
+  // (when the symbol carries an INTENT attribute), type, rank, and the
+  // OPTIONAL / VALUE / POINTER / ALLOCATABLE / TARGET flags relevant to
+  // call-site reasoning.  Used by both ``dummy_args`` and ``result``.
+  void EmitArgumentObject(const semantics::Symbol &arg) {
+    out_ << "{\"name\":\"";
+    EmitJSONString(arg.name().ToString());
+    out_ << "\"";
+    if (const semantics::DeclTypeSpec * type{arg.GetType()}) {
+      out_ << ",\"type\":\"";
+      EmitJSONString(type->AsFortran());
+      out_ << "\"";
+    }
+    out_ << ",\"rank\":" << arg.Rank();
+    const auto &attrs{arg.attrs()};
+    static constexpr semantics::Attr kReportedAttrs[] = {
+        semantics::Attr::INTENT_IN,
+        semantics::Attr::INTENT_OUT,
+        semantics::Attr::INTENT_INOUT,
+        semantics::Attr::OPTIONAL,
+        semantics::Attr::VALUE,
+        semantics::Attr::POINTER,
+        semantics::Attr::ALLOCATABLE,
+        semantics::Attr::TARGET,
+    };
+    bool first{true};
+    for (semantics::Attr a : kReportedAttrs) {
+      if (!attrs.test(a)) {
+        continue;
+      }
+      if (first) {
+        out_ << ",\"attrs\":[";
+        first = false;
+      } else {
+        out_ << ',';
+      }
+      std::string name{semantics::AttrToString(a)};
+      for (char &c : name) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      }
+      out_ << '"' << name << '"';
+    }
+    if (!first) {
+      out_ << ']';
+    }
+    out_ << "}";
+  }
+
+  // Emit ``procedure:{...}`` summarizing a subprogram symbol's signature.
+  // Always carries ``is_function`` so a tool can disambiguate the two
+  // major shapes; ``dummy_args`` and ``result`` are emitted only when
+  // present (``result`` only on functions; alternate-return dummies
+  // appear as ``{"alternate_return":true}`` placeholders).
+  void EmitProcedureSignature(const semantics::SubprogramDetails &sp) {
+    out_ << ",\"procedure\":{";
+    out_ << "\"is_function\":" << (sp.isFunction() ? "true" : "false");
+    if (!sp.dummyArgs().empty()) {
+      out_ << ",\"dummy_args\":[";
+      bool first{true};
+      for (const semantics::Symbol *arg : sp.dummyArgs()) {
+        if (!first) {
+          out_ << ',';
+        }
+        first = false;
+        if (arg) {
+          EmitArgumentObject(*arg);
+        } else {
+          out_ << "{\"alternate_return\":true}";
+        }
+      }
+      out_ << "]";
+    }
+    if (sp.isFunction()) {
+      out_ << ",\"result\":";
+      EmitArgumentObject(sp.result());
+    }
+    out_ << "}";
+  }
+
+  // Emit ``components:[{name,type,rank,offset?,size?}, ...]`` for a
+  // derived-type symbol, walking the type's scope in declared component
+  // order (``DerivedTypeDetails::componentNames()`` preserves the
+  // declared order, including a parent component first if present).
+  void EmitDerivedTypeLayout(const semantics::Symbol &typeSym,
+      const semantics::DerivedTypeDetails &dt) {
+    if (dt.componentNames().empty() || !typeSym.scope()) {
+      return;
+    }
+    out_ << ",\"components\":[";
+    bool first{true};
+    for (const parser::CharBlock &name : dt.componentNames()) {
+      auto it{typeSym.scope()->find(name)};
+      if (it == typeSym.scope()->end()) {
+        continue;
+      }
+      const semantics::Symbol &c{*it->second};
+      if (!first) {
+        out_ << ',';
+      }
+      first = false;
+      out_ << "{\"name\":\"";
+      EmitJSONString(c.name().ToString());
+      out_ << "\"";
+      if (const semantics::DeclTypeSpec * type{c.GetType()}) {
+        out_ << ",\"type\":\"";
+        EmitJSONString(type->AsFortran());
+        out_ << "\"";
+      }
+      out_ << ",\"rank\":" << c.Rank();
+      if (c.size() > 0) {
+        out_ << ",\"size\":" << c.size();
+      }
+      if (c.offset() > 0) {
+        out_ << ",\"offset\":" << c.offset();
+      }
+      out_ << "}";
+    }
+    out_ << "]";
+  }
+
+  // Emit ``generic:{kind, specifics:[name,...], specific?, derived_type?}``
+  // for a generic-interface symbol.  ``kind`` is the GenericKind string
+  // (``"Name"``, ``"DefinedOp"``, an operator spelling, etc.) so a
+  // consumer can tell a regular generic apart from a defined-operator
+  // generic or an I/O generic.
+  void EmitGeneric(const semantics::GenericDetails &gn) {
+    out_ << ",\"generic\":{";
+    out_ << "\"kind\":\"";
+    EmitJSONString(gn.kind().ToString());
+    out_ << "\"";
+    if (!gn.specificProcs().empty()) {
+      out_ << ",\"specifics\":[";
+      bool first{true};
+      for (const semantics::Symbol &sp : gn.specificProcs()) {
+        if (!first) {
+          out_ << ',';
+        }
+        first = false;
+        out_ << "\"";
+        EmitJSONString(sp.name().ToString());
+        out_ << "\"";
+      }
+      out_ << "]";
+    }
+    if (const semantics::Symbol * s{gn.specific()}) {
+      out_ << ",\"specific\":\"";
+      EmitJSONString(s->name().ToString());
+      out_ << "\"";
+    }
+    if (const semantics::Symbol * d{gn.derivedType()}) {
+      out_ << ",\"derived_type\":\"";
+      EmitJSONString(d->name().ToString());
+      out_ << "\"";
     }
     out_ << "}";
   }
