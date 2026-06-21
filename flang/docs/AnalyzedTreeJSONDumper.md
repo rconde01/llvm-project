@@ -82,6 +82,12 @@ information.
 | `components`           | array of objects | On the Name of a derived-type definition (any symbol with `DerivedTypeDetails`).  Ordered component list — one `{name, type, rank, size?, offset?}` per component in declaration order, with a parent component (if any) first.  Mirrors `common_block_layout` for derived types. |
 | `generic`              | object           | On the Name of a generic-interface (any symbol with `GenericDetails`).  Sub-object with `kind` (e.g. `"Name"`, `"DefinedOp"`, an intrinsic operator spelling, or a defined-I/O kind), `specifics` (ordered array of specific procedure names), and the optional `specific` / `derived_type` companions when a same-named scalar / type accompanies the generic. |
 | `from_name`            | string           | For a USE-renamed Name (`use mm, foo => bar` brings `bar` in as `foo`), the source-module symbol's name.  Omitted when the local name matches the originating name. |
+| `binds_to`             | string           | On a type-bound procedure binding Name (`procedure :: meth => impl`), the implementation procedure's name. |
+| `namelist_objects`     | array of strings | On a NAMELIST-group Name, the ordered array of object names in the group. |
+| `assoc_expr`           | string           | On an ASSOCIATE / SELECT TYPE / SELECT RANK construct entity, the Fortran rendering of the source expression that was associated. |
+| `assoc_rank`           | integer / string | On a SELECT RANK construct entity, the rank case: an integer for `RANK(n)`, the string `"*"` for `RANK(*)`, omitted for `RANK DEFAULT`. |
+| `type_guard`           | boolean (`true`) | On a SELECT TYPE construct entity, `true` for `TYPE IS` / `CLASS IS` guards (omitted for `CLASS(DEFAULT)`). |
+| `init`                 | string           | For an Object whose declaration carried an initializer (`integer :: i = 0`, `real, parameter :: pi = 3.14`), the analyzed initializer's Fortran rendering -- the folded form, so `0` appears as `"0_4"` and `3.14` as `"3.1400001049041748_4"`. |
 
 Nodes whose analyzed `typedExpr` is populated (`Expr`, `Variable`,
 `DataStmtConstant`, `AllocateObject`, `PointerObject`) add:

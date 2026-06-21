@@ -363,6 +363,80 @@ public:
           out_ << "\"";
         }
       }
+      // Type-bound procedure binding: ``procedure(iface), pass :: meth =>
+      // implementation`` -- the binding's symbol resolves to the
+      // implementation procedure.  ``binds_to`` lets a tool resolve
+      // ``obj%meth`` calls without rewalking the type-bound procedure
+      // statements.
+      if (const auto *pb{sym.detailsIf<semantics::ProcBindingDetails>()}) {
+        out_ << ",\"binds_to\":\"";
+        EmitJSONString(pb->symbol().name().ToString());
+        out_ << "\"";
+      }
+      // NAMELIST membership: a NAMELIST-group symbol's NamelistDetails
+      // carries its object list in declared order.  Emit as a name array
+      // so a formatted I/O tool can enumerate group members directly.
+      if (const auto *nl{sym.detailsIf<semantics::NamelistDetails>()}) {
+        if (!nl->objects().empty()) {
+          out_ << ",\"namelist_objects\":[";
+          bool first{true};
+          for (const semantics::Symbol &obj : nl->objects()) {
+            if (!first) {
+              out_ << ',';
+            }
+            first = false;
+            out_ << "\"";
+            EmitJSONString(obj.name().ToString());
+            out_ << "\"";
+          }
+          out_ << "]";
+        }
+      }
+      // ASSOCIATE / SELECT TYPE / SELECT RANK construct entities: the
+      // associated expression and (for SELECT RANK) the case's rank.
+      // Lets a refactoring tool resolve construct names without walking
+      // the AssociateStmt / TypeGuardStmt nodes.
+      if (const auto *ae{sym.detailsIf<semantics::AssocEntityDetails>()}) {
+        if (ae->expr()) {
+          std::string buf;
+          llvm::raw_string_ostream ss{buf};
+          ae->expr()->AsFortran(ss);
+          ss.flush();
+          if (!buf.empty()) {
+            out_ << ",\"assoc_expr\":\"";
+            EmitJSONString(buf);
+            out_ << "\"";
+          }
+        }
+        if (auto r{ae->rank()}) {
+          out_ << ",\"assoc_rank\":" << *r;
+        }
+        if (ae->IsAssumedRank()) {
+          out_ << ",\"assoc_rank\":\"*\"";
+        }
+        if (ae->isTypeGuard()) {
+          out_ << ",\"type_guard\":true";
+        }
+      }
+      // Initial value: an Object's ``init()`` (the analyzed
+      // initialization expression) carries the resolved RHS of a
+      // ``REAL :: a = 3.14`` or ``PARAMETER :: pi = 3.14`` form.  Emit
+      // its Fortran rendering so a tool gets the constant directly,
+      // without re-running expression analysis on the declaration's
+      // Initialization node.
+      if (const auto *obj{sym.detailsIf<semantics::ObjectEntityDetails>()}) {
+        if (obj->init()) {
+          std::string buf;
+          llvm::raw_string_ostream ss{buf};
+          obj->init()->AsFortran(ss);
+          ss.flush();
+          if (!buf.empty()) {
+            out_ << ",\"init\":\"";
+            EmitJSONString(buf);
+            out_ << "\"";
+          }
+        }
+      }
     }
     return true;
   }
