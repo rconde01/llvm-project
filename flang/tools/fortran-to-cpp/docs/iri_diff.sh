@@ -123,7 +123,7 @@ except Exception as e:
     print(f'  C++ convert FAILED: {e}')
 " 2>&1 | tail -3
 
-  g++ -std=c++20 -ftemplate-depth=2048 -O0 -I "$RT" -I "$CDIR" "$CDIR"/*.cpp -o "$CDIR/iritest" 2>"$CDIR/build.err"
+  g++ -std=c++20 -O0 -I "$RT" -I "$CDIR" "$CDIR"/*.cpp -o "$CDIR/iritest" 2>"$CDIR/build.err"
   if [ ! -x "$CDIR/iritest" ]; then
     echo "  C++ build FAILED"
     head -3 "$CDIR/build.err"
