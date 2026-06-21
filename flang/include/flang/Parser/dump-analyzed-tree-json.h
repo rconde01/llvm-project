@@ -287,6 +287,48 @@ public:
           out_ << "\"";
         }
       }
+      // Storage size and offset.  Set by semantics for objects whose
+      // size is known at compile time -- emit non-zero values only so
+      // the JSON stays compact for symbols that aren't laid out (e.g.
+      // assumed-shape dummies, deferred-length CHARACTER).  Useful for
+      // ABI/debug-info tools and for converters that need byte-level
+      // layout without re-computing it.
+      if (sym.size() > 0) {
+        out_ << ",\"size\":" << sym.size();
+      }
+      if (sym.offset() > 0) {
+        out_ << ",\"offset\":" << sym.offset();
+      }
+      // Source module for use-associated names.  Resolved via
+      // ``UseDetails::symbol().owner()`` -> the owning scope is the
+      // module's own scope, whose ``symbol()`` is the module symbol.
+      // Lets a downstream tool answer "where does this name come from?"
+      // without walking USE statements.
+      if (const auto *use{x.symbol->detailsIf<semantics::UseDetails>()}) {
+        const semantics::Scope &owner{use->symbol().owner()};
+        if (const semantics::Symbol * mod{owner.symbol()}) {
+          out_ << ",\"from_module\":\"";
+          EmitJSONString(mod->name().ToString());
+          out_ << "\"";
+        }
+      }
+      // BIND(C, NAME="cname") symbols carry a C name distinct from the
+      // Fortran name.  Both ObjectEntity and Subprogram details classes
+      // can hold a bindName; expose whichever is set.
+      if (const std::string * bn{GetBindName(sym)}) {
+        if (!bn->empty()) {
+          out_ << ",\"bind_name\":\"";
+          EmitJSONString(*bn);
+          out_ << "\"";
+        }
+      }
+      // For a COMMON-block-name symbol (the ``/blk/`` in ``COMMON /blk/
+      // x, y``), emit the ordered member list, byte sizes, and any
+      // declared alignment.  Lets a binary-tooling consumer reconstruct
+      // the block layout without walking CommonStmt nodes per routine.
+      if (const auto *cb{sym.detailsIf<semantics::CommonBlockDetails>()}) {
+        EmitCommonBlockLayout(*cb);
+      }
     }
     return true;
   }
@@ -381,6 +423,63 @@ private:
       return std::nullopt;
     }
     return evaluate::ToInt64(*b.GetExplicit());
+  }
+
+  // BIND(C, NAME="...") on an object, subprogram, or common block carries
+  // a C name distinct from the Fortran name.  All three details classes
+  // expose ``bindName()`` via ``WithBindName``, returning a
+  // ``const std::string*`` (nullptr if no BIND name was set).
+  static const std::string *GetBindName(const semantics::Symbol &sym) {
+    if (const auto *obj{sym.detailsIf<semantics::ObjectEntityDetails>()}) {
+      return obj->bindName();
+    }
+    if (const auto *sp{sym.detailsIf<semantics::SubprogramDetails>()}) {
+      return sp->bindName();
+    }
+    if (const auto *cb{sym.detailsIf<semantics::CommonBlockDetails>()}) {
+      return cb->bindName();
+    }
+    return nullptr;
+  }
+
+  // Emit a COMMON-block-name symbol's layout as a JSON sub-object.
+  // ``common_block_layout`` carries ``alignment`` (when set) and an
+  // ``objects`` array of ``{name, size, offset}`` triples in declared
+  // order.  Lets a binary tool reconstruct the block without walking
+  // the parse-tree ``CommonStmt`` per routine.
+  void EmitCommonBlockLayout(const semantics::CommonBlockDetails &cb) {
+    out_ << ",\"common_block_layout\":{";
+    bool sep{false};
+    if (cb.alignment() > 0) {
+      out_ << "\"alignment\":" << cb.alignment();
+      sep = true;
+    }
+    if (!cb.objects().empty()) {
+      if (sep) {
+        out_ << ',';
+      }
+      out_ << "\"objects\":[";
+      bool first{true};
+      for (const semantics::MutableSymbolRef &ref : cb.objects()) {
+        const semantics::Symbol &m{*ref};
+        if (!first) {
+          out_ << ',';
+        }
+        first = false;
+        out_ << "{\"name\":\"";
+        EmitJSONString(m.name().ToString());
+        out_ << "\"";
+        if (m.size() > 0) {
+          out_ << ",\"size\":" << m.size();
+        }
+        if (m.offset() > 0) {
+          out_ << ",\"offset\":" << m.offset();
+        }
+        out_ << "}";
+      }
+      out_ << "]";
+    }
+    out_ << "}";
   }
 
   // Record the inner scope of the program unit named by ``x`` so later

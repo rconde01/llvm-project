@@ -58,21 +58,26 @@ information.
 
 `Name` nodes whose symbol is resolved add:
 
-| Field               | Type            | Description                                                  |
-| ------------------- | --------------- | ------------------------------------------------------------ |
-| `type`              | string          | Resolved type (e.g. `"INTEGER(4)"`, `"REAL(8)"`, `"CHARACTER(LEN=8,KIND=1)"`). |
-| `rank`              | integer         | Resolved rank.  `0` for scalars; `1..7` for arrays.          |
-| `shape`             | array of pairs  | `[[lo,hi],…]` per dimension — only when every bound is a constant-foldable integer (Fortran-deferred shapes, assumed shapes, and run-time-bound arrays omit this). |
-| `object`            | boolean (`true`) | Symbol classifies as an object entity (a variable / parameter / dummy data). |
-| `proc`              | boolean (`true`) | Symbol classifies as a procedure (subroutine, function, external, or intrinsic). |
-| `attrs`             | array of strings | The resolved-symbol attribute set, lowercased.  See [Attributes](#attributes). |
-| `implicit`          | boolean (`true`) | Symbol got its type from implicit-typing rules rather than an explicit declaration.  Tools that reformat to ``IMPLICIT NONE`` need this to know which names need a synthesized declaration. |
-| `assoc`             | string          | `"use"` if module-use-associated, `"host"` if host-associated. Omitted for local symbols. |
-| `defined_at`        | object          | Source location of the symbol's *declaring* occurrence — same sub-object shape as `source`.  Omitted on the declaring Name itself, and on Names with no source range. Lets jump-to-definition tools resolve a use site without rebuilding a symbol table. |
-| `defined_in`        | string          | Owning derived-type name when the symbol is a type component (so `q%x` carries `defined_in:"pt"` on `x`).  Omitted when the symbol isn't a component. |
-| `common_block`      | string          | Name of the COMMON block this object lives in.  Omitted for objects not in any COMMON. |
-| `equivalence_class` | integer         | 0-based index within the owning scope's equivalence-set list.  All symbols sharing storage through an `EQUIVALENCE` statement carry the same `equivalence_class`.  Omitted for symbols not in any EQUIVALENCE. |
-| `proc_interface`    | string          | For a procedure entity declared `procedure(iface), …`, the name of the resolved interface.  Omitted when there is no explicit interface (implicit-interface external, no interface block). |
+| Field                  | Type             | Description                                                  |
+| ---------------------- | ---------------- | ------------------------------------------------------------ |
+| `type`                 | string           | Resolved type (e.g. `"INTEGER(4)"`, `"REAL(8)"`, `"CHARACTER(LEN=8,KIND=1)"`). |
+| `rank`                 | integer          | Resolved rank.  `0` for scalars; `1..7` for arrays.          |
+| `shape`                | array of pairs   | `[[lo,hi],…]` per dimension — only when every bound is a constant-foldable integer (Fortran-deferred shapes, assumed shapes, and run-time-bound arrays omit this). |
+| `object`               | boolean (`true`) | Symbol classifies as an object entity (a variable / parameter / dummy data). |
+| `proc`                 | boolean (`true`) | Symbol classifies as a procedure (subroutine, function, external, or intrinsic). |
+| `attrs`                | array of strings | The resolved-symbol attribute set, lowercased.  See [Attributes](#attributes). |
+| `implicit`             | boolean (`true`) | Symbol got its type from implicit-typing rules rather than an explicit declaration.  Tools that reformat to ``IMPLICIT NONE`` need this to know which names need a synthesized declaration. |
+| `assoc`                | string           | `"use"` if module-use-associated, `"host"` if host-associated. Omitted for local symbols. |
+| `defined_at`           | object           | Source location of the symbol's *declaring* occurrence — same sub-object shape as `source`.  Omitted on the declaring Name itself, and on Names with no source range. Lets jump-to-definition tools resolve a use site without rebuilding a symbol table. |
+| `defined_in`           | string           | Owning derived-type name when the symbol is a type component (so `q%x` carries `defined_in:"pt"` on `x`).  Omitted when the symbol isn't a component. |
+| `common_block`         | string           | Name of the COMMON block this object lives in.  Omitted for objects not in any COMMON. |
+| `equivalence_class`    | integer          | 0-based index within the owning scope's equivalence-set list.  All symbols sharing storage through an `EQUIVALENCE` statement carry the same `equivalence_class`.  Omitted for symbols not in any EQUIVALENCE. |
+| `proc_interface`       | string           | For a procedure entity declared `procedure(iface), …`, the name of the resolved interface.  Omitted when there is no explicit interface (implicit-interface external, no interface block). |
+| `size`                 | integer          | Storage size in bytes, when semantics computed it.  Available for laid-out objects (locals, COMMON members, derived-type components); omitted for assumed-shape, deferred-length, allocatable, and pointer entities whose size isn't known at compile time. |
+| `offset`               | integer          | Byte offset within the enclosing aggregate — the COMMON block for COMMON members, the derived type for components, the equivalence buffer for `EQUIVALENCE`-aliased objects.  Omitted when the offset is zero (the default), so an object that's the *first* member of its aggregate carries only `size`. |
+| `from_module`          | string           | For a use-associated Name (`assoc:"use"`), the source module's name.  Lets a tool resolve the import without walking the ``USE`` statement. |
+| `bind_name`            | string           | For an entity declared `BIND(C, NAME="cname")`, the literal C linkage name.  Omitted when no explicit C name was set (the default is the Fortran name lowercased). |
+| `common_block_layout`  | object           | Only on the *block-name* Name of a `COMMON /blk/` (the symbol with `CommonBlockDetails`).  Sub-object with `alignment` (when set) and an `objects` array of `{name, size, offset}` triples in declared order — a one-shot summary of the block's full layout for binary-tooling consumers. |
 
 Nodes whose analyzed `typedExpr` is populated (`Expr`, `Variable`,
 `DataStmtConstant`, `AllocateObject`, `PointerObject`) add:
