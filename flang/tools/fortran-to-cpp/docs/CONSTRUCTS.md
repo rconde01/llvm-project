@@ -191,31 +191,73 @@ if (n == 1) {
 
 ## SELECT CASE
 
+An integer selector with literal-integer cases lowers to a real C++
+`switch`; each list value and each value of a bounded range is a
+separate `case` label.
+
 ```fortran
 select case (n)
 case (1)
   print *, "one"
 case (2, 3)
   print *, "two/three"
+case (5:7)
+  print *, "five/six/seven"
 case default
   print *, "other"
 end select
 ```
 
 ```cpp
-if (n == 1) {
-  std::cout << "one"sv << '\n';
-} else if (n == 2 || n == 3) {
-  std::cout << "two/three"sv << '\n';
+switch (n) {
+  case 1:
+    std::cout << "one"sv << '\n';
+    break;
+  case 2:
+  case 3:
+    std::cout << "two/three"sv << '\n';
+    break;
+  case 5:
+  case 6:
+  case 7:
+    std::cout << "five/six/seven"sv << '\n';
+    break;
+  default:
+    std::cout << "other"sv << '\n';
+    break;
+}
+```
+
+When the form isn't expressible as a `switch` — an open-ended range, a
+CHARACTER or LOGICAL selector, a non-literal-integer range bound, or a
+range so wide that expansion would blow up the source — the fallback is
+an `if`-chain.  An open-ended range is the canonical example:
+
+```fortran
+select case (n)
+case (:0)
+  print *, "neg"
+case (5:)
+  print *, "high"
+case default
+  print *, "mid"
+end select
+```
+
+```cpp
+if (n <= 0) {
+  std::cout << "neg"sv << '\n';
+} else if (n >= 5) {
+  std::cout << "high"sv << '\n';
 } else {
-  std::cout << "other"sv << '\n';
+  std::cout << "mid"sv << '\n';
 }
 ```
 
 **Design — `switch` fast path, `if`-chain fallback.** When every case
 selects on literal-integer values and/or *bounded* literal-integer
 ranges of modest total width (≤ 64 labels), `SELECT CASE` lowers to a
-real C++ `switch` -- bounded ranges expand to one `case N:` label per
+real C++ `switch` — bounded ranges expand to one `case N:` label per
 value, so `-O2` is free to emit a jump table.  The `if`-chain stays as
 the fallback for forms `switch` can't express: open-ended ranges
 (`case (:0)` / `case (5:)`), CHARACTER and LOGICAL selectors, ranges
