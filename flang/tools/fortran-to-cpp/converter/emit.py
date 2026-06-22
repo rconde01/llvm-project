@@ -1252,14 +1252,110 @@ def _emit_while(out: StringIO, node: IRWhile, *, indent: int) -> None:
 def _emit_select_case(
     out: StringIO, node: IRSelectCase, *, indent: int
 ) -> None:
-    """Lower select-case to an if / else-if chain.
+    """Lower SELECT CASE.
 
-    A switch would read more naturally for the pure integer-list case,
-    but Fortran case ranges (``case (1:5)``) and character selectors
-    don't map onto C++ switch, so an if-chain keeps one code path that
-    is always correct.  When the selector isn't a trivial name we bind
-    it to a local so it's evaluated once.
+    When every clause is a list of literal integer values and/or bounded
+    literal-integer ranges of modest total width, emit a real C++
+    ``switch`` -- a dense integer SELECT CASE compiles to a jump-table
+    rather than the sequential compare chain of an ``if`` chain.
+    Otherwise (CHARACTER / LOGICAL selectors, open-ended ranges, wide
+    ranges, non-literal bounds) fall back to the if-chain form, which
+    handles every case shape Fortran allows.
     """
+    if _switch_eligible(node):
+        _emit_select_case_switch(out, node, indent=indent)
+        return
+    _emit_select_case_ifchain(out, node, indent=indent)
+
+
+# Cap on total case-label expansion for ranged CASE forms.  CASE (1:5) -> 5
+# labels, CASE (1, 7, 10:12) -> 5 labels, etc.  Picked so a typical kind-code
+# selector (a few dozen values) takes the switch path while a pathological
+# CASE (1:1000000) doesn't blow up the .cpp.
+_SWITCH_LABEL_BUDGET = 64
+
+
+def _int_literal_value(expr: IRExpr) -> int | None:
+    """Return the integer value of a literal expression, or None."""
+    if isinstance(expr, IRLiteral):
+        t = expr.cpp_text.strip()
+        # Allow a leading sign and an optional kind suffix.
+        if t.startswith(("-", "+")):
+            sign, body = t[0], t[1:]
+        else:
+            sign, body = "+", t
+        # Strip a C++ literal suffix (``42LL``, ``42L``, ``42U`` etc.).
+        while body and body[-1] in "uUlL":
+            body = body[:-1]
+        if body.isdigit():
+            return int(sign + body)
+    return None
+
+
+def _switch_eligible(node: IRSelectCase) -> bool:
+    """A SELECT CASE is switch-eligible when every match is a literal
+    integer and total label count stays within the budget."""
+    if not node.clauses:
+        return False
+    total = 0
+    for clause in node.clauses:
+        for v in clause.values:
+            if _int_literal_value(v) is None:
+                return False
+            total += 1
+        for lo, hi in clause.ranges:
+            lo_v = _int_literal_value(lo) if lo is not None else None
+            hi_v = _int_literal_value(hi) if hi is not None else None
+            # Open-ended ranges can't be enumerated.
+            if lo_v is None or hi_v is None:
+                return False
+            if hi_v < lo_v:
+                # An empty range is fine but adds 0 labels.
+                continue
+            total += hi_v - lo_v + 1
+            if total > _SWITCH_LABEL_BUDGET:
+                return False
+    return total > 0
+
+
+def _emit_select_case_switch(
+    out: StringIO, node: IRSelectCase, *, indent: int
+) -> None:
+    pad = "  " * indent
+    body_pad = pad + "  "
+    case_pad = body_pad + "  "
+    _emit_comment_block(out, node.leading_comments, indent=indent)
+    out.write(f"{pad}switch ({_render_expr(node.selector)}) {{\n")
+    for clause in node.clauses:
+        labels: list[int] = []
+        for v in clause.values:
+            iv = _int_literal_value(v)
+            assert iv is not None  # _switch_eligible guarantees this
+            labels.append(iv)
+        for lo, hi in clause.ranges:
+            assert lo is not None and hi is not None
+            lo_v = _int_literal_value(lo)
+            hi_v = _int_literal_value(hi)
+            assert lo_v is not None and hi_v is not None
+            labels.extend(range(lo_v, hi_v + 1))
+        for label in labels:
+            out.write(f"{body_pad}case {label}:\n")
+        for s in clause.body:
+            _emit_statement(out, s, indent=indent + 2)
+        out.write(f"{case_pad}break;\n")
+    if node.default_body is not None:
+        out.write(f"{body_pad}default:\n")
+        for s in node.default_body:
+            _emit_statement(out, s, indent=indent + 2)
+        out.write(f"{case_pad}break;\n")
+    out.write(f"{pad}}}\n")
+    _emit_trailing(out, node.trailing_comments)
+
+
+def _emit_select_case_ifchain(
+    out: StringIO, node: IRSelectCase, *, indent: int
+) -> None:
+    """Fallback for non-integral selectors, open-ended ranges, etc."""
     pad = "  " * indent
     _emit_comment_block(out, node.leading_comments, indent=indent)
     selector_text = _render_expr(node.selector)

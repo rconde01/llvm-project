@@ -65,6 +65,36 @@ end program
 """
 
 
+OPEN_RANGE_CASE_F90 = """\
+program orc
+  integer :: k
+  k = 10
+  select case (k)
+  case (:0)
+    print *, "neg"
+  case (5:)
+    print *, "high"
+  case default
+    print *, "mid"
+  end select
+end program
+"""
+
+
+CHAR_CASE_F90 = """\
+program cc
+  character(len=4) :: c
+  c = "yes "
+  select case (c)
+  case ("yes ")
+    print *, "y"
+  case ("no  ")
+    print *, "n"
+  end select
+end program
+"""
+
+
 def _convert(src: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".f90", delete=False, encoding="utf-8"
@@ -88,17 +118,39 @@ class ControlFlowEmitTests(unittest.TestCase):
         self.assertIn("continue;", cpp)
         self.assertIn("break;", cpp)
 
-    def test_select_case_emits_if_chain(self) -> None:
+    def test_select_case_emits_switch(self) -> None:
+        # Integer selector with literal-integer cases takes the switch
+        # fast path (jump-table-eligible) rather than the if-chain.
         cpp = _convert(CONTROL_F90)
-        self.assertIn("if (n == 1) {", cpp)
-        self.assertIn("else if (n == 2 || n == 3) {", cpp)
-        self.assertIn("} else {", cpp)
+        self.assertIn("switch (n) {", cpp)
+        self.assertIn("case 1:", cpp)
+        # ``case (2, 3)`` -> two fallthrough labels above one body.
+        self.assertIn("case 2:", cpp)
+        self.assertIn("case 3:", cpp)
+        self.assertIn("default:", cpp)
 
-    def test_select_case_range(self) -> None:
+    def test_select_case_range_expands_to_fallthrough(self) -> None:
+        # Bounded literal-integer range -> a real switch with one case
+        # label per value in the range, so -O2 can emit a jump table.
         cpp = _convert(RANGE_CASE_F90)
-        # Selector is the loop variable k (simple name) -> no temp.
-        self.assertIn("k >= 1 && k <= 2", cpp)
-        self.assertIn("k >= 3 && k <= 4", cpp)
+        self.assertIn("switch (k) {", cpp)
+        self.assertIn("case 1:", cpp)
+        self.assertIn("case 2:", cpp)
+        self.assertIn("case 3:", cpp)
+        self.assertIn("case 4:", cpp)
+
+    def test_select_case_open_range_uses_ifchain(self) -> None:
+        # ``case (:0)`` / ``case (5:)`` can't be enumerated -> if-chain.
+        cpp = _convert(OPEN_RANGE_CASE_F90)
+        self.assertNotIn("switch (k)", cpp)
+        self.assertIn("k <= 0", cpp)
+        self.assertIn("k >= 5", cpp)
+
+    def test_select_case_character_uses_ifchain(self) -> None:
+        # CHARACTER selector isn't integral -> if-chain.
+        cpp = _convert(CHAR_CASE_F90)
+        self.assertNotIn("switch (c)", cpp)
+        self.assertIn("c == ", cpp)
 
 
 @unittest.skipUnless(
@@ -145,6 +197,129 @@ class ControlFlowRunTests(unittest.TestCase):
         self.assertIn("low", out)
         self.assertIn("mid", out)
         self.assertIn("high", out)
+
+
+class SelectCaseSwitchEligibilityTests(unittest.TestCase):
+    """Drives ``_emit_select_case`` from hand-built IR so coverage of the
+    switch / if-chain fast-path / fallback choice doesn't depend on
+    flang being installed."""
+
+    def _emit(self, node):
+        from io import StringIO
+        from converter.emit import _emit_select_case
+        out = StringIO()
+        _emit_select_case(out, node, indent=0)
+        return out.getvalue()
+
+    def _build(self, *clauses, selector_name="n", default=None):
+        from converter.ir import (
+            IRAssignment, IRCaseClause, IRLiteral, IRName, IRSelectCase,
+        )
+        # Body content is irrelevant to the eligibility decision; emit a
+        # marker assignment so the chosen path is visible in the output.
+        def body(marker):
+            return [IRAssignment(IRName("x", "x"), IRLiteral(str(marker)))]
+        return IRSelectCase(
+            selector=IRName(selector_name, selector_name),
+            clauses=[
+                IRCaseClause(
+                    values=[IRLiteral(str(v)) for v in c.get("values", ())],
+                    ranges=[
+                        (
+                            IRLiteral(str(lo)) if lo is not None else None,
+                            IRLiteral(str(hi)) if hi is not None else None,
+                        )
+                        for lo, hi in c.get("ranges", ())
+                    ],
+                    body=body(c["body"]),
+                )
+                for c in clauses
+            ],
+            default_body=body(default) if default is not None else None,
+        )
+
+    def test_single_int_literals_emit_switch(self) -> None:
+        node = self._build(
+            {"values": [1], "body": 1},
+            {"values": [2, 3], "body": 23},
+            default=0,
+        )
+        cpp = self._emit(node)
+        self.assertIn("switch (n)", cpp)
+        self.assertIn("case 1:", cpp)
+        self.assertIn("case 2:", cpp)
+        self.assertIn("case 3:", cpp)
+        self.assertIn("default:", cpp)
+
+    def test_bounded_range_expands(self) -> None:
+        node = self._build(
+            {"ranges": [(1, 3)], "body": 1},
+            {"ranges": [(5, 7)], "body": 5},
+        )
+        cpp = self._emit(node)
+        self.assertIn("switch (n)", cpp)
+        for n in (1, 2, 3, 5, 6, 7):
+            self.assertIn(f"case {n}:", cpp)
+
+    def test_open_range_falls_back_to_ifchain(self) -> None:
+        node = self._build(
+            {"ranges": [(None, 0)], "body": -1},
+            {"ranges": [(5, None)], "body": 1},
+            default=0,
+        )
+        cpp = self._emit(node)
+        self.assertNotIn("switch", cpp)
+        self.assertIn("n <= 0", cpp)
+        self.assertIn("n >= 5", cpp)
+
+    def test_wide_range_falls_back_to_ifchain(self) -> None:
+        # 1..1000 is well above the 64-label budget.
+        node = self._build(
+            {"ranges": [(1, 1000)], "body": 1},
+            default=0,
+        )
+        cpp = self._emit(node)
+        self.assertNotIn("switch", cpp)
+        self.assertIn("n >= 1 && n <= 1000", cpp)
+
+    def test_mixed_values_and_ranges(self) -> None:
+        # ``case (1, 3:5, 9)`` -> labels 1, 3, 4, 5, 9.
+        node = self._build(
+            {"values": [1, 9], "ranges": [(3, 5)], "body": 1},
+        )
+        cpp = self._emit(node)
+        self.assertIn("switch (n)", cpp)
+        for n in (1, 3, 4, 5, 9):
+            self.assertIn(f"case {n}:", cpp)
+
+    def test_negative_literal_label(self) -> None:
+        node = self._build(
+            {"values": [-1, -2], "body": 1},
+            {"ranges": [(-5, -3)], "body": 5},
+        )
+        cpp = self._emit(node)
+        self.assertIn("switch (n)", cpp)
+        for n in (-1, -2, -3, -4, -5):
+            self.assertIn(f"case {n}:", cpp)
+
+    def test_non_literal_value_falls_back(self) -> None:
+        # A named constant in a case value -> can't read the integer at
+        # emit time, so use the if-chain.
+        from converter.ir import (
+            IRAssignment, IRCaseClause, IRLiteral, IRName, IRSelectCase,
+        )
+        node = IRSelectCase(
+            selector=IRName("n", "n"),
+            clauses=[
+                IRCaseClause(
+                    values=[IRName("kFoo", "kFoo")],
+                    body=[IRAssignment(IRName("x", "x"), IRLiteral("1"))],
+                ),
+            ],
+        )
+        cpp = self._emit(node)
+        self.assertNotIn("switch", cpp)
+        self.assertIn("n == kFoo", cpp)
 
 
 if __name__ == "__main__":

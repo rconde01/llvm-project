@@ -212,14 +212,17 @@ if (n == 1) {
 }
 ```
 
-**Design — `if`-chain vs. C++ `switch`.** A C++ `switch` looks closer to
-`SELECT CASE`, but it can't express case *ranges* (`case (1:5)`), needs
-`break` on every arm, and requires an integral selector. The `if`-chain
-handles ranges (`sel >= 1 && sel <= 5`), character and logical
-selectors, and falls through naturally — one lowering covers every form
-of `SELECT CASE`. A simple selector expression is referenced directly; a
-compound one is bound to a `const auto _sel = …;` temporary first so it
-is evaluated once.
+**Design — `switch` fast path, `if`-chain fallback.** When every case
+selects on literal-integer values and/or *bounded* literal-integer
+ranges of modest total width (≤ 64 labels), `SELECT CASE` lowers to a
+real C++ `switch` -- bounded ranges expand to one `case N:` label per
+value, so `-O2` is free to emit a jump table.  The `if`-chain stays as
+the fallback for forms `switch` can't express: open-ended ranges
+(`case (:0)` / `case (5:)`), CHARACTER and LOGICAL selectors, ranges
+whose bounds aren't compile-time-known integers, and ranges whose total
+label count would blow up the source.  A simple selector expression is
+referenced directly; a compound one is bound to a `const auto _sel = …;`
+temporary first so it is evaluated once.
 
 ---
 
