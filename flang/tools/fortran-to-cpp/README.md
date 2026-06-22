@@ -22,8 +22,9 @@ see [`docs/CONSTRUCTS.md`](docs/CONSTRUCTS.md).
 
 1. Produce C++ that **reads** like the Fortran original — same control
    flow, same variable names where reasonable, same comments,
-   recognizable structure.  Performance is secondary to readability and
-   correctness of the translation.
+   recognizable structure.  Performance generally takes priority over
+   readability, but only for substantial wins — don't sacrifice
+   recognizable structure for a few percent.
 2. Produce C++ that is **safely usable from multiple threads** — no
    hidden mutable globals; every piece of state lives in an object the
    caller owns.
