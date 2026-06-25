@@ -211,8 +211,13 @@ constexpr index_t linear_offset_static(
 
 } // namespace detail
 
-// Forward declaration for the implicit conversion below.
-template <typename T, std::size_t Rank> class ArrayRef;
+// Forward declaration for the implicit conversion below.  The default
+// for ``Lower`` is provided here once; the full declaration in
+// array_ref.hpp must NOT repeat it (a default argument can be supplied
+// at most once across all redeclarations of a class template).
+template <typename T, std::size_t Rank,
+          std::array<index_t, Rank> Lower = detail::runtime_lower<Rank>()>
+class ArrayRef;
 
 /// Owning, move-only, column-major Fortran-style array.
 ///
@@ -481,20 +486,32 @@ public:
 
   // ---- Conversion to non-owning view ----------------------------------
 
-  operator ArrayRef<T, Rank>() noexcept;
-  operator ArrayRef<const T, Rank>() const noexcept;
+  /// Implicit conversion to a non-owning view.  Templated on the
+  /// destination ``Lower`` so an Array with one lb (static or runtime)
+  /// can be passed to a dummy declared with a different lb -- the
+  /// Fortran rule that the dummy's declared lb is what the callee
+  /// indexes against.  When the destination is static the runtime
+  /// ``lower_`` field on the view is initialized from the destination's
+  /// ``Lower``; the source's lb only matters for the ``lower_bounds()``
+  /// reading on the source itself.
+  template <std::array<index_t, Rank> DstLower = detail::runtime_lower<Rank>()>
+  operator ArrayRef<T, Rank, DstLower>() noexcept;
+  template <std::array<index_t, Rank> DstLower = detail::runtime_lower<Rank>()>
+  operator ArrayRef<const T, Rank, DstLower>() const noexcept;
 
   /// Fortran sequence association: a whole array passed to a rank-1
   /// (assumed-size) dummy shares its storage as one flat 1-D sequence.
   /// Storage is contiguous column-major, so the flat view *is* the
   /// storage order.  Guarded to ``Rank != 1`` so the same-rank
   /// conversion above still handles an ordinary rank-1 actual.
-  template <std::size_t R = Rank>
+  template <std::size_t R = Rank,
+            std::array<index_t, 1> DstLower = detail::runtime_lower<1>()>
     requires(R != 1)
-  operator ArrayRef<T, 1>() noexcept;
-  template <std::size_t R = Rank>
+  operator ArrayRef<T, 1, DstLower>() noexcept;
+  template <std::size_t R = Rank,
+            std::array<index_t, 1> DstLower = detail::runtime_lower<1>()>
     requires(R != 1)
-  operator ArrayRef<const T, 1>() const noexcept;
+  operator ArrayRef<const T, 1, DstLower>() const noexcept;
 
   /// Rank-1 section view ``a(lo:hi:stride)``.  Convenience that
   /// forwards to ArrayRef::section (defined in array_ref.hpp).

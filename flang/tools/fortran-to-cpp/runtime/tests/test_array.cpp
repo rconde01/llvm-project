@@ -466,4 +466,94 @@ TEST(default_lower_is_runtime_sentinel) {
   CHECK_EQ(a.lbound(1), 1);
 }
 
+// ---- ArrayRef compile-time lower bounds -----------------------------------
+//
+// Symmetric with Array<T, R, Lower> -- the dummy form of a Fortran array
+// can declare its lower bound at the type level too, so indexing inside
+// the callee constant-folds.  Conversions across mismatched ``Lower``
+// values are explicit: the converting constructor copies data/extents/
+// strides and rebinds the indexing convention to the destination's
+// ``Lower``.
+
+TEST(arrayref_static_lower_zero_based_indexing) {
+  // Build a buffer and view it with static lb=0.
+  int buf[5] = {10, 20, 30, 40, 50};
+  constexpr std::array<index_t, 1> kZero{0};
+  ArrayRef<int, 1, kZero> v(buf, {5});
+  CHECK_EQ(decltype(v)::kStaticLower, true);
+  CHECK_EQ(v.lbound(1), 0);
+  CHECK_EQ(v.ubound(1), 4);
+  CHECK_EQ(v(0), 10);
+  CHECK_EQ(v(4), 50);
+}
+
+TEST(arrayref_static_lower_negative_indexing) {
+  int buf[5] = {1, 2, 3, 4, 5};
+  constexpr std::array<index_t, 1> kNeg{-2};
+  ArrayRef<int, 1, kNeg> v(buf, {5});
+  CHECK_EQ(v.lbound(1), -2);
+  CHECK_EQ(v(-2), 1);
+  CHECK_EQ(v(0), 3);
+  CHECK_EQ(v(2), 5);
+}
+
+TEST(arrayref_lower_rebind_from_runtime_to_static) {
+  // A runtime-bound caller view (default Lower = sentinel) converts to a
+  // dummy declared with a static lb -- mirrors the Fortran callee re-
+  // declaring the lower bound it indexes against.
+  int buf[5] = {100, 200, 300, 400, 500};
+  ArrayRef<int, 1> caller(buf, /*lower=*/{3}, /*extents=*/{5});
+  CHECK_EQ(caller(3), 100);
+  CHECK_EQ(caller(7), 500);
+
+  constexpr std::array<index_t, 1> kOne{1};
+  ArrayRef<int, 1, kOne> dummy = caller;            // rebind to lb=1
+  CHECK_EQ(dummy.lbound(1), 1);
+  CHECK_EQ(dummy(1), 100);
+  CHECK_EQ(dummy(5), 500);
+}
+
+TEST(arrayref_lower_rebind_static_to_static) {
+  // Two different static lbs: caller lb=0, dummy lb=-1.  Indexing into
+  // the dummy uses the dummy's declared lb against the same storage.
+  int buf[4] = {7, 8, 9, 10};
+  constexpr std::array<index_t, 1> kZero{0};
+  constexpr std::array<index_t, 1> kMinusOne{-1};
+  ArrayRef<int, 1, kZero> src(buf, {4});            // 0:3
+  ArrayRef<int, 1, kMinusOne> dst = src;            // -1:2 over same data
+  CHECK_EQ(dst.lbound(1), -1);
+  CHECK_EQ(dst(-1), 7);
+  CHECK_EQ(dst(2), 10);
+}
+
+TEST(arrayref_lower_rebind_array_to_static_dummy) {
+  // The most common path: owning Array<T, R, L1> converts (via the
+  // implicit Array->ArrayRef operator) to ArrayRef<T, R> -- then the
+  // converting constructor rebinds that to ArrayRef<T, R, L2> at the
+  // callee's declared lb.
+  constexpr std::array<index_t, 1> kZero{0};
+  Array<int, 1, kZero> a({5});                       // 0:4
+  for (index_t i = 0; i <= 4; ++i) {
+    a(i) = static_cast<int>(i) + 1;                  // 1..5
+  }
+  constexpr std::array<index_t, 1> kOne{1};
+  ArrayRef<int, 1, kOne> view = a;                   // dummy declared lb=1
+  CHECK_EQ(view.lbound(1), 1);
+  CHECK_EQ(view(1), 1);
+  CHECK_EQ(view(5), 5);
+}
+
+TEST(arrayref_const_add_preserves_static_lower) {
+  // ``ArrayRef<T, R, L>`` -> ``ArrayRef<const T, R, L>`` (read-only
+  // view) carries the static Lower through.
+  int buf[3] = {1, 2, 3};
+  constexpr std::array<index_t, 1> kZero{0};
+  ArrayRef<int, 1, kZero> mut(buf, {3});
+  ArrayRef<const int, 1, kZero> ro = mut;
+  CHECK_EQ(decltype(ro)::kStaticLower, true);
+  CHECK_EQ(ro.lbound(1), 0);
+  CHECK_EQ(ro(0), 1);
+  CHECK_EQ(ro(2), 3);
+}
+
 FORTRAN_RT_TEST_MAIN()
