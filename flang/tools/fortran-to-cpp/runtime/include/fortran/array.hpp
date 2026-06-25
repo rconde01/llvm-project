@@ -6,19 +6,28 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// fortran::Array<T, Rank>
+// fortran::Array<T, Rank, Lower>
 //
 // Owning, move-only, column-major N-dimensional array with arbitrary
 // per-dimension lower bounds, matching Fortran's storage layout and
 // indexing exactly.  See ../README.md (rule R1 and decision D1) for the
 // rationale.
 //
-//   fortran::Array<int, 2> a({3, 4});           // 1:3, 1:4
+//   fortran::Array<int, 2> a({3, 4});           // 1:3, 1:4 (default lb=1)
 //   a(1, 1) = 42;                                // 1-based
 //   a(3, 4) = 7;
 //
-//   fortran::Array<double, 1> b({-5}, {11});    // -5:5
+//   fortran::Array<double, 1> b({-5}, {11});    // -5:5, runtime bounds
 //   b(-5) = 1.0;
+//
+//   // Compile-time bounds via the third template argument.  The lower
+//   // bound becomes part of the type and is constant-folded into the
+//   // indexing math instead of being read from a member each access.
+//   //
+//   //   fortran::Array<float, 1, std::array<index_t, 1>{0}> c({10});  // 0:9
+//   //
+//   // Defaults to the runtime sentinel ``Lower = detail::runtime_lower``,
+//   // so every existing ``Array<T, R>`` keeps its runtime-stored bound.
 //
 // Bounds are runtime values; bounds checks are active when the macro
 // FORTRAN_RT_BOUNDS_CHECK is defined (the default unless NDEBUG is set).
@@ -33,6 +42,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <type_traits>
@@ -71,6 +81,36 @@ struct Bounds {
 
 // ----- internal helpers ----------------------------------------------------
 namespace detail {
+
+/// Sentinel value used in the default ``Array``/``ArrayRef`` ``Lower``
+/// NTTP to mean "the lower bound for this dimension is supplied at
+/// construction and stored in the object, not encoded in the type".
+/// Indexing math reads the stored value in that case; when ``Lower``
+/// holds concrete integers (none equal to ``kRuntimeLBound``), the
+/// values are constant-folded into the indexing arithmetic instead.
+inline constexpr index_t kRuntimeLBound =
+    std::numeric_limits<index_t>::min() / 2;
+
+/// Default ``Lower`` template argument: ``{kRuntimeLBound, ...}`` so the
+/// type identifies "runtime bounds for every dimension" — the form
+/// every existing ``Array<T, Rank>`` defaults to.
+template <std::size_t Rank>
+constexpr std::array<index_t, Rank> runtime_lower() noexcept {
+  std::array<index_t, Rank> a{};
+  a.fill(kRuntimeLBound);
+  return a;
+}
+
+/// True if every entry of ``a`` is a concrete bound (no sentinel).
+template <std::size_t Rank>
+constexpr bool is_static_lower(const std::array<index_t, Rank> &a) noexcept {
+  for (std::size_t i = 0; i < Rank; ++i) {
+    if (a[i] == kRuntimeLBound) {
+      return false;
+    }
+  }
+  return true;
+}
 
 /// Compute column-major strides from extents.  stride[0] = 1; subsequent
 /// strides are the running product of preceding extents.  This is what
@@ -144,13 +184,47 @@ constexpr index_t linear_offset(
   return off;
 }
 
+/// Same as above but with the lower bound supplied as a compile-time
+/// ``std::array`` NTTP, so the ``(idx[k] - Lower[k])`` subtraction
+/// constant-folds and a typical inlined ``a(i, j)`` no longer reads a
+/// per-array lower-bounds buffer on the hot path.  Bounds-check ``upper``
+/// stays runtime (extents are runtime even when lb is fixed).
+template <std::size_t Rank, std::array<index_t, Rank> Lower, typename... Idx>
+constexpr index_t linear_offset_static(
+    [[maybe_unused]] const std::array<index_t, Rank> &upper,
+    const std::array<index_t, Rank> &strides, Idx... idxs) {
+  static_assert(sizeof...(Idx) == Rank,
+                "wrong number of indices for fortran::Array");
+  static_assert((std::is_integral_v<Idx> && ...),
+                "indices must be integral");
+  const std::array<index_t, Rank> idx{static_cast<index_t>(idxs)...};
+  index_t off = 0;
+  for (std::size_t k = 0; k < Rank; ++k) {
+    FORTRAN_RT_CHECK_BOUNDS(idx[k], Lower[k], upper[k],
+                            k == 0 ? "dim 1" :
+                            k == 1 ? "dim 2" :
+                            k == 2 ? "dim 3" : "dim N");
+    off += (idx[k] - Lower[k]) * strides[k];
+  }
+  return off;
+}
+
 } // namespace detail
 
 // Forward declaration for the implicit conversion below.
 template <typename T, std::size_t Rank> class ArrayRef;
 
 /// Owning, move-only, column-major Fortran-style array.
-template <typename T, std::size_t Rank> class Array {
+///
+/// ``Lower`` is a non-type template parameter carrying the per-dimension
+/// lower bound.  Its default ``runtime_lower<Rank>()`` means "lower
+/// bounds are supplied at construction and stored in the object" — the
+/// behavior every existing call site relies on.  When the caller spells
+/// concrete integers (e.g. ``Array<float, 1, std::array<index_t,1>{0}>``)
+/// the bounds become part of the type and constant-fold into indexing.
+template <typename T, std::size_t Rank,
+          std::array<index_t, Rank> Lower = detail::runtime_lower<Rank>()>
+class Array {
   static_assert(Rank >= 1, "fortran::Array rank must be >= 1");
 
 public:
@@ -158,32 +232,57 @@ public:
   using extent_array = std::array<index_t, Rank>;
   using lower_array = std::array<index_t, Rank>;
   static constexpr std::size_t rank = Rank;
+  /// True when every dimension's lower bound is a compile-time constant
+  /// (``Lower`` carries no ``kRuntimeLBound`` entries).
+  static constexpr bool kStaticLower = detail::is_static_lower<Rank>(Lower);
+  /// The compile-time lower bounds (only meaningful when ``kStaticLower``).
+  static constexpr std::array<index_t, Rank> static_lower = Lower;
 
   /// Default-constructed array is empty (size() == 0).  Indexing it is UB
   /// (or throws in checked mode) — provided so generated code can declare
   /// arrays whose size is known later.
   Array() noexcept = default;
 
-  /// Construct with explicit extents; lower bounds default to 1 in every
-  /// dimension (the Fortran default).
+  /// Construct with explicit extents.  When ``kStaticLower`` is true the
+  /// per-dimension lower bounds come from ``Lower``; otherwise they
+  /// default to 1 (the Fortran default).
   explicit Array(const extent_array &extents) {
-    lower_.fill(1);
+    if constexpr (kStaticLower) {
+      lower_ = Lower;
+    } else {
+      lower_.fill(1);
+    }
     extents_ = extents;
     init_storage();
   }
 
-  /// Construct with explicit lower bounds *and* extents.
-  Array(const lower_array &lower, const extent_array &extents) {
+  /// Construct with extents and a scalar broadcast to every element —
+  /// Fortran ``real :: a(n) = 0.0``.  Available only when ``kStaticLower``
+  /// is true; for runtime bounds the three-argument
+  /// ``(lower, extents, fill)`` form must be used (a two-argument
+  /// ``(extents, fill)`` would be ambiguous with ``(lower, extents)``).
+  Array(const extent_array &extents, const T &fill)
+    requires(kStaticLower)
+      : Array(extents) {
+    std::fill_n(storage_.get(), size(), fill);
+  }
+
+  /// Construct with explicit lower bounds *and* extents.  Only available
+  /// when bounds aren't already fixed at the type level; for a
+  /// static-``Lower`` instantiation use the ``(extents)`` overload.
+  Array(const lower_array &lower, const extent_array &extents)
+    requires(!kStaticLower)
+  {
     lower_ = lower;
     extents_ = extents;
     init_storage();
   }
 
   /// Construct with explicit lower bounds, extents, and a scalar broadcast
-  /// to every element — Fortran ``real :: a(n) = 0.0``.  (Only this
-  /// three-argument form is provided; a two-argument ``(extents, fill)``
-  /// would be ambiguous with ``(lower, extents)``.)
+  /// to every element — Fortran ``real :: a(n) = 0.0`` with non-default
+  /// lower bounds.
   Array(const lower_array &lower, const extent_array &extents, const T &fill)
+    requires(!kStaticLower)
       : Array(lower, extents) {
     std::fill_n(storage_.get(), size(), fill);
   }
@@ -292,16 +391,29 @@ public:
 
   /// ``a(i, j, k, ...)`` — accepts ``Rank`` integral indices, applies
   /// each dimension's lower bound, returns a reference to the element.
+  /// When ``kStaticLower`` is true the lower-bound subtractions are
+  /// constant-folded out of the offset math; otherwise the runtime
+  /// ``lower_`` buffer is consulted on each access.
   template <typename... Idx>
   T &operator()(Idx... idxs) {
-    return storage_[detail::linear_offset<Rank>(lower_, upper(), strides_,
-                                                idxs...)];
+    if constexpr (kStaticLower) {
+      return storage_[detail::linear_offset_static<Rank, Lower>(
+          upper(), strides_, idxs...)];
+    } else {
+      return storage_[detail::linear_offset<Rank>(lower_, upper(), strides_,
+                                                  idxs...)];
+    }
   }
 
   template <typename... Idx>
   const T &operator()(Idx... idxs) const {
-    return storage_[detail::linear_offset<Rank>(lower_, upper(), strides_,
-                                                idxs...)];
+    if constexpr (kStaticLower) {
+      return storage_[detail::linear_offset_static<Rank, Lower>(
+          upper(), strides_, idxs...)];
+    } else {
+      return storage_[detail::linear_offset<Rank>(lower_, upper(), strides_,
+                                                  idxs...)];
+    }
   }
 
   // ---- Bounds inspection ----------------------------------------------

@@ -337,57 +337,57 @@ private:
 
 // ---- Array <-> ArrayRef implicit conversions ------------------------------
 
-template <typename T, std::size_t Rank>
-Array<T, Rank>::operator ArrayRef<T, Rank>() noexcept {
+template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
+Array<T, Rank, Lower>::operator ArrayRef<T, Rank>() noexcept {
   return ArrayRef<T, Rank>(data(), lower_, extents_, strides_);
 }
 
-template <typename T, std::size_t Rank>
-Array<T, Rank>::operator ArrayRef<const T, Rank>() const noexcept {
+template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
+Array<T, Rank, Lower>::operator ArrayRef<const T, Rank>() const noexcept {
   return ArrayRef<const T, Rank>(data(), lower_, extents_, strides_);
 }
 
 // Sequence association: flatten a higher-rank array to a rank-1 view over
 // its contiguous storage (extent = total element count, lower bound 1).
-template <typename T, std::size_t Rank>
+template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
 template <std::size_t R>
   requires(R != 1)
-Array<T, Rank>::operator ArrayRef<T, 1>() noexcept {
+Array<T, Rank, Lower>::operator ArrayRef<T, 1>() noexcept {
   return ArrayRef<T, 1>(data(), std::array<index_t, 1>{{size()}});
 }
 
-template <typename T, std::size_t Rank>
+template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
 template <std::size_t R>
   requires(R != 1)
-Array<T, Rank>::operator ArrayRef<const T, 1>() const noexcept {
+Array<T, Rank, Lower>::operator ArrayRef<const T, 1>() const noexcept {
   return ArrayRef<const T, 1>(data(), std::array<index_t, 1>{{size()}});
 }
 
-template <typename T, std::size_t Rank>
-ArrayRef<T, 1> Array<T, Rank>::section(index_t lo, index_t hi,
-                                       index_t stride) noexcept {
+template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
+ArrayRef<T, 1> Array<T, Rank, Lower>::section(index_t lo, index_t hi,
+                                              index_t stride) noexcept {
   static_assert(Rank == 1, "section(lo,hi,stride) is rank-1 only");
   return ArrayRef<T, Rank>(*this).section(lo, hi, stride);
 }
 
-template <typename T, std::size_t Rank>
+template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
 template <typename... Subs>
   requires(... || detail::is_slice_v<Subs>)
-auto Array<T, Rank>::section(Subs... subs) noexcept {
+auto Array<T, Rank, Lower>::section(Subs... subs) noexcept {
   return ArrayRef<T, Rank>(*this).section(subs...);
 }
 
-template <typename T, std::size_t Rank>
-ArrayRef<const T, 1> Array<T, Rank>::section(index_t lo, index_t hi,
-                                             index_t stride) const noexcept {
+template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
+ArrayRef<const T, 1> Array<T, Rank, Lower>::section(
+    index_t lo, index_t hi, index_t stride) const noexcept {
   static_assert(Rank == 1, "section(lo,hi,stride) is rank-1 only");
   return ArrayRef<const T, Rank>(*this).section(lo, hi, stride);
 }
 
-template <typename T, std::size_t Rank>
+template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
 template <typename... Subs>
   requires(... || detail::is_slice_v<Subs>)
-auto Array<T, Rank>::section(Subs... subs) const noexcept {
+auto Array<T, Rank, Lower>::section(Subs... subs) const noexcept {
   return ArrayRef<const T, Rank>(*this).section(subs...);
 }
 
@@ -405,8 +405,8 @@ template <typename OS, typename T> void stream_element(OS &os, const T &v) {
 
 /// Print an owning array's elements in Fortran (column-major) order,
 /// space-separated, for list-directed ``print *`` of a whole array.
-template <typename T, std::size_t Rank>
-std::ostream &operator<<(std::ostream &os, const Array<T, Rank> &a) {
+template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
+std::ostream &operator<<(std::ostream &os, const Array<T, Rank, Lower> &a) {
   bool first = true;
   a.for_each([&](const T &v) {
     if (!first) {
@@ -436,8 +436,8 @@ std::ostream &operator<<(std::ostream &os, const ArrayRef<T, Rank> &a) {
 
 /// Read a whole array's elements (Fortran column-major order) — Fortran
 /// list-directed ``read`` of an array variable / section.
-template <typename T, std::size_t Rank>
-std::istream &operator>>(std::istream &is, Array<T, Rank> &a) {
+template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
+std::istream &operator>>(std::istream &is, Array<T, Rank, Lower> &a) {
   const index_t n = a.size();
   for (index_t i = 0; i < n; ++i) {
     is >> a.linear_at(i);
@@ -493,8 +493,9 @@ ArrayRef<To, 1> reinterpret_array(const Src &v) noexcept {
 /// dummy: ``call s(a(i,j))`` where ``s``'s dummy is an array views the
 /// storage from ``a(i,j)`` to the end of ``a`` (column-major).  The
 /// element's address is the start; the extent is the remaining elements.
-template <typename T, std::size_t R, typename... Idx>
-ArrayRef<T, 1> elem_tail(Array<T, R> &a, Idx... idx) {
+template <typename T, std::size_t R, std::array<index_t, R> Lower,
+          typename... Idx>
+ArrayRef<T, 1> elem_tail(Array<T, R, Lower> &a, Idx... idx) {
   T *base = &a(static_cast<index_t>(idx)...);
   return ArrayRef<T, 1>(base, {a.size() - static_cast<index_t>(base - a.data())});
 }
@@ -513,8 +514,9 @@ ArrayRef<T, 1> elem_tail(const ArrayRef<T, R> &a, Idx... idx) {
 /// callee's internal indexing into ap(1..7) is in range, even when
 /// ``A`` has only ``I-1+7`` elements.  Underlying storage validity is
 /// the caller's responsibility (same as Fortran's sequence assoc).
-template <typename T, std::size_t R, typename... Idx>
-ArrayRef<T, 1> elem_tail_n(Array<T, R> &a, index_t n, Idx... idx) {
+template <typename T, std::size_t R, std::array<index_t, R> Lower,
+          typename... Idx>
+ArrayRef<T, 1> elem_tail_n(Array<T, R, Lower> &a, index_t n, Idx... idx) {
   T *base = &a(static_cast<index_t>(idx)...);
   return ArrayRef<T, 1>(base, {n});
 }
@@ -538,9 +540,12 @@ ArrayRef<T, R> seq_assoc(const ArrayRef<T, 1> &flat,
 
 /// Same, for a whole *owning* array actual (``Array<T,1>``): template
 /// deduction won't see the Array -> ArrayRef conversion through the
-/// ``ArrayRef<T,1>`` parameter, so accept the Array directly.
-template <std::size_t R, typename T>
-ArrayRef<T, R> seq_assoc(Array<T, 1> &a, const std::array<index_t, R> &lower,
+/// ``ArrayRef<T,1>`` parameter, so accept the Array directly.  Generic
+/// over the source array's ``Lower`` so a static-bound caller can pass
+/// its array through here too.
+template <std::size_t R, typename T, std::array<index_t, 1> SrcLower>
+ArrayRef<T, R> seq_assoc(Array<T, 1, SrcLower> &a,
+                         const std::array<index_t, R> &lower,
                          const std::array<index_t, R> &extents) {
   return ArrayRef<T, R>(a.data(), lower, extents);
 }
@@ -675,9 +680,9 @@ struct array_formatter : std::formatter<T, char> {
 };
 } // namespace fortran::detail
 
-template <typename T, std::size_t R>
-struct std::formatter<fortran::Array<T, R>, char>
-    : fortran::detail::array_formatter<fortran::Array<T, R>, T> {};
+template <typename T, std::size_t R, std::array<fortran::index_t, R> Lower>
+struct std::formatter<fortran::Array<T, R, Lower>, char>
+    : fortran::detail::array_formatter<fortran::Array<T, R, Lower>, T> {};
 
 template <typename T, std::size_t R>
 struct std::formatter<fortran::ArrayRef<T, R>, char>

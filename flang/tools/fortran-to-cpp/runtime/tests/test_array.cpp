@@ -384,4 +384,86 @@ TEST(scalar_broadcast_assignment_rank2) {
   CHECK_EQ(m(1, 2), 5);
 }
 
+// ---- Compile-time lower bounds (static ``Lower`` NTTP) --------------------
+//
+// When the third Array template argument is concrete the bounds become
+// part of the type and the indexing math constant-folds.  The visible
+// behavior matches the runtime form below — same Fortran subscripts in,
+// same values out.  These tests pin both that the static form indexes
+// correctly and that ``kStaticLower`` / ``static_lower`` reflect the
+// NTTP, so consumers can branch on the property if they need to.
+
+TEST(static_lower_zero_based_rank1_indexing) {
+  constexpr std::array<index_t, 1> kZero{0};
+  Array<int, 1, kZero> a({10});                     // 0:9
+  CHECK_EQ(a.lbound(1), 0);
+  CHECK_EQ(a.ubound(1), 9);
+  CHECK_EQ(decltype(a)::kStaticLower, true);
+  for (index_t i = 0; i < 10; ++i) {
+    a(i) = static_cast<int>(i) * 10;
+  }
+  CHECK_EQ(a(0), 0);
+  CHECK_EQ(a(5), 50);
+  CHECK_EQ(a(9), 90);
+}
+
+TEST(static_lower_negative_rank1_indexing) {
+  constexpr std::array<index_t, 1> kNeg{-3};
+  Array<double, 1, kNeg> b({7});                    // -3:3
+  CHECK_EQ(b.lbound(1), -3);
+  CHECK_EQ(b.ubound(1), 3);
+  b(-3) = 1.5;
+  b(0) = 4.0;
+  b(3) = 7.25;
+  CHECK_EQ(b(-3), 1.5);
+  CHECK_EQ(b(0), 4.0);
+  CHECK_EQ(b(3), 7.25);
+}
+
+TEST(static_lower_rank2_mixed_bounds) {
+  constexpr std::array<index_t, 2> kMixed{0, -1};
+  Array<int, 2, kMixed> m({4, 3});                  // (0:3, -1:1)
+  CHECK_EQ(m.lbound(1), 0);
+  CHECK_EQ(m.lbound(2), -1);
+  CHECK_EQ(m.ubound(1), 3);
+  CHECK_EQ(m.ubound(2), 1);
+  m(0, -1) = 100;
+  m(3, 1) = 311;
+  CHECK_EQ(m(0, -1), 100);
+  CHECK_EQ(m(3, 1), 311);
+}
+
+TEST(static_lower_extents_with_fill_construct) {
+  // ``(extents, fill)`` ctor is only available when kStaticLower is true.
+  constexpr std::array<index_t, 1> kZero{0};
+  Array<int, 1, kZero> a({5}, 7);                   // 0:4 filled with 7s
+  for (index_t i = 0; i <= 4; ++i) {
+    CHECK_EQ(a(i), 7);
+  }
+}
+
+TEST(static_lower_converts_to_runtime_arrayref) {
+  // An owning array with static bounds still implicitly converts to a
+  // runtime-bound ArrayRef -- the runtime lower_ field on the source is
+  // initialized from the template's Lower, so the view sees lb=0.
+  constexpr std::array<index_t, 1> kZero{0};
+  Array<int, 1, kZero> a({4});                      // 0:3
+  for (index_t i = 0; i <= 3; ++i) {
+    a(i) = static_cast<int>(i + 100);
+  }
+  ArrayRef<int, 1> view = a;
+  CHECK_EQ(view.lbound(1), 0);
+  CHECK_EQ(view.ubound(1), 3);
+  CHECK_EQ(view(0), 100);
+  CHECK_EQ(view(3), 103);
+}
+
+TEST(default_lower_is_runtime_sentinel) {
+  // No NTTP supplied -> the default sentinel says "runtime bounds", so
+  // ``kStaticLower`` is false and the existing constructors apply.
+  Array<int, 1> a({4});
+  CHECK_EQ(decltype(a)::kStaticLower, false);
+  CHECK_EQ(a.lbound(1), 1);
+}
+
 FORTRAN_RT_TEST_MAIN()
