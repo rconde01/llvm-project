@@ -117,6 +117,30 @@ template <typename S> void system(const S &command) noexcept {
   (void)std::system(detail::trimmed_cstr(std::string_view(command)).c_str());
 }
 
+/// SYSTEM(command, status): the two-argument SunPro/IBM extension form.
+/// Runs ``command`` and writes the exit code into ``status`` (negative on
+/// shell-spawn failure, otherwise the child's exit status as returned by
+/// ``std::system``).
+template <typename S, typename I>
+void system(const S &command, I &status) noexcept {
+  const int rc = std::system(
+      detail::trimmed_cstr(std::string_view(command)).c_str());
+  status = static_cast<I>(rc);
+}
+
+/// GETENV(name, value): the Fortran-90 two-argument form (sister to
+/// GETENVQQ).  Sets ``value`` to the environment variable's content (or
+/// blank when unset).  Mirrors the call site SPICE emits.
+template <typename N, typename S>
+void getenv(const N &name, S &&value) noexcept {
+  const std::string nm = detail::trimmed_cstr(std::string_view(name));
+  if (const char *e = std::getenv(nm.c_str())) {
+    value = std::string_view{e};
+  } else {
+    value = std::string_view{""};
+  }
+}
+
 /// GETLASTERRORQQ(): last runtime error code — none is tracked.
 inline int getlasterrorqq() noexcept { return 0; }
 
