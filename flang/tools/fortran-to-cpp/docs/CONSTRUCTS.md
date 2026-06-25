@@ -19,6 +19,32 @@ block for brevity.
 
 ---
 
+## Fortran terms a C++ reader will hit
+
+Fortran has its own vocabulary for things every language has under a
+different name.  The few that appear repeatedly in this document:
+
+| Fortran term | C++ equivalent | Notes |
+|---|---|---|
+| **dummy argument** (often just "dummy") | function parameter | The variable inside the routine that receives the caller's value.  *Not* a placeholder or unused arg — confusingly, C++ "dummy" usually means the opposite. |
+| **actual argument** (often just "actual") | call-site argument | The expression at the call site that binds to a dummy. |
+| **subprogram** | function or method | Umbrella term for `SUBROUTINE` (no return value) and `FUNCTION` (one return value). |
+| **program unit** | translation unit's top-level entity | A `PROGRAM`, `SUBROUTINE`, `FUNCTION`, `MODULE`, or `BLOCK DATA`. |
+| **specification part** | top of a function body, before any code | Declarations only — types, parameters, `COMMON`/`SAVE`/`DATA`/`EXTERNAL` statements.  No executable statements allowed here. |
+| **execution part** | the rest of the function body | Where actual statements live. |
+| **intrinsic** | language built-in / standard-library function | Compiler-provided functions like `SQRT`, `SIZE`, `INDEX` — no `import` / `#include` needed. |
+| **implicit interface** | function called without a visible declaration | FORTRAN 77's default: at a call site the compiler doesn't know the callee's signature.  Argument types and ranks are *only* checked through the actual-vs-dummy correspondence at runtime — there is no compile-time check.  Modules and interface blocks restore the compile-time check. |
+| **assumed-shape / assumed-size / assumed-length** dummy | parameter whose shape/length comes from the caller | `a(*)` (assumed-size, F77), `a(:)` (assumed-shape, F90), `s*(*)` (assumed-length CHARACTER).  All map to `fortran::ArrayRef` / `fortran::CharRef`. |
+| **host association** | a contained routine reads its enclosing routine's locals | Like a C++ lambda's `[&]` capture, but built into the language for nested subprograms. |
+| **use association** | `USE m` brings module `m`'s exports into scope | The Fortran 90+ replacement for `COMMON` blocks and `INCLUDE` files. |
+| **storage association** | shared storage between differently-named variables | Made by `COMMON`, `EQUIVALENCE`, or passing a whole array to a differently-shaped dummy.  C++ has no analogous mechanism; the converter emits view objects (`ArrayRef`, `EquivArray`) when storage association is unavoidable. |
+| **KIND** | width/precision parameter on a numeric type | `INTEGER(KIND=8)` = `int64_t`, `REAL(KIND=8)` = `double`.  Independent of the type itself. |
+
+The Fortran 2018 standard is the authority; this table is a survival
+guide, not a definition.
+
+---
+
 ## Contents
 
 - [Program structure](#program-structure)
@@ -404,9 +430,10 @@ grid(-n, -n) = 0.0f;
 
 `fortran::Array` bakes in the four things Fortran assumes and C++ does
 not: 1-based subscripts, arbitrary lower bounds (`a(0:9)`), column-major
-layout, and shape-aware whole-array operations. `ArrayRef` is the dummy
-form — a small view that a caller's owning `Array` converts to
-implicitly, so a subroutine can take any slice without copying.
+layout, and shape-aware whole-array operations.  `ArrayRef` is the
+*dummy* form (Fortran's term for a function parameter — see the
+glossary above) — a small view that a caller's owning `Array` converts
+to implicitly, so a subroutine can take any slice without copying.
 
 **For a C++ reader.** Three Fortran array facts that catch C++ devs out:
 
