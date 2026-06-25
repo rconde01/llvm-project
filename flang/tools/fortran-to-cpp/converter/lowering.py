@@ -5195,13 +5195,16 @@ def _lower_case(case_node: Node) -> tuple[IRCaseClause, bool]:
     is_default = False
 
     case_stmt = case_node.first_child("Statement")
+    case_source = ""
+    if case_stmt is not None and case_stmt.source is not None:
+        case_source = case_stmt.source.text or ""
     if case_stmt is not None:
         selector = case_stmt.find_first("CaseSelector")
         if selector is not None:
             if selector.first_child("Default") is not None:
                 is_default = True
             for vr in selector.children_of_kind("CaseValueRange"):
-                _lower_case_value_range(vr, values, ranges)
+                _lower_case_value_range(vr, values, ranges, case_source)
 
     block = case_node.first_child("Block")
     body = _lower_block(block) if block is not None else []
@@ -5212,14 +5215,38 @@ def _lower_case_value_range(
     vr: Node,
     values: list[IRExpr],
     ranges: list[tuple[IRExpr | None, IRExpr | None]],
+    case_source: str = "",
 ) -> None:
     """A CaseValueRange is either a single value or a (lo:hi) range."""
     range_node = vr.first_child("Range") or vr.first_child("CaseValueRange::Range")
     if range_node is not None:
         # Range form: children may include lower and/or upper bounds.
+        # Parse-tree shape is ``tuple<optional<CaseValue>, optional<CaseValue>>``;
+        # the dumper drops the empty slot so we can't tell lo from hi just by
+        # child order when only one is present.  Compare the lone Expr's
+        # source column to the ``:`` in the enclosing CaseStmt's source text:
+        # an Expr before the colon is the lo; after, the hi.
         exprs = list(range_node.find_all("Expr"))
-        lo = _lower_expression(exprs[0]) if exprs else None
-        hi = _lower_expression(exprs[1]) if len(exprs) > 1 else None
+        lo: IRExpr | None = None
+        hi: IRExpr | None = None
+        if len(exprs) >= 2:
+            lo = _lower_expression(exprs[0])
+            hi = _lower_expression(exprs[1])
+        elif len(exprs) == 1:
+            single = exprs[0]
+            is_lo = True
+            expr_text = (single.source.text or "") if single.source else ""
+            if expr_text and case_source:
+                # Find the Expr's text inside the case statement; the colon
+                # that separates lo and hi sits to one side of it.
+                expr_pos = case_source.find(expr_text)
+                colon_pos = case_source.find(":")
+                if expr_pos >= 0 and colon_pos >= 0:
+                    is_lo = expr_pos < colon_pos
+            if is_lo:
+                lo = _lower_expression(single)            # case (lo:)
+            else:
+                hi = _lower_expression(single)            # case (:hi)
         ranges.append((lo, hi))
         return
     expr = vr.find_first("Expr")

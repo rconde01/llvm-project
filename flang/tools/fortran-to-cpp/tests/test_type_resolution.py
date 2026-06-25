@@ -128,8 +128,13 @@ class ShapeFromSymbolTests(unittest.TestCase):
 
     def test_arbitrary_lower_bound(self) -> None:
         cpp = _convert(SHAPE_F)
-        # e(0:9): lower 0, extent 10.
-        self.assertIn("fortran::Array<float, 1> e{{0}, {10}};", cpp)
+        # e(0:9): literal lb=0 lifts the bound into the type's ``Lower``
+        # NTTP so the constructor only needs the extents.
+        self.assertIn(
+            "fortran::Array<float, 1, std::array<fortran::index_t, 1>{0}> "
+            "e{{10}};",
+            cpp,
+        )
 
 
 @unittest.skipUnless(_have_flang(), "flang binary not available")

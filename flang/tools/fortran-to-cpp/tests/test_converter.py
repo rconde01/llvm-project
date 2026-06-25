@@ -336,8 +336,13 @@ class EmitTests(unittest.TestCase):
         # Brace-init form (works as both local and struct member).  The
         # main program's arrays stay as direct locals (no workspace).
         self.assertIn("fortran::Array<std::int32_t, 1> a{{10}};", cpp)
-        # Explicit lower bound -> (lower, extent) constructor.
-        self.assertIn("fortran::Array<std::int32_t, 1> b{{0}", cpp)
+        # Explicit *literal* lower bound is lifted into the type's
+        # ``Lower`` NTTP; the constructor takes only the extents.
+        self.assertIn(
+            "fortran::Array<std::int32_t, 1, "
+            "std::array<fortran::index_t, 1>{0}> b{{",
+            cpp,
+        )
         # 2-D array.
         self.assertIn("fortran::Array<std::int32_t, 2> c{{3, 4}};", cpp)
 
