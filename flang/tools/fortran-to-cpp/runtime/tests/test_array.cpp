@@ -543,6 +543,56 @@ TEST(arrayref_lower_rebind_array_to_static_dummy) {
   CHECK_EQ(view(5), 5);
 }
 
+namespace {
+// Two small "callees" with static-Lower dummy parameters, used to pin
+// caller-side binding for every relevant actual form: runtime Array,
+// runtime ArrayRef, and static-Lower Array.  These match the shape the
+// converter emits when a Fortran dummy declares a literal lower bound.
+inline void _callee_lb_one(
+    ArrayRef<int, 1, std::array<index_t, 1>{1}> a) {
+  CHECK_EQ(a(1), 100);
+  CHECK_EQ(a(5), 500);
+}
+inline void _callee_lb_zero(
+    ArrayRef<int, 1, std::array<index_t, 1>{0}> a) {
+  CHECK_EQ(a(0), 100);
+  CHECK_EQ(a(4), 500);
+}
+}  // namespace
+
+TEST(static_lb_dummy_binds_runtime_caller) {
+  // Caller has a runtime-bound Array with lb=3; both static-lb dummies
+  // get a re-bound view onto the same storage.
+  Array<int, 1> caller({3}, {5});                   // 3:7
+  caller(3) = 100; caller(4) = 200; caller(5) = 300;
+  caller(6) = 400; caller(7) = 500;
+  _callee_lb_one(caller);
+  _callee_lb_zero(caller);
+}
+
+TEST(static_lb_dummy_binds_arrayref_forwarded_actual) {
+  // The actual is itself an ArrayRef (forwarded from another dummy);
+  // the dummy-to-dummy chain still rebinds Lower at the call.
+  Array<int, 1> caller({3}, {5});
+  caller(3) = 100; caller(4) = 200; caller(5) = 300;
+  caller(6) = 400; caller(7) = 500;
+  ArrayRef<int, 1> mid = caller;
+  _callee_lb_one(mid);
+  _callee_lb_zero(mid);
+}
+
+TEST(static_lb_dummy_binds_static_lb_caller) {
+  // Static-Lower owning Array (lb=2) -> rebinds to whichever static lb
+  // the callee declared.
+  constexpr std::array<index_t, 1> kTwo{2};
+  Array<int, 1, kTwo> caller({5});                  // 2:6
+  for (index_t i = 2; i <= 6; ++i) {
+    caller(i) = static_cast<int>((i - 2 + 1) * 100);
+  }
+  _callee_lb_one(caller);
+  _callee_lb_zero(caller);
+}
+
 TEST(arrayref_const_add_preserves_static_lower) {
   // ``ArrayRef<T, R, L>`` -> ``ArrayRef<const T, R, L>`` (read-only
   // view) carries the static Lower through.
