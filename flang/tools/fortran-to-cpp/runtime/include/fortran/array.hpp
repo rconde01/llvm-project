@@ -339,12 +339,28 @@ public:
   /// element type so the deleted same-type copy still forces an explicit
   /// ``clone()`` (D1); template deduction wouldn't apply the implicit
   /// Array->ArrayRef conversion, hence this dedicated overload.
-  template <typename U>
+  template <typename U, std::array<index_t, Rank> SrcLower>
     requires(!std::is_same_v<U, T>)
-  Array &operator=(const Array<U, Rank> &src) {
+  Array &operator=(const Array<U, Rank, SrcLower> &src) {
     const index_t n = size();
     for (index_t i = 0; i < n; ++i) {
       linear_at(i) = static_cast<T>(src.linear_at(i));
+    }
+    return *this;
+  }
+
+  /// Elementwise copy from a same-rank array of the *same* element type
+  /// but a *different* ``Lower`` (the destination is a static-bound
+  /// SAVE struct field, the source is an Array constructor result with
+  /// the runtime-sentinel Lower).  Without this, ``a = array_of(...)``
+  /// where ``a`` is static-lb has no matching operator=.  Distinct from
+  /// the deleted same-type-same-Lower copy assignment.
+  template <std::array<index_t, Rank> SrcLower>
+    requires(SrcLower != Lower)
+  Array &operator=(const Array<T, Rank, SrcLower> &src) {
+    const index_t n = size();
+    for (index_t i = 0; i < n; ++i) {
+      linear_at(i) = src.linear_at(i);
     }
     return *this;
   }
