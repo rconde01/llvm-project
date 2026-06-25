@@ -487,6 +487,69 @@ def _is_scalar_constant(expr: object) -> bool:
     return False
 
 
+def _try_static_lower_literals(
+    lower_exprs: tuple[str, ...],
+) -> tuple[int, ...] | None:
+    """Parse a tuple of per-dimension lower-bound expressions; return the
+    integer values if every entry is a literal integer (optionally signed),
+    else ``None``.  Used to decide whether a local owning array should be
+    emitted as ``Array<T, R, std::array<index_t, R>{...}>`` (compile-time
+    lower bounds: indexing math constant-folds the subtraction) rather than
+    the runtime ``Array<T, R>`` form."""
+    if not lower_exprs:
+        return None
+    values: list[int] = []
+    for expr in lower_exprs:
+        s = expr.strip()
+        # Strip an outer (...) -- the converter sometimes wraps a signed
+        # literal in parens via the operator-precedence layer.
+        while s.startswith("(") and s.endswith(")"):
+            inner = s[1:-1].strip()
+            # Only strip when the outer parens are matched at the top level
+            # (no early closing).  Easy check for our well-formed input.
+            if inner.count("(") == inner.count(")"):
+                s = inner
+            else:
+                break
+        if s.startswith(("-", "+")):
+            sign, body = s[0], s[1:].lstrip()
+        else:
+            sign, body = "+", s
+        # Strip any trailing C++ literal suffix (uUlL).
+        while body and body[-1] in "uUlL":
+            body = body[:-1]
+        if not body.isdigit():
+            return None
+        values.append(int(sign + body))
+    return tuple(values)
+
+
+def _static_lower_cpp_type(loc: "IRLocal") -> str | None:
+    """Return the ``Array<T, R, std::array{...}>`` spelling for ``loc`` when
+    every declared lower bound is a literal integer; ``None`` when the
+    runtime form is required (no explicit bounds, or some bound is a
+    non-literal expression).  Caller still uses the runtime form when this
+    returns ``None``."""
+    if not loc.type.is_array:
+        return None
+    lbs = _try_static_lower_literals(loc.type.array_lower_bound_exprs)
+    if lbs is None:
+        return None
+    rank = loc.type.array_rank
+    if len(lbs) != rank:
+        return None
+    # Render the C++ ``std::array<index_t, R>{lbs...}`` NTTP and substitute
+    # it for the trailing ``>`` of the runtime spelling.  The runtime cpp is
+    # ``fortran::Array<T, R>`` (or similar with namespace prefix).
+    cpp = loc.type.cpp
+    if not cpp.endswith(">"):
+        return None
+    inner = ",".join(str(v) for v in lbs)
+    nttp = f"std::array<fortran::index_t, {rank}>{{{inner}}}"
+    # Splice the NTTP in before the closing ``>``.
+    return cpp[:-1] + f", {nttp}>"
+
+
 def _emit_local(
     out: StringIO, loc: IRLocal, *, indent: int, storage: str = "local"
 ) -> None:
@@ -540,17 +603,28 @@ def _emit_local(
         # below.
         fill = _render_expr(loc.initializer)
         extents = ", ".join(loc.type.array_extent_exprs)
-        # Always use the explicit-lower-bound form so the call resolves to
-        # ``Array(lower, extents, fill)`` (the only fill constructor);
-        # default the lower bounds to 1 when none were declared.
-        if loc.type.array_lower_bound_exprs:
-            lowers = ", ".join(loc.type.array_lower_bound_exprs)
+        # Prefer the compile-time-lower-bounds form when every declared
+        # lower bound is an integer literal: the bound becomes part of the
+        # type and ``a(i)``'s ``(i - lower)`` constant-folds.  This form
+        # uses the ``Array<T, R, Lower>(extents, fill)`` ctor that the
+        # runtime grew alongside the static ``Lower`` NTTP.  Otherwise fall
+        # back to the runtime ``(lower, extents, fill)`` ctor; default the
+        # lower bounds to 1 when none were declared.
+        static_cpp = _static_lower_cpp_type(loc)
+        if static_cpp is not None:
+            out.write(
+                f"{pad}{prefix}{static_cpp} {loc.name}"
+                f"{{{{{extents}}}, {fill}}};"
+            )
         else:
-            lowers = ", ".join(["1"] * len(loc.type.array_extent_exprs))
-        out.write(
-            f"{pad}{prefix}{loc.type.cpp} {loc.name}"
-            f"{{{{{lowers}}}, {{{extents}}}, {fill}}};"
-        )
+            if loc.type.array_lower_bound_exprs:
+                lowers = ", ".join(loc.type.array_lower_bound_exprs)
+            else:
+                lowers = ", ".join(["1"] * len(loc.type.array_extent_exprs))
+            out.write(
+                f"{pad}{prefix}{loc.type.cpp} {loc.name}"
+                f"{{{{{lowers}}}, {{{extents}}}, {fill}}};"
+            )
         _emit_trailing(out, loc.trailing_comments)
         return
     if loc.type.is_array and loc.initializer is None:
@@ -560,20 +634,24 @@ def _emit_local(
             out.write(f"{pad}{prefix}{loc.type.cpp} {loc.name};")
             _emit_trailing(out, loc.trailing_comments)
             return
-        # Brace-init form ``Array<T,R> name{ {extents} };`` (or
-        # ``{ {lowers}, {extents} }`` for explicit lower bounds).  Braces
-        # rather than parens so the same emit works whether ``name`` is a
-        # local variable or a struct data member (parens aren't allowed
-        # for default member initializers).
-        out.write(f"{pad}{prefix}{loc.type.cpp} {loc.name}{{")
-        if loc.type.array_lower_bound_exprs:
+        # Brace-init form ``Array<T,R> name{ {extents} };`` (runtime lb
+        # defaults to 1, runtime explicit lb uses ``{ {lowers}, {extents} }``,
+        # or compile-time lb spells the bound in the type and uses
+        # ``{ {extents} }``).  Braces rather than parens so the same emit
+        # works whether ``name`` is a local variable or a struct data
+        # member (parens aren't allowed for default member initializers).
+        extents = ", ".join(loc.type.array_extent_exprs)
+        static_cpp = _static_lower_cpp_type(loc)
+        if static_cpp is not None:
+            out.write(f"{pad}{prefix}{static_cpp} {loc.name}{{{{{extents}}}}};")
+        elif loc.type.array_lower_bound_exprs:
             lowers = ", ".join(loc.type.array_lower_bound_exprs)
-            extents = ", ".join(loc.type.array_extent_exprs)
-            out.write(f"{{{lowers}}}, {{{extents}}}")
+            out.write(
+                f"{pad}{prefix}{loc.type.cpp} {loc.name}"
+                f"{{{{{lowers}}}, {{{extents}}}}};"
+            )
         else:
-            extents = ", ".join(loc.type.array_extent_exprs)
-            out.write(f"{{{extents}}}")
-        out.write("};")
+            out.write(f"{pad}{prefix}{loc.type.cpp} {loc.name}{{{{{extents}}}}};")
         _emit_trailing(out, loc.trailing_comments)
         return
     if loc.type.is_pointer and not loc.type.is_array and loc.initializer is None:
