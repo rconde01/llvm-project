@@ -334,8 +334,10 @@ computed `GOTO` lower to ordinary branches feeding the same machinery.
 ## Arrays
 
 Arrays use the runtime's `fortran::Array<T, Rank>` (owning) and
-`fortran::ArrayRef<T, Rank>` (non-owning view). Indexing is **1-based**
-and storage is **column-major**, matching Fortran exactly.
+`fortran::ArrayRef<T, Rank>` (non-owning view).  Storage is
+**column-major** and indexing follows the Fortran convention: 1-based
+by default, with **arbitrary per-dimension lower bounds** when the
+declaration sets them (`a(0:9)`, `m(-1:1, 1:n)`).
 
 ```fortran
 real :: v(3), m(2,2)
@@ -349,6 +351,24 @@ fortran::Array<float, 2> m{{2, 2}};
 
 v(1) = 1.0f;
 m(2, 1) = 4.0f;
+```
+
+A non-default lower bound is supplied at construction time and indexing
+still reads with the Fortran subscript verbatim:
+
+```fortran
+real :: coef(0:lmax)          ! harmonic coefficients indexed from 0
+real :: grid(-n:n, -n:n)
+coef(0) = 1.0
+grid(-n, -n) = 0.0
+```
+
+```cpp
+fortran::Array<float, 1> coef{{0}, {lmax + 1}};    // {lower}, {extent}
+fortran::Array<float, 2> grid{{-n, -n}, {2*n + 1, 2*n + 1}};
+
+coef(0) = 1.0f;
+grid(-n, -n) = 0.0f;
 ```
 
 **Design — why a custom array type?**
