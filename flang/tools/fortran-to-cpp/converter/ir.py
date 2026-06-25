@@ -794,10 +794,22 @@ class IRParameter:
             ):
                 return f"fortran::CharArrayRef {self.name}"
             const_q = "const " if self.intent == "in" else ""
-            decl = (
+            runtime_ref = (
                 f"fortran::ArrayRef<{const_q}{self.type.element_type_cpp}, "
-                f"{self.type.array_rank}> {self.name}"
+                f"{self.type.array_rank}>"
             )
+            # When every declared lower bound is a literal integer, encode
+            # them in the ArrayRef's ``Lower`` NTTP so indexing in the
+            # callee constant-folds.  Callers' arrays (any source Lower)
+            # bind via the templated Array->ArrayRef conversion operator
+            # and the ArrayRef Lower-rebind constructor.
+            from .static_lower import static_lower_cpp_type
+            static_ref = static_lower_cpp_type(
+                runtime_ref, self.type.array_rank,
+                self.type.array_lower_bound_exprs,
+            )
+            ref_type = static_ref if static_ref is not None else runtime_ref
+            decl = f"{ref_type} {self.name}"
             if self.optional and with_default:
                 # An OPTIONAL array dummy defaults to a null (empty) view,
                 # which PRESENT() reports as absent — so callers can omit it.

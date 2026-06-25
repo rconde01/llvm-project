@@ -5,8 +5,11 @@ from __future__ import annotations
 import unittest
 from io import StringIO
 
-from converter.emit import _emit_local, _try_static_lower_literals
+from converter.emit import _emit_local
 from converter.ir import IRLiteral, IRLocal, IRType
+from converter.static_lower import (
+    try_static_lower_literals as _try_static_lower_literals,
+)
 
 
 def _emit(loc: IRLocal) -> str:
@@ -153,6 +156,61 @@ class EmitLocalStaticLowerTests(unittest.TestCase):
             "fortran::Array<float, 1> a{{1}, {n}, 0.0f};",
             cpp,
         )
+
+
+class ParamDeclStaticLowerTests(unittest.TestCase):
+    """``IRParameter.cpp_param_decl`` switches to the static-``Lower`` form
+    when every declared lower bound on the dummy is a literal integer."""
+
+    def _array_param(self, *, name: str, rank: int, lower_exprs,
+                     extent_exprs, intent: str = "in"):
+        from converter.ir import IRParameter
+        return IRParameter(
+            name=name,
+            type=_array_type(rank=rank, lower_exprs=lower_exprs,
+                             extent_exprs=extent_exprs),
+            intent=intent,
+        )
+
+    def test_default_lb_uses_runtime_arrayref(self) -> None:
+        p = self._array_param(
+            name="a", rank=1, lower_exprs=(), extent_exprs=("10",),
+            intent="inout",
+        )
+        decl = p.cpp_param_decl(with_default=False)
+        self.assertEqual(decl, "fortran::ArrayRef<float, 1> a")
+
+    def test_literal_lb_uses_static_arrayref(self) -> None:
+        p = self._array_param(
+            name="a", rank=1, lower_exprs=("0",), extent_exprs=("10",),
+            intent="inout",
+        )
+        decl = p.cpp_param_decl(with_default=False)
+        self.assertEqual(
+            decl,
+            "fortran::ArrayRef<float, 1, std::array<fortran::index_t, 1>{0}> a",
+        )
+
+    def test_negative_lb_uses_static_arrayref(self) -> None:
+        p = self._array_param(
+            name="b", rank=1, lower_exprs=("-3",), extent_exprs=("7",),
+            intent="in",
+        )
+        decl = p.cpp_param_decl(with_default=False)
+        self.assertEqual(
+            decl,
+            "fortran::ArrayRef<const float, 1, "
+            "std::array<fortran::index_t, 1>{-3}> b",
+        )
+
+    def test_non_literal_lb_falls_back(self) -> None:
+        # ``a(n:m)`` -- n, m are subprogram parameters -> runtime form.
+        p = self._array_param(
+            name="a", rank=1, lower_exprs=("n",), extent_exprs=("m - n + 1",),
+            intent="inout",
+        )
+        decl = p.cpp_param_decl(with_default=False)
+        self.assertEqual(decl, "fortran::ArrayRef<float, 1> a")
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ from typing import Iterable
 from flang_ast import Comment
 
 from .errors import ConversionError
+from .static_lower import static_lower_cpp_type, try_static_lower_literals
 from .ir import (
     IRAllocate,
     IRArrayConstructor,
@@ -487,43 +488,6 @@ def _is_scalar_constant(expr: object) -> bool:
     return False
 
 
-def _try_static_lower_literals(
-    lower_exprs: tuple[str, ...],
-) -> tuple[int, ...] | None:
-    """Parse a tuple of per-dimension lower-bound expressions; return the
-    integer values if every entry is a literal integer (optionally signed),
-    else ``None``.  Used to decide whether a local owning array should be
-    emitted as ``Array<T, R, std::array<index_t, R>{...}>`` (compile-time
-    lower bounds: indexing math constant-folds the subtraction) rather than
-    the runtime ``Array<T, R>`` form."""
-    if not lower_exprs:
-        return None
-    values: list[int] = []
-    for expr in lower_exprs:
-        s = expr.strip()
-        # Strip an outer (...) -- the converter sometimes wraps a signed
-        # literal in parens via the operator-precedence layer.
-        while s.startswith("(") and s.endswith(")"):
-            inner = s[1:-1].strip()
-            # Only strip when the outer parens are matched at the top level
-            # (no early closing).  Easy check for our well-formed input.
-            if inner.count("(") == inner.count(")"):
-                s = inner
-            else:
-                break
-        if s.startswith(("-", "+")):
-            sign, body = s[0], s[1:].lstrip()
-        else:
-            sign, body = "+", s
-        # Strip any trailing C++ literal suffix (uUlL).
-        while body and body[-1] in "uUlL":
-            body = body[:-1]
-        if not body.isdigit():
-            return None
-        values.append(int(sign + body))
-    return tuple(values)
-
-
 def _static_lower_cpp_type(loc: "IRLocal") -> str | None:
     """Return the ``Array<T, R, std::array{...}>`` spelling for ``loc`` when
     every declared lower bound is a literal integer; ``None`` when the
@@ -532,22 +496,9 @@ def _static_lower_cpp_type(loc: "IRLocal") -> str | None:
     returns ``None``."""
     if not loc.type.is_array:
         return None
-    lbs = _try_static_lower_literals(loc.type.array_lower_bound_exprs)
-    if lbs is None:
-        return None
-    rank = loc.type.array_rank
-    if len(lbs) != rank:
-        return None
-    # Render the C++ ``std::array<index_t, R>{lbs...}`` NTTP and substitute
-    # it for the trailing ``>`` of the runtime spelling.  The runtime cpp is
-    # ``fortran::Array<T, R>`` (or similar with namespace prefix).
-    cpp = loc.type.cpp
-    if not cpp.endswith(">"):
-        return None
-    inner = ",".join(str(v) for v in lbs)
-    nttp = f"std::array<fortran::index_t, {rank}>{{{inner}}}"
-    # Splice the NTTP in before the closing ``>``.
-    return cpp[:-1] + f", {nttp}>"
+    return static_lower_cpp_type(
+        loc.type.cpp, loc.type.array_rank, loc.type.array_lower_bound_exprs
+    )
 
 
 def _emit_local(
