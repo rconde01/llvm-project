@@ -112,6 +112,18 @@ Integer literals are decimal in Fortran but a leading zero makes C++ read
 them as octal, so `08` (invalid octal) is normalized to `8` during
 lowering; `1.0d0` double-precision literals become `1.0e0`.
 
+**For a C++ reader.** Fortran has no `auto`; every variable has a
+declared type.  The catch is that pre-Fortran-90 code often *omitted*
+the declaration and relied on the implicit-typing rule above (a single-
+letter prefix decides whether a name is `INTEGER` or `REAL`).  Modern
+code uses `IMPLICIT NONE` to disable the rule and require explicit
+declarations — exactly C++'s default.  `KIND` is Fortran's equivalent
+of the C++ width suffix on an integer/real type: `INTEGER(KIND=8)` is
+`int64_t`, `REAL(KIND=8)` is `double`.  A scalar with no explicit
+initializer is value-initialized to zero — slightly stricter than
+gfortran's default (which leaves locals uninitialized) but matches
+the `-finit-zero` convention every numerical Fortran codebase enables.
+
 ---
 
 ## Counted DO loop
@@ -146,6 +158,17 @@ for (i = 10; (-2 >= 0 ? i <= 2 : i >= 2); i += -2) {
 **Design.** A literal positive step emits the plain `i <= hi` test; only
 a step whose sign is unknown pays for the `(step >= 0 ? … : …)` guard,
 keeping the common case clean.
+
+**For a C++ reader.** Fortran's `DO i = lo, hi, step` has a *trip count
+computed once* at loop entry: the loop runs `max(0, (hi - lo + step) /
+step)` times, the bounds are *not* re-read each iteration, and
+re-assigning `i` inside the body has no effect on iteration count
+(the standard actually forbids it).  This is different from a C++
+`for (i = lo; i <= hi; ++i)`, where mutating `i` or the bound inside
+the body changes how many iterations happen.  The converter emits the
+plain `for` because that matches the dominant common case (no rebinding
+inside the body), and a Fortran-compliant body never depends on the
+distinction.
 
 ---
 
@@ -385,6 +408,25 @@ layout, and shape-aware whole-array operations. `ArrayRef` is the dummy
 form — a small view that a caller's owning `Array` converts to
 implicitly, so a subroutine can take any slice without copying.
 
+**For a C++ reader.** Three Fortran array facts that catch C++ devs out:
+
+* **1-based, configurable lower bound.** `a(1)` is the first element by
+  default, but a declaration may set any lower bound: `a(0:9)` is
+  ten elements indexed `0..9`; `t(-n:n)` is `2n+1` elements indexed
+  `-n..n`.  The Fortran subscript and the C++ subscript stay
+  *character-for-character identical* in the converted code —
+  `fortran::Array` does the per-dimension shift internally.  When the
+  bound is a literal integer the converter encodes it in the type
+  (`Array<T, 1, std::array{0}>`) so the subtraction constant-folds.
+* **Column-major.** `a(i, j)` is contiguous along `i`, not `j`.  This is
+  the opposite of C / C++'s row-major default and matches the layout
+  every BLAS/LAPACK routine expects.  Take a row of a matrix and the
+  stride is the leading dimension; take a column and the stride is 1.
+* **Whole-array statements.** `a = a + b` is a per-element add over
+  conformable arrays, not pointer arithmetic.  The converter expands it
+  into an explicit loop (see [Array sections](#array-sections-and-whole-array-assignment))
+  so no temporary is allocated.
+
 ---
 
 ## Array sections and whole-array assignment
@@ -425,6 +467,18 @@ array-valued result (`a = matmul(x, y)`, or a rank-≥2 section copy
 `a = b(:,:,k)`) is left as a single `operator=` call, since there is no
 per-element scalar work to fuse and the runtime does the shape-checked
 copy.
+
+**For a C++ reader.** Fortran's array slicing is part of the language
+syntax, not a library — `a(lo:hi)`, `a(lo:hi:step)`, and `a(:)` all
+denote rank-1 views into an array (or section), and `a(i, :)`,
+`a(:, j)`, `a(2:4, ::2)` produce general rank-preserving sections.  The
+section is *first-class*: it's an lvalue, can be the LHS of an
+assignment (`a(2:4) = 0`), and can be passed as an argument (the dummy
+sees just those elements with whatever lb it declared).  In C++ a
+section becomes a `fortran::ArrayRef<T, R>` — a small view of base
+pointer + lower bounds + extents + strides — so the syntax stays close
+but the section's non-contiguous strides survive intact for later
+indexing.
 
 ---
 
@@ -475,6 +529,26 @@ spaces, a longer value truncates, and the length is part of the type.
 `std::string` is variable-length and would silently get all of that
 wrong. The fixed-size type also lives inline in COMMON/derived-type
 structs with the right storage size.
+
+**For a C++ reader.** Fortran `CHARACTER` strings are deeply unlike
+`std::string`:
+
+* They have a **fixed length** declared in the type
+  (`CHARACTER(LEN=10)` is ten characters always).  Shorter assignments
+  pad with blanks on the right; longer ones truncate.  Comparison is
+  blank-padded too — `"AB"` equals `"AB   "`.
+* The Fortran string operator is **`//`** (concatenation), not `+`.
+  In converted code it shows as `fortran::concat(a, b)`.
+* A **substring** is `s(lo:hi)`, *inclusive on both ends*, 1-based.
+  The omitted-bound forms `s(lo:)` and `s(:hi)` default to the
+  string's length and 1 respectively.  In converted code it becomes
+  `s(lo, hi)` (no colon — function-call syntax keeps the same
+  meaning).
+* An **assumed-length CHARACTER dummy** (`CHARACTER*(*)`) takes
+  whatever length the caller provided — analogous to a `string_view`
+  but writable.  Converted as `fortran::CharRef`, which exposes the
+  substring `()` operator the same way the owning `FortranString<N>`
+  does.
 
 **Named-constant lengths.** The length need not be a literal — it is
 often a `PARAMETER`:
@@ -543,6 +617,27 @@ and the ability to pass rvalues. The inference is conservative: when in
 doubt, a parameter stays mutable, so it never silently drops a needed
 write-back.
 
+**For a C++ reader.** A Fortran call is *always* pass-by-reference:
+the callee sees the actual argument's storage and writes through it.
+There is no concept of "by value" — even when an INTENT(IN) marks the
+dummy as read-only, the binding is still a reference (a `const&` in
+C++ terms).  A few specifics:
+
+* The Fortran 90 `INTENT(IN | OUT | INOUT)` attribute on a dummy
+  arg corresponds 1-1 to C++'s `const T&` / `T&` (output-only is also
+  modeled as `T&` here, since the runtime guarantees no observable
+  "ghost initial value" leak).
+* FORTRAN 77 has *no* `INTENT` — every dummy is implicitly INOUT.
+  The converter restores it by analyzing the body and call graph
+  (see §"Argument copy-in" below for how an rvalue actual binds to an
+  INOUT dummy).
+* The "two routines" in Fortran — `SUBROUTINE` (no return) and
+  `FUNCTION` (returns one value) — map to C++ `void f(...)` and
+  `T f(...)` respectively.  A function's return value uses a local
+  variable whose name matches the function: assigning to that name is
+  how the function "returns".  The converter renames the local to
+  `<name>_result` to avoid colliding with the function symbol in C++.
+
 ---
 
 ## Argument copy-in
@@ -589,6 +684,15 @@ read the host routine's locals, so the lambda captures `[&]`. The
 generic `auto` parameter sidesteps having to reconstruct the dummy's
 type and lets the same lambda accept any numeric argument, mirroring the
 loose typing of a statement function.
+
+**For a C++ reader.** A *statement function* is a FORTRAN 77 quirk
+that's halfway between a macro and a function: a one-liner expression
+declared in the host routine's spec part, callable like a function,
+with access to the host's variables.  Conceptually closer to a
+generic lambda than to a free function — which is exactly how the
+converter emits it.  Fortran 90 onward prefers internal procedures
+(``CONTAINS``), but legacy code still uses statement functions
+heavily.
 
 ---
 
@@ -745,6 +849,19 @@ and because different routines may name or even tile the same block's
 storage differently, a `CHARACTER` declaration of a slot is treated as
 authoritative over an implicit numeric view elsewhere.
 
+**For a C++ reader.** Fortran's `COMMON` block is the language's
+original mechanism for sharing state between subprograms — predating
+modules.  Each routine that uses a named block declares its own list
+of variables that overlay the block's storage *positionally*, so two
+routines can name the same block's contents differently (or even tile
+it as different types).  The closest C++ analogue is `extern struct
+StateCommon state_common;` in a header included everywhere — except
+that COMMON is positional rather than nominal, and routines may
+declare only the prefix of fields they care about.  Module variables
+(`MODULE m; INTEGER :: x; END MODULE` then `USE m` in a routine) are
+the modern replacement and lower through the same threaded-struct
+machinery.
+
 ---
 
 ## SAVE variables
@@ -779,6 +896,13 @@ hidden mutable global the project forbids (and is not thread-safe). The
 threaded struct keeps the persisted state owned by the caller, consistent
 with COMMON and module state.
 
+**For a C++ reader.** A Fortran `SAVE`-attributed local variable is
+the literal equivalent of a C++ function-local `static` — it retains
+its value between calls.  Because the project forbids hidden mutable
+state, the converter lifts each routine's SAVE locals into a per-
+routine struct that the caller owns and threads through, exactly like
+a COMMON block.
+
 ---
 
 ## DATA statements
@@ -795,6 +919,15 @@ data t /10, 20, 30/
 fortran::Array<std::int32_t, 1> t{{3}};
 t = fortran::array_of(10, 20, 30);
 ```
+
+**For a C++ reader.** `DATA` is the original FORTRAN 77 way to give
+variables initial values — separated from the type declaration.
+`INTEGER :: t(3)` declares the array; `DATA t /10, 20, 30/` fills it.
+The two-statement form lets the same `DATA` initialize variables from
+multiple declarations or arrays.  Functionally equivalent to a C++
+brace-initializer, with the wrinkle that `DATA` for a *SAVE* local
+acts only on first entry — exactly C++'s `static T x = ...;`
+semantics, which the threaded-state machinery preserves.
 
 ---
 
@@ -820,9 +953,30 @@ pt.x = 1.0f;
 
 Component access `%` becomes `.`; the type name is camel-cased.
 
+**For a C++ reader.** Fortran's `TYPE` is the equivalent of a C++
+`struct` — a record of named, typed components.  The `%` operator
+selects a component (`pt%x` ≡ `pt.x`).  Fortran 2003 adds type-bound
+procedures (methods), inheritance via `EXTENDS`, polymorphism via
+`CLASS(t)`, and finalizers (`FINAL`) — all features the converter
+supports but most legacy code doesn't use.  A subtler note: a
+component's *order of declaration* matters for `SEQUENCE` types,
+which the converter marks via `sequence_type:true` in the analyzed
+tree and preserves in the emitted struct layout.
+
 ---
 
 ## ENTRY
+
+**For a C++ reader.** `ENTRY` is a FORTRAN 77 oddity with no real C++
+analogue: a single subroutine can declare multiple "alternate entry
+points", each with its own argument list, that all share the routine's
+locals.  A caller picks an entry by name; execution begins at the
+matching `ENTRY` statement and runs to the end of the unit (or a
+`RETURN`).  It's most often used to expose a small set of related
+operations that share state — what C++ would solve with a class of
+methods, or what modern Fortran solves with a module-with-`SAVE`-and-
+`PUBLIC`-routines.  Legacy SPICE / Numerical-Recipes-style code uses
+it heavily.
 
 An `ENTRY` declares an alternate entry point that shares the routine's
 storage and starts at its own statement. The converter turns each entry
@@ -1219,6 +1373,14 @@ resolves the path relative to the including file), so the converter sees
 the included declarations inline and needs no special handling — the
 `PARAMETER`s and COMMON layouts in a shared `.inc` flow through exactly as
 if written in place.
+
+**For a C++ reader.** `INCLUDE` is Fortran's equivalent of the
+C preprocessor's `#include` — text substitution at parse time.  No
+include guards (the same file pulled in twice causes redefinitions);
+no header search path beyond the parser's `-I` flags.  Fortran
+modules (`USE m`) are the modern alternative and provide actual
+namespacing, but legacy code keeps shared parameter tables in `.inc`
+files included into every routine that needs them.
 
 ---
 
