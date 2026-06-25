@@ -448,20 +448,46 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
     declared shape, so the call type-checks.  Runs before state plumbing
     so call arguments still line up with the callee's Fortran dummies."""
     params_by_name = {s.name: s.parameters for s in tu.subprograms}
+    # PARAMETER locals (compile-time constants) of each subprogram, keyed
+    # by routine name and PARAMETER name -> rendered initializer text.
+    # Used by _subst_dummy_bounds to fold a callee-local PARAMETER
+    # referenced by a dummy's declared bound (``DIMENSION X(MXCOMP)``)
+    # into the literal value so the emitted ``elem_tail_n(... ext ...)``
+    # at the caller site doesn't reference a name from the callee's
+    # scope.
+    parameter_consts_by_name: dict[str, dict[str, str]] = {}
+    for sub in tu.subprograms:
+        consts: dict[str, str] = {}
+        for loc in sub.locals:
+            if loc.is_parameter and loc.initializer is not None:
+                from .emit import _render_expr
+                try:
+                    consts[loc.name] = _render_expr(loc.initializer)
+                except Exception:
+                    continue
+        if consts:
+            parameter_consts_by_name[sub.name] = consts
 
     def _subst_dummy_bounds(
-        exprs: list[str], params: list, out: list[IRExpr]
+        exprs: list[str], params: list, out: list[IRExpr],
+        callee: str = "",
     ) -> list[str]:
         """Rewrite a dummy's declared bound expressions (which reference the
-        *callee's* other dummy parameters, e.g. ``VALUES(NCOLS, N)``) into
-        the *caller's* scope by substituting each referenced dummy name with
-        the actual argument passed for it at this call site."""
+        *callee's* other dummy parameters, e.g. ``VALUES(NCOLS, N)``, or
+        the callee's local ``PARAMETER`` constants, e.g.
+        ``TVEC(MXCOMP)``) into the *caller's* scope by substituting each
+        referenced name with the actual or constant value at this call
+        site."""
         from .emit import _render_expr
 
         name_to_text: dict[str, str] = {}
         for j, q in enumerate(params):
             if j < len(out) and not q.type.is_array:
                 name_to_text[q.name] = f"({_render_expr(out[j])})"
+        # Fold in callee-local PARAMETER constants.  Dummy-parameter
+        # substitutions win on a name collision (dummies shadow locals).
+        for nm, txt in parameter_consts_by_name.get(callee, {}).items():
+            name_to_text.setdefault(nm, f"({txt})")
         if not name_to_text:
             return exprs
         return [
@@ -511,8 +537,8 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
                 # dummies (``VALUES(NCOLS, N)``); rewrite those names into
                 # the actual arguments passed at this call site so the
                 # ``{...}`` extent list is valid in the caller's scope.
-                lowers = _subst_dummy_bounds(lowers, params, out)
-                extents = _subst_dummy_bounds(extents, params, out)
+                lowers = _subst_dummy_bounds(lowers, params, out, callee)
+                extents = _subst_dummy_bounds(extents, params, out, callee)
                 out[i] = IRFunctionCall(
                     callee=f"fortran::seq_assoc<{rank}>",
                     args=(
@@ -531,7 +557,7 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
                 # the chosen base.  Falls back to ``elem_tail`` (remaining
                 # storage) for assumed-shape / unknown-extent dummies.
                 extent_exprs = _subst_dummy_bounds(
-                    list(p.type.array_extent_exprs or ()), params, out
+                    list(p.type.array_extent_exprs or ()), params, out, callee
                 )
                 if extent_exprs and len(extent_exprs) == 1:
                     out[i] = IRFunctionCall(
