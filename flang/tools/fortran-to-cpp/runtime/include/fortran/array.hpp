@@ -379,6 +379,23 @@ public:
     return *this;
   }
 
+  /// Bulk-fill from a flat C-array of compile-time-known length, in
+  /// Fortran column-major order.  The element count ``N`` is deduced from
+  /// the buffer, so a generated ``DATA`` initializer reads as
+  /// ``a.assign_data(a_data)`` where ``a_data`` is a ``static constexpr``
+  /// table -- the values live in read-only storage and the fill is one
+  /// loop, instead of a giant inline ``array_of(v0, v1, ...)`` varargs
+  /// call.  Copies ``min(N, size())`` elements (an array may be partly
+  /// initialized).  Returns ``*this`` so it can chain.
+  template <typename U, std::size_t N>
+  Array &assign_data(const U (&src)[N]) {
+    const index_t n = std::min<index_t>(size(), static_cast<index_t>(N));
+    for (index_t i = 0; i < n; ++i) {
+      linear_at(i) = static_cast<T>(src[i]);
+    }
+    return *this;
+  }
+
   /// Swap with another array of the same type.  Used by the move ops.
   void swap(Array &other) noexcept {
     using std::swap;

@@ -186,6 +186,47 @@ TEST(fill_sets_every_element) {
   }
 }
 
+// ---- assign_data (bulk init from a static table) --------------------------
+
+TEST(assign_data_fills_rank1_column_major) {
+  static constexpr int src[] = {10, 20, 30, 40, 50};
+  Array<int, 1> a({5});
+  a.assign_data(src);
+  for (index_t i = 1; i <= 5; ++i) {
+    CHECK_EQ(a(i), static_cast<int>(i) * 10);
+  }
+}
+
+TEST(assign_data_fills_rank2_column_major) {
+  // 2x3 column-major: a(1,1)=1, a(2,1)=2, a(1,2)=3, ... matches DATA order.
+  static constexpr int src[] = {1, 2, 3, 4, 5, 6};
+  Array<int, 2> a({2, 3});
+  a.assign_data(src);
+  CHECK_EQ(a(1, 1), 1);
+  CHECK_EQ(a(2, 1), 2);
+  CHECK_EQ(a(1, 2), 3);
+  CHECK_EQ(a(2, 3), 6);
+}
+
+TEST(assign_data_casts_element_type) {
+  // The table type may differ from the array's; assign_data static_casts.
+  static constexpr int src[] = {1, 2, 3};
+  Array<double, 1> a({3});
+  a.assign_data(src);
+  CHECK_EQ(a(1), 1.0);
+  CHECK_EQ(a(3), 3.0);
+}
+
+TEST(assign_data_partial_when_table_shorter) {
+  static constexpr int src[] = {7, 8};
+  Array<int, 1> a({5});
+  a.fill(0);
+  a.assign_data(src);  // only first two elements set
+  CHECK_EQ(a(1), 7);
+  CHECK_EQ(a(2), 8);
+  CHECK_EQ(a(3), 0);
+}
+
 // ---- ArrayRef -------------------------------------------------------------
 
 TEST(arrayref_view_of_owning_array) {

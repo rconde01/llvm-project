@@ -488,6 +488,69 @@ def _is_scalar_constant(expr: object) -> bool:
     return False
 
 
+# Minimum element count for a constant array initializer to be extracted
+# into a named ``static constexpr`` table (below this the inline
+# ``ftn::array_of(...)`` form reads fine and extraction would just add a
+# line).  Larger constant tables (reference data, coefficient matrices)
+# become a hoisted ``.rodata`` table plus a one-line init.
+_TABLE_EXTRACT_THRESHOLD = 8
+
+
+def _table_literal_type(expr: object) -> str | None:
+    """The shared C++ numeric type of a literal table element (looking
+    through a leading unary +/-), or ``None`` when the element isn't a
+    plain numeric literal — which disqualifies the whole table from
+    ``static constexpr`` extraction (a name reference or a call can't go
+    in a homogeneous literal table)."""
+    if isinstance(expr, IRUnaryOp) and expr.op in ("-", "+"):
+        return _table_literal_type(expr.operand)
+    if isinstance(expr, IRLiteral) and expr.cpp_type:
+        return expr.cpp_type
+    return None
+
+
+def _constant_table(expr: object) -> tuple[list[str], str] | None:
+    """If ``expr`` is an array constructor whose every element is a plain
+    numeric literal of a single shared C++ type and there are at least
+    ``_TABLE_EXTRACT_THRESHOLD`` of them, return ``(rendered_elements,
+    elem_type)`` for ``static constexpr`` extraction; else ``None``."""
+    if not isinstance(expr, IRArrayConstructor):
+        return None
+    if len(expr.elements) < _TABLE_EXTRACT_THRESHOLD:
+        return None
+    elem_type: str | None = None
+    rendered: list[str] = []
+    for e in expr.elements:
+        t = _table_literal_type(e)
+        if t is None:
+            return None
+        if elem_type is None:
+            elem_type = t
+        elif t != elem_type:
+            return None  # mixed-type table: keep the inline form
+        rendered.append(_render_expr(e))
+    assert elem_type is not None
+    return rendered, elem_type
+
+
+def _emit_constant_table(
+    out: StringIO, name: str, elem_type: str, elements: list[str],
+    *, indent: int, per_line: int = 10,
+) -> None:
+    """Write ``static constexpr <elem_type> <name>[] = { ... };`` with the
+    values wrapped ``per_line`` to a row for readability.  The table lives
+    in read-only storage; callers either view it (read-only arrays) or
+    bulk-copy from it (writable DATA arrays)."""
+    pad = "  " * indent
+    inner = pad + "  "
+    out.write(f"{pad}static constexpr {elem_type} {name}[] = {{\n")
+    for i in range(0, len(elements), per_line):
+        row = ", ".join(elements[i:i + per_line])
+        tail = "," if i + per_line < len(elements) else ""
+        out.write(f"{inner}{row}{tail}\n")
+    out.write(f"{pad}}};\n")
+
+
 def _static_lower_cpp_type(loc: "IRLocal") -> str | None:
     """Return the ``Array<T, R, std::array{...}>`` spelling for ``loc`` when
     every declared lower bound is a literal integer; ``None`` when the
@@ -542,6 +605,37 @@ def _emit_local(
         out.write(f"{pad}{prefix}ftn::CharArrayRef {loc.name}{{}};")
         _emit_trailing(out, loc.trailing_comments)
         return
+    # A PARAMETER array with a large constant initializer (a reference
+    # table / coefficient matrix): a PARAMETER is immutable, so instead of
+    # a heap-allocated ``const Array = ftn::array_of(v0, v1, ...)`` that
+    # fills at run time, extract the values into a ``static constexpr``
+    # table (read-only storage, compile-time) and make the variable a
+    # ``const`` *view* over it -- no allocation, no runtime copy.  Limited
+    # to function-locals: a namespace/struct-scope view would be a
+    # runtime-initialized global, which R3 forbids.
+    if (
+        loc.is_parameter
+        and storage == "local"
+        and loc.type.is_array
+        and loc.type.array_extent_exprs
+        and loc.type.element_type_cpp
+    ):
+        table = _constant_table(loc.initializer)
+        if table is not None and table[1] == loc.type.element_type_cpp:
+            elements, elem_type = table
+            data_name = f"{loc.name}_data"
+            _emit_constant_table(
+                out, data_name, elem_type, elements, indent=indent
+            )
+            extents = ", ".join(loc.type.array_extent_exprs)
+            view = f"ftn::ArrayRef<const {loc.type.element_type_cpp}, {loc.type.array_rank}>"
+            static_view = static_lower_cpp_type(
+                view, loc.type.array_rank, loc.type.array_lower_bound_exprs
+            )
+            view = static_view if static_view is not None else view
+            out.write(f"{pad}{view} {loc.name}({data_name}, {{{extents}}});")
+            _emit_trailing(out, loc.trailing_comments)
+            return
     if (
         loc.type.is_array
         and _is_scalar_constant(loc.initializer)
@@ -647,6 +741,28 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         return
     if isinstance(stmt, IRAssignment):
         _emit_comment_block(out, stmt.leading_comments, indent=indent)
+        # A whole-array DATA initializer with a large constant value list
+        # (``data tbl /.../``) assigned to a plain array name: extract the
+        # values into a ``static constexpr`` table and bulk-copy from it,
+        # instead of a giant inline ``name = ftn::array_of(v0, v1, ...)``.
+        # ``assign_data`` casts each element to the array's type, so the
+        # table only needs the literals' own (homogeneous) type.  The
+        # array stays a writable owning ``Array`` -- a later store still
+        # works -- so this keeps one cheap copy but moves the data into
+        # read-only storage and the source onto one readable line.
+        if isinstance(stmt.target, IRName):
+            table = _constant_table(stmt.value)
+            if table is not None:
+                elements, elem_type = table
+                data_name = f"{stmt.target.name}_data"
+                _emit_constant_table(
+                    out, data_name, elem_type, elements, indent=indent
+                )
+                out.write(
+                    f"{pad}{_render_expr(stmt.target)}.assign_data({data_name});"
+                )
+                _emit_trailing(out, stmt.trailing_comments)
+                return
         out.write(f"{pad}{_render_expr(stmt.target)} = {_render_expr(stmt.value)};")
         _emit_trailing(out, stmt.trailing_comments)
         return
