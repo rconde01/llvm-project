@@ -2357,17 +2357,47 @@ def _lower_data_value(value_node: Node) -> list[IRExpr]:
     dc = value_node.first_child("DataStmtConstant")
     if dc is None:
         return [IRRaw("0")]
-    # flang's analyzer attaches the folded constant to ``DataStmtConstant``
-    # as its ``fortran`` field (e.g. ``"3.51e-1_4"``); the structural
-    # children (SignedRealLiteralConstant, etc.) carry no text.  Prefer
-    # the folded spelling, fall back to lowering the child for kinds we
-    # don't fold.
+    # A ``DataStmtConstant`` is, per the standard, always a literal or
+    # named constant (optionally signed, optionally repeated) -- never a
+    # folded expression.  flang attaches the *folded* value to the node's
+    # ``fortran`` field (e.g. ``0.05`` -> ``"5.00000007450580...e-2_4"``,
+    # the exact decimal of the nearest float), which is lossless but
+    # unreadable.  The structural child literal preserves the original
+    # source spelling (``0.05``), so lower that when present and fall back
+    # to the folded spelling only when there is no structural child to
+    # lower (defensive -- shouldn't happen for a well-formed DATA stmt).
     val: IRExpr
-    if dc.fortran:
+    inner = next(iter(dc.children), None)
+    if inner is not None:
+        # A signed constant (``-0.05``) is a ``Signed...`` wrapper whose
+        # ``Sign`` node carries no text and whose magnitude sits a level
+        # down under a plain ``...LiteralConstant``.  Drill to the
+        # underlying literal so the magnitude (and its kind/``f`` suffix)
+        # lower correctly, then recover the sign from the constant's
+        # source text (``DataStmtConstant.source`` keeps the original
+        # spelling, sign included) -- prepend to a literal for clean C++,
+        # else wrap in a unary minus.  A named-constant value (``pi``)
+        # matches no literal kind, so it lowers via ``inner`` unchanged.
+        target = inner
+        lit = inner.find_first(
+            "RealLiteralConstant", "IntLiteralConstant",
+            "ComplexLiteralConstant", "CharLiteralConstant",
+            "LogicalLiteralConstant", "BOZLiteralConstant",
+        )
+        if lit is not None:
+            target = lit
+        val = _lower_expression(target)
+        src = (dc.source.text if dc.source else "").strip()
+        if src.startswith("-"):
+            if isinstance(val, IRLiteral) and not val.cpp_text.startswith("-"):
+                val = IRLiteral(cpp_text="-" + val.cpp_text,
+                                cpp_type=val.cpp_type)
+            elif not isinstance(val, IRLiteral):
+                val = IRUnaryOp(op="-", operand=val)
+    elif dc.fortran:
         val = IRLiteral(cpp_text=_format_data_constant(dc.fortran))
     else:
-        inner = next(iter(dc.children), None)
-        val = _lower_expression(inner) if inner is not None else IRRaw("0")
+        val = IRRaw("0")
     count = 1
     repeat = value_node.first_child("DataStmtRepeat")
     if repeat is not None:

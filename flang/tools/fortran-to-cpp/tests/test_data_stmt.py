@@ -45,6 +45,26 @@ end program
 """
 
 
+# Real DATA values must keep their *source* spelling, not flang's exact-
+# decimal expansion of the nearest float (``0.05`` -> ``5.0000000745...
+# e-2``).  Covers positive/negative reals, doubles, ints, and a named
+# constant.
+PRECISION_F90 = """\
+program dt
+  real :: c(3)
+  double precision :: d(2)
+  integer :: m(2)
+  real, parameter :: pi = 3.14159
+  real :: u(2)
+  data c /0.05, -0.1, 0.05/
+  data d /1.5d-3, -2.0d0/
+  data m /-3, 4/
+  data u /pi, 0.0/
+  print *, c, d, m, u
+end program
+"""
+
+
 # A nested implied-do over a 2-D slice — every subscript is a loop
 # variable.  Iterates innermost-first (column-major), matching the order
 # values are listed: a(1,1), a(2,1), a(3,1), a(1,2), ...
@@ -153,9 +173,9 @@ class DataEmitTests(unittest.TestCase):
     def test_scalar_data_pairs(self) -> None:
         cpp = _convert(DATA_F90)
         self.assertIn("n = 5;", cpp)
-        # The folded literal preserves binary precision; assert just the
-        # leading digits and the ``f`` suffix.
-        self.assertRegex(cpp, r"x = 3\.14\d*f;")
+        # The source spelling is kept (``3.14`` -> ``3.14f``), not the
+        # exact-decimal float expansion.
+        self.assertIn("x = 3.14f;", cpp)
 
     def test_data_runs_before_body(self) -> None:
         cpp = _convert(DATA_F90)
@@ -166,6 +186,20 @@ class DataEmitTests(unittest.TestCase):
         cpp = _convert(REPEAT_F90)
         # ``3*7`` expands to three 7s.
         self.assertIn("k = fortran::array_of(1, 2, 7, 7, 7, 9);", cpp)
+
+    def test_real_data_keeps_source_spelling(self) -> None:
+        # ``0.05`` must stay ``0.05f``, NOT flang's exact-decimal float
+        # expansion ``5.00000007450580596923828125e-2f``.  Negatives keep
+        # their sign + magnitude; doubles keep the ``d``/no-``f`` form;
+        # ints negate cleanly; a named constant lowers to its reference.
+        cpp = _convert(PRECISION_F90)
+        self.assertIn("c = fortran::array_of(0.05f, -0.1f, 0.05f);", cpp)
+        self.assertIn("d = fortran::array_of(1.5e-3, -2.0e0);", cpp)
+        self.assertIn("m = fortran::array_of(-3, 4);", cpp)
+        self.assertIn("u = fortran::array_of(pi, 0.0f);", cpp)
+        # The ugly expansion must appear nowhere.
+        self.assertNotIn("e-2f", cpp)
+        self.assertNotIn("5000000", cpp)
 
     def test_implied_do_2d_column_major(self) -> None:
         cpp = _convert(IDO_2D_F90)
@@ -209,24 +243,25 @@ class DataEmitTests(unittest.TestCase):
         # ``data a(2) /7/`` and an element list must each emit one
         # assignment (previously silently dropped, leaving zeros).
         cpp = _convert(ELEM_F90)
-        self.assertIn("a(2) = 7.f;", cpp)
-        self.assertIn("a(1) = 5.f;", cpp)
-        self.assertIn("a(4) = 9.f;", cpp)
+        self.assertIn("a(2) = 7.0f;", cpp)
+        self.assertIn("a(1) = 5.0f;", cpp)
+        self.assertIn("a(4) = 9.0f;", cpp)
 
     def test_implied_do_parameter_bound(self) -> None:
         # The folded PARAMETER bound (n=4) must expand all four elements
-        # (flang renders 10.0 as ``1.e1`` etc.) with no dropped initializer.
+        # with no dropped initializer; the values keep their source
+        # spelling (``10.0`` -> ``10.0f``, not the folded ``1.e1f``).
         cpp = _convert(IDO_PARAM_BOUND_F90)
-        self.assertIn("a(1) = 1.e1f;", cpp)
-        self.assertIn("a(4) = 4.e1f;", cpp)
+        self.assertIn("a(1) = 10.0f;", cpp)
+        self.assertIn("a(4) = 40.0f;", cpp)
         self.assertNotIn("TODO", cpp)
 
     def test_implied_do_stride(self) -> None:
         # ``i = 1, 5, 2`` fills a(1), a(3), a(5) -- NOT a(1), a(2), a(3).
         cpp = _convert(IDO_STRIDE_F90)
-        self.assertIn("a(1) = 1.f;", cpp)
-        self.assertIn("a(3) = 3.f;", cpp)
-        self.assertIn("a(5) = 5.f;", cpp)
+        self.assertIn("a(1) = 1.0f;", cpp)
+        self.assertIn("a(3) = 3.0f;", cpp)
+        self.assertIn("a(5) = 5.0f;", cpp)
         self.assertNotIn("a(2) =", cpp)
 
 
@@ -297,6 +332,15 @@ class DataRunTests(unittest.TestCase):
 
     def test_single_array_element_runs(self) -> None:
         self.assertEqual(self._build_and_run(ELEM_F90), ["5", "7", "9"])
+
+    def test_real_precision_data_runs(self) -> None:
+        # Clean source spelling must still produce the right values.
+        out = self._build_and_run(PRECISION_F90)
+        self.assertEqual(
+            out,
+            ["0.05", "-0.1", "0.05", "0.0015", "-2",
+             "-3", "4", "3.14159", "0"],
+        )
 
     def test_implied_do_parameter_bound_runs(self) -> None:
         self.assertEqual(self._build_and_run(IDO_PARAM_BOUND_F90), ["10", "40"])
