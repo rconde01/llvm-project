@@ -1,4 +1,4 @@
-"""Tests that Fortran array intrinsics lower to fortran:: helpers."""
+"""Tests that Fortran array intrinsics lower to ftn:: helpers."""
 
 from __future__ import annotations
 
@@ -57,10 +57,10 @@ def _convert(src: str) -> str:
 class IntrinsicEmitTests(unittest.TestCase):
     def test_array_intrinsics_map_to_fortran_ns(self) -> None:
         cpp = _convert(INTRINSICS_F90)
-        self.assertIn("fortran::sum(a)", cpp)
-        self.assertIn("fortran::maxval(a)", cpp)
-        self.assertIn("fortran::minval(a)", cpp)
-        self.assertIn("fortran::size(a)", cpp)
+        self.assertIn("ftn::sum(a)", cpp)
+        self.assertIn("ftn::maxval(a)", cpp)
+        self.assertIn("ftn::minval(a)", cpp)
+        self.assertIn("ftn::size(a)", cpp)
 
 
 @unittest.skipUnless(

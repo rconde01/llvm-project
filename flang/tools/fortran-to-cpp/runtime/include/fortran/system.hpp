@@ -27,7 +27,7 @@
 #include <string>
 #include <string_view>
 
-namespace fortran {
+namespace ftn {
 
 namespace detail {
 inline int &argc_store() {
@@ -144,6 +144,6 @@ void getenv(const N &name, S &&value) noexcept {
 /// GETLASTERRORQQ(): last runtime error code — none is tracked.
 inline int getlasterrorqq() noexcept { return 0; }
 
-} // namespace fortran
+} // namespace ftn
 
 #endif // FORTRAN_RT_SYSTEM_HPP

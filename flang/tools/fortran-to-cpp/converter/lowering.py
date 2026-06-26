@@ -456,7 +456,7 @@ def _expr_rank(expr: IRExpr) -> int | None:
 def _is_array_element(expr: IRExpr, subprograms: dict) -> bool:
     """True if ``expr`` indexes an array (``a(i)``, ``v%c(i)``) rather than
     calls a function.  An array access lowers to a call-shaped node whose
-    callee is an access path, not a known subprogram or a ``fortran::`` /
+    callee is an access path, not a known subprogram or a ``ftn::`` /
     ``std::`` intrinsic."""
     return (
         isinstance(expr, IRFunctionCall)
@@ -469,7 +469,7 @@ def _is_array_element(expr: IRExpr, subprograms: dict) -> bool:
 def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
     """Fortran sequence association: a contiguous rank-1 actual passed to
     a higher-rank, explicit-shape dummy.  Wrap such an actual in
-    ``fortran::seq_assoc<R>(..., {lowers}, {extents})`` using the dummy's
+    ``ftn::seq_assoc<R>(..., {lowers}, {extents})`` using the dummy's
     declared shape, so the call type-checks.  Runs before state plumbing
     so call arguments still line up with the callee's Fortran dummies."""
     params_by_name = {s.name: s.parameters for s in tu.subprograms}
@@ -544,7 +544,7 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
                     and actual.name in caller_arrays
                 ):
                     out[i] = IRFunctionCall(
-                        callee="fortran::first", args=(actual,)
+                        callee="ftn::first", args=(actual,)
                     )
                 continue
             actual_rank1 = _expr_rank(actual) == 1 or (
@@ -565,7 +565,7 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
                 lowers = _subst_dummy_bounds(lowers, params, out, callee)
                 extents = _subst_dummy_bounds(extents, params, out, callee)
                 out[i] = IRFunctionCall(
-                    callee=f"fortran::seq_assoc<{rank}>",
+                    callee=f"ftn::seq_assoc<{rank}>",
                     args=(
                         actual,
                         IRRaw("{" + ", ".join(lowers) + "}"),
@@ -586,7 +586,7 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
                 )
                 if extent_exprs and len(extent_exprs) == 1:
                     out[i] = IRFunctionCall(
-                        callee="fortran::elem_tail_n",
+                        callee="ftn::elem_tail_n",
                         args=(
                             IRName(name=actual.callee, fortran=actual.callee),
                             IRRaw(extent_exprs[0]),
@@ -595,7 +595,7 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
                     )
                 else:
                     out[i] = IRFunctionCall(
-                        callee="fortran::elem_tail",
+                        callee="ftn::elem_tail",
                         args=(
                             IRName(name=actual.callee, fortran=actual.callee),
                             *actual.args,
@@ -678,7 +678,7 @@ _LOGICAL_RESULT_OPS = frozenset(
 
 
 def _apply_logical_print_format(tu: IRTranslationUnit) -> None:
-    """Wrap logical items of list-directed ``print`` in ``fortran::
+    """Wrap logical items of list-directed ``print`` in ``ftn::
     logical_text`` so they render as Fortran ``T`` / ``F`` rather than
     C++'s default ``1`` / ``0``."""
     for sub in tu.subprograms:
@@ -696,7 +696,7 @@ def _apply_logical_print_format(tu: IRTranslationUnit) -> None:
         def fix(stmt: IRStatement) -> IRStatement:
             if isinstance(stmt, IRPrint) and stmt.format is None:
                 stmt.items = [
-                    IRFunctionCall(callee="fortran::logical_text", args=(it,))
+                    IRFunctionCall(callee="ftn::logical_text", args=(it,))
                     if _is_logical_expr(it, logical_names)
                     else it
                     for it in stmt.items
@@ -707,13 +707,13 @@ def _apply_logical_print_format(tu: IRTranslationUnit) -> None:
 
 
 def _materialize_value_args(tu: IRTranslationUnit) -> None:
-    """Pass a constant/expression actual through ``fortran::byref`` when
+    """Pass a constant/expression actual through ``ftn::byref`` when
     the dummy is a modifiable scalar reference.
 
     Fortran lets any expression be an actual argument; for an INOUT/OUT
     dummy the compiler binds a temporary (copy-in, write-back discarded).
     C++ won't bind a non-const ``T&`` to an rvalue, so ``call s(x, 0.0)``
-    fails to compile.  ``fortran::byref`` materializes the value into an
+    fails to compile.  ``ftn::byref`` materializes the value into an
     lvalue whose lifetime spans the call, restoring Fortran's behavior
     (it is a no-op for an lvalue actual, which still binds directly).
 
@@ -734,7 +734,7 @@ def _materialize_value_args(tu: IRTranslationUnit) -> None:
     def is_value_call(a: IRExpr) -> bool:
         """A call to a user *function* — its result is an rvalue, unlike an
         array-element access (callee not a subprogram) or a reshape helper
-        (``fortran::first`` etc.) which yield references."""
+        (``ftn::first`` etc.) which yield references."""
         return (
             isinstance(a, IRFunctionCall)
             and a.callee in by_name
@@ -768,7 +768,7 @@ def _materialize_value_args(tu: IRTranslationUnit) -> None:
         for i, a in enumerate(args):
             cat = cats[i] if i < len(cats) else ""
             if is_rvalue(a, cat) and wants_ref(callee, i):
-                out.append(IRFunctionCall(callee="fortran::byref", args=(a,)))
+                out.append(IRFunctionCall(callee="ftn::byref", args=(a,)))
             elif (
                 isinstance(a, IRName)
                 and a.name in const_names
@@ -779,8 +779,8 @@ def _materialize_value_args(tu: IRTranslationUnit) -> None:
                 # discarded).  ``byref`` alone keeps the const, so copy first.
                 out.append(
                     IRFunctionCall(
-                        callee="fortran::byref",
-                        args=(IRFunctionCall(callee="fortran::val", args=(a,)),),
+                        callee="ftn::byref",
+                        args=(IRFunctionCall(callee="ftn::val", args=(a,)),),
                     )
                 )
             else:
@@ -1508,7 +1508,7 @@ def _implicit_scalar_type(name: str) -> IRType:
     initials I-N, otherwise ``real``."""
     first = name[0].lower() if name else "x"
     if "i" <= first <= "n":
-        return IRType(cpp="std::int32_t", fortran="integer", is_integer=True)
+        return IRType(cpp="int32_t", fortran="integer", is_integer=True)
     return IRType(cpp="float", fortran="real", is_real=True)
 
 
@@ -1897,7 +1897,7 @@ def _scalar_type_from_fortran(spelling: str) -> IRType | None:
         return int(mm.group(1)) if mm is not None else None
 
     if cat == "INTEGER":
-        return IRType(cpp=_INT_KIND_CPP.get(_first_int(arg), "std::int32_t"),
+        return IRType(cpp=_INT_KIND_CPP.get(_first_int(arg), "int32_t"),
                       fortran=spelling, is_integer=True)
     if cat in ("REAL", "DOUBLE PRECISION"):
         kind = 8 if cat == "DOUBLE PRECISION" else _first_int(arg)
@@ -1927,7 +1927,7 @@ def _scalar_type_from_fortran(spelling: str) -> IRType | None:
         length = _first_int(first)
         if length is not None:
             return IRType(
-                cpp=f"fortran::FortranString<{length}>",
+                cpp=f"ftn::FortranString<{length}>",
                 fortran=spelling,
                 is_character=True,
             )
@@ -1967,7 +1967,7 @@ def _resolved_types(node: Node) -> dict[str, IRType]:
 
 
 def _resolved_array_types(node: Node) -> dict[str, IRType]:
-    """Full ``fortran::Array`` IRTypes for names flang resolved with a
+    """Full ``ftn::Array`` IRTypes for names flang resolved with a
     constant array shape, keyed by safe name.  Lets a scalar-looking
     declaration whose dimension lives on the COMMON statement
     (``common /x/ a(81,5)``) be typed as an array."""
@@ -2070,7 +2070,7 @@ def _deferred_array_type(element_type: IRType, rank: int) -> IRType:
     dummy array, or a deferred-shape local).  As a dummy this lowers to a
     non-owning ``ArrayRef<T, rank>``; as a local it default-constructs."""
     return IRType(
-        cpp=f"fortran::Array<{element_type.cpp}, {rank}>",
+        cpp=f"ftn::Array<{element_type.cpp}, {rank}>",
         fortran=f"{element_type.fortran}, dimension({rank})",
         is_array=True,
         array_rank=rank,
@@ -2087,14 +2087,14 @@ def _deferred_array_type(element_type: IRType, rank: int) -> IRType:
 def _array_type_from_shape(
     element_type: IRType, dims: list[tuple[int, int]]
 ) -> IRType:
-    """Build a ``fortran::Array<T, Rank>`` IRType from a resolved symbol's
+    """Build a ``ftn::Array<T, Rank>`` IRType from a resolved symbol's
     constant shape (per-dimension inclusive ``(lower, upper)`` bounds)."""
     lowers = [lo for lo, _ in dims]
     extents = [hi - lo + 1 for lo, hi in dims]
     rank = len(dims)
     has_explicit_lower = any(lo != 1 for lo in lowers)
     return IRType(
-        cpp=f"fortran::Array<{element_type.cpp}, {rank}>",
+        cpp=f"ftn::Array<{element_type.cpp}, {rank}>",
         fortran=f"{element_type.fortran}, dimension({rank})",
         is_array=True,
         array_rank=rank,
@@ -2620,10 +2620,10 @@ _EQUIV_ELEM_INFO: dict[str, tuple[str, int]] = {
     # cpp scalar type -> (alignment-bytes, size-bytes)
     "bool": (1, 1),
     "char": (1, 1),
-    "std::int8_t": (1, 1),
-    "std::int16_t": (2, 2),
-    "std::int32_t": (4, 4),
-    "std::int64_t": (8, 8),
+    "int8_t": (1, 1),
+    "int16_t": (2, 2),
+    "int32_t": (4, 4),
+    "int64_t": (8, 8),
     "float": (4, 4),
     "double": (8, 8),
 }
@@ -2779,8 +2779,8 @@ def _equiv_member_from_local(
 
 
 def _character_length_from_cpp(cpp: str) -> int | None:
-    """``"fortran::FortranString<8>"`` -> ``8``."""
-    m = re.match(r"fortran::FortranString<\s*(\d+)\s*>", cpp)
+    """``"ftn::FortranString<8>"`` -> ``8``."""
+    m = re.match(r"ftn::FortranString<\s*(\d+)\s*>", cpp)
     return int(m.group(1)) if m is not None else None
 
 
@@ -3106,7 +3106,7 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
 def _make_array_type(
     element_type: IRType, array_spec: Node, *, is_pointer: bool = False
 ) -> IRType:
-    """Wrap ``element_type`` in ``fortran::Array<T, Rank>`` with
+    """Wrap ``element_type`` in ``ftn::Array<T, Rank>`` with
     extent / lower-bound expressions extracted from ``array_spec``.
 
     A POINTER deferred-shape array becomes a non-owning ``ArrayRef``."""
@@ -3135,7 +3135,7 @@ def _make_array_type(
                 rank_n = int(rank_node.fortran) if rank_node and rank_node.fortran else 1
             except ValueError:
                 rank_n = 1
-            cont = "fortran::ArrayRef" if is_pointer else "fortran::Array"
+            cont = "ftn::ArrayRef" if is_pointer else "ftn::Array"
             return IRType(
                 cpp=f"{cont}<{element_type.cpp}, {rank_n}>",
                 fortran=f"{element_type.fortran}"
@@ -3187,7 +3187,7 @@ def _make_array_type(
             all_static = False
     rank = len(extents)
     return IRType(
-        cpp=f"fortran::Array<{element_type.cpp}, {rank}>",
+        cpp=f"ftn::Array<{element_type.cpp}, {rank}>",
         fortran=f"{element_type.fortran}, dimension({len(extents)})",
         is_array=True,
         array_rank=rank,
@@ -3229,7 +3229,7 @@ def _lower_explicit_shape(shape: Node) -> tuple[str | None, str]:
     Fortran's ``a(10)`` has no lower bound (defaults to 1) and an
     upper bound of 10, so the extent is 10.  ``a(0:9)`` has an
     explicit lower of 0 and upper of 9, so the extent is 10.  We
-    pass the *extent* to ``fortran::Array``, but keep the lower bound
+    pass the *extent* to ``ftn::Array``, but keep the lower bound
     separate so the constructor can use the (lower, extent) form.
     """
     exprs = list(shape.find_all("SpecificationExpr"))
@@ -3652,13 +3652,13 @@ def _lower_arithmetic_if(node: Node) -> IRStatement:
 # whole-array assignment is expanded into a loop.
 _NON_ELEMENTAL: frozenset[str] = frozenset(
     {
-        "fortran::sum", "fortran::product", "fortran::maxval",
-        "fortran::minval", "fortran::count", "fortran::any",
-        "fortran::all", "fortran::dot_product", "fortran::size",
-        "fortran::lbound", "fortran::ubound",
-        "fortran::matmul", "fortran::transpose",
-        "fortran::maxloc", "fortran::minloc",
-        "fortran::pack", "fortran::cshift",
+        "ftn::sum", "ftn::product", "ftn::maxval",
+        "ftn::minval", "ftn::count", "ftn::any",
+        "ftn::all", "ftn::dot_product", "ftn::size",
+        "ftn::lbound", "ftn::ubound",
+        "ftn::matmul", "ftn::transpose",
+        "ftn::maxloc", "ftn::minloc",
+        "ftn::pack", "ftn::cshift",
     }
 )
 
@@ -3666,9 +3666,9 @@ _NON_ELEMENTAL: frozenset[str] = frozenset(
 # be expanded into an element loop (you can't index the call result);
 # it stays a move-assignment of the returned Array.
 _ARRAY_RETURNING: frozenset[str] = frozenset(
-    {"fortran::matmul", "fortran::transpose", "fortran::reshape",
-     "fortran::pack", "fortran::cshift", "fortran::eoshift",
-     "fortran::spread"}
+    {"ftn::matmul", "ftn::transpose", "ftn::reshape",
+     "ftn::pack", "ftn::cshift", "ftn::eoshift",
+     "ftn::spread"}
 )
 
 
@@ -5051,15 +5051,15 @@ def _decode_flang_char_constant(text: str) -> str | None:
 
 
 # Fortran intrinsic *subroutines* (invoked with CALL) that map to a
-# ``fortran::`` runtime helper rather than a user-defined function.
+# ``ftn::`` runtime helper rather than a user-defined function.
 _INTRINSIC_SUBROUTINE_MAP: dict[str, str] = {
-    "cpu_time": "fortran::cpu_time",
-    "system_clock": "fortran::system_clock",
-    "date_and_time": "fortran::date_and_time",
+    "cpu_time": "ftn::cpu_time",
+    "system_clock": "ftn::system_clock",
+    "date_and_time": "ftn::date_and_time",
     # Command-line / environment access used by the toolkit's CLI programs.
-    "getarg": "fortran::getarg",
-    "get_command_argument": "fortran::get_command_argument",
-    "system": "fortran::system",
+    "getarg": "ftn::getarg",
+    "get_command_argument": "ftn::get_command_argument",
+    "system": "ftn::system",
 }
 
 
@@ -5413,10 +5413,10 @@ def _lower_substring(node: Node) -> IRExpr:
     if lo is None:
         lo = IRLiteral(cpp_text="1")
     if hi is None:
-        # Open upper bound ``s(lo:)`` -> to the end.  ``fortran::len``
+        # Open upper bound ``s(lo:)`` -> to the end.  ``ftn::len``
         # works whether the base is a FortranString, a CharRef, or a
         # character-array element (all view as a string).
-        hi = IRFunctionCall(callee="fortran::len", args=(base,))
+        hi = IRFunctionCall(callee="ftn::len", args=(base,))
     return IRSubstr(base=base, lo=lo, hi=hi)
 
 
@@ -5520,7 +5520,7 @@ def _access_path(expr: IRExpr | None) -> str | None:
 def _lower_array_element(node: Node) -> IRExpr:
     """Translate ``a(i, j, k)`` to a call on the C++ Array object.
 
-    fortran::Array overloads ``operator()`` with exactly the same
+    ftn::Array overloads ``operator()`` with exactly the same
     arity / 1-based indexing as Fortran, so the translation is one
     IRFunctionCall whose callee is the array name and whose args are
     the lowered subscripts.  The indexed entity may be a derived-type
@@ -5609,8 +5609,8 @@ def _lower_int_literal(node: Node) -> IRLiteral:
     value = str(int(value))
     k = int(kind) if kind else 4
     if k <= 4:
-        return IRLiteral(cpp_text=value, cpp_type="std::int32_t")
-    return IRLiteral(cpp_text=f"{value}LL", cpp_type="std::int64_t")
+        return IRLiteral(cpp_text=value, cpp_type="int32_t")
+    return IRLiteral(cpp_text=f"{value}LL", cpp_type="int64_t")
 
 
 # Match ``1.0`` / ``1.0_4`` / ``1.0d0`` / ``-1.5e-3_8`` etc.
@@ -5665,82 +5665,82 @@ def _lower_logical_literal(node: Node) -> IRLiteral:
 # own functions therefore "just work" as long as they have a C++
 # definition (typically a translated sibling subprogram).
 _INTRINSIC_MAP: dict[str, str] = {
-    # Elemental math -> fortran:: overloads that map over arrays as well
+    # Elemental math -> ftn:: overloads that map over arrays as well
     # as scalars (intrinsics.hpp); scalar calls delegate to std::.
-    "sqrt": "fortran::sqrt", "abs": "fortran::abs", "exp": "fortran::exp",
-    "log": "fortran::log", "log10": "fortran::log10",
-    "sin": "fortran::sin", "cos": "fortran::cos", "tan": "fortran::tan",
-    "asin": "fortran::asin", "acos": "fortran::acos", "atan": "fortran::atan",
-    "atan2": "std::atan2", "sinh": "fortran::sinh", "cosh": "fortran::cosh",
-    "tanh": "fortran::tanh", "floor": "std::floor", "ceiling": "std::ceil",
-    "min": "fortran::min", "max": "fortran::max",
+    "sqrt": "ftn::sqrt", "abs": "ftn::abs", "exp": "ftn::exp",
+    "log": "ftn::log", "log10": "ftn::log10",
+    "sin": "ftn::sin", "cos": "ftn::cos", "tan": "ftn::tan",
+    "asin": "ftn::asin", "acos": "ftn::acos", "atan": "ftn::atan",
+    "atan2": "std::atan2", "sinh": "ftn::sinh", "cosh": "ftn::cosh",
+    "tanh": "ftn::tanh", "floor": "std::floor", "ceiling": "std::ceil",
+    "min": "ftn::min", "max": "ftn::max",
     # Command-line / environment query intrinsics (functions).
-    "iargc": "fortran::iargc", "nargs": "fortran::nargs",
-    "getenvqq": "fortran::getenvqq", "systemqq": "fortran::systemqq",
-    "getlasterrorqq": "fortran::getlasterrorqq",
+    "iargc": "ftn::iargc", "nargs": "ftn::nargs",
+    "getenvqq": "ftn::getenvqq", "systemqq": "ftn::systemqq",
+    "getlasterrorqq": "ftn::getlasterrorqq",
     # Bit-manipulation intrinsics.
-    "iand": "fortran::iand", "ior": "fortran::ior", "ieor": "fortran::ieor",
-    "ishft": "fortran::ishft", "btest": "fortran::btest",
-    "ibset": "fortran::ibset", "ibclr": "fortran::ibclr",
+    "iand": "ftn::iand", "ior": "ftn::ior", "ieor": "ftn::ieor",
+    "ishft": "ftn::ishft", "btest": "ftn::btest",
+    "ibset": "ftn::ibset", "ibclr": "ftn::ibclr",
     # Numeric inquiry intrinsics.
-    "huge": "fortran::huge", "tiny": "fortran::tiny",
-    "epsilon": "fortran::epsilon", "kind": "fortran::kind",
-    "bit_size": "fortran::bit_size", "precision": "fortran::precision",
-    "radix": "fortran::radix", "digits": "fortran::digits",
+    "huge": "ftn::huge", "tiny": "ftn::tiny",
+    "epsilon": "ftn::epsilon", "kind": "ftn::kind",
+    "bit_size": "ftn::bit_size", "precision": "ftn::precision",
+    "radix": "ftn::radix", "digits": "ftn::digits",
     # Character <-> integer intrinsics.
-    "achar": "fortran::achar", "char": "fortran::achar",
-    "iachar": "fortran::ichar", "ichar": "fortran::ichar",
-    "mod": "fortran::mod",       # generic: integer % or std::fmod
-    "amod": "fortran::mod", "dmod": "fortran::mod",  # real/double specifics
-    "modulo": "fortran::modulo",  # remainder with sign of divisor
-    "merge": "fortran::merge",
+    "achar": "ftn::achar", "char": "ftn::achar",
+    "iachar": "ftn::ichar", "ichar": "ftn::ichar",
+    "mod": "ftn::mod",       # generic: integer % or std::fmod
+    "amod": "ftn::mod", "dmod": "ftn::mod",  # real/double specifics
+    "modulo": "ftn::modulo",  # remainder with sign of divisor
+    "merge": "ftn::merge",
     "sign": "std::copysign", "dsign": "std::copysign",
     # FORTRAN 77 type-specific intrinsic spellings -> the generic forms.
-    "alog": "fortran::log", "dlog": "fortran::log",
-    "alog10": "fortran::log10", "dlog10": "fortran::log10",
-    "dsqrt": "fortran::sqrt", "dexp": "fortran::exp",
-    "dabs": "fortran::abs", "iabs": "fortran::abs",
-    "dsin": "fortran::sin", "dcos": "fortran::cos", "dtan": "fortran::tan",
-    "dasin": "fortran::asin", "dacos": "fortran::acos", "datan": "fortran::atan",
-    "datan2": "std::atan2", "dsinh": "fortran::sinh",
-    "dcosh": "fortran::cosh", "dtanh": "fortran::tanh",
-    "amax1": "fortran::max", "dmax1": "fortran::max", "max0": "fortran::max",
-    "amax0": "fortran::max",
-    "amin1": "fortran::min", "dmin1": "fortran::min", "min0": "fortran::min",
-    "amin0": "fortran::min",
-    "dnint": "fortran::anint", "idnint": "fortran::nint",
-    # Array intrinsics -> fortran:: runtime helpers (intrinsics.hpp).
-    "size": "fortran::size", "lbound": "fortran::lbound",
-    "ubound": "fortran::ubound", "sum": "fortran::sum",
-    "product": "fortran::product", "maxval": "fortran::maxval",
-    "minval": "fortran::minval", "count": "fortran::count",
-    "any": "fortran::any", "all": "fortran::all",
-    "dot_product": "fortran::dot_product",
-    "matmul": "fortran::matmul", "transpose": "fortran::transpose",
-    "maxloc": "fortran::maxloc", "minloc": "fortran::minloc",
-    "pack": "fortran::pack", "cshift": "fortran::cshift",
-    "eoshift": "fortran::eoshift", "spread": "fortran::spread",
+    "alog": "ftn::log", "dlog": "ftn::log",
+    "alog10": "ftn::log10", "dlog10": "ftn::log10",
+    "dsqrt": "ftn::sqrt", "dexp": "ftn::exp",
+    "dabs": "ftn::abs", "iabs": "ftn::abs",
+    "dsin": "ftn::sin", "dcos": "ftn::cos", "dtan": "ftn::tan",
+    "dasin": "ftn::asin", "dacos": "ftn::acos", "datan": "ftn::atan",
+    "datan2": "std::atan2", "dsinh": "ftn::sinh",
+    "dcosh": "ftn::cosh", "dtanh": "ftn::tanh",
+    "amax1": "ftn::max", "dmax1": "ftn::max", "max0": "ftn::max",
+    "amax0": "ftn::max",
+    "amin1": "ftn::min", "dmin1": "ftn::min", "min0": "ftn::min",
+    "amin0": "ftn::min",
+    "dnint": "ftn::anint", "idnint": "ftn::nint",
+    # Array intrinsics -> ftn:: runtime helpers (intrinsics.hpp).
+    "size": "ftn::size", "lbound": "ftn::lbound",
+    "ubound": "ftn::ubound", "sum": "ftn::sum",
+    "product": "ftn::product", "maxval": "ftn::maxval",
+    "minval": "ftn::minval", "count": "ftn::count",
+    "any": "ftn::any", "all": "ftn::all",
+    "dot_product": "ftn::dot_product",
+    "matmul": "ftn::matmul", "transpose": "ftn::transpose",
+    "maxloc": "ftn::maxloc", "minloc": "ftn::minloc",
+    "pack": "ftn::pack", "cshift": "ftn::cshift",
+    "eoshift": "ftn::eoshift", "spread": "ftn::spread",
     # Character intrinsics.
-    "trim": "fortran::trim", "len": "fortran::len",
-    "len_trim": "fortran::len_trim", "index": "fortran::index",
-    "adjustl": "fortran::adjustl", "adjustr": "fortran::adjustr",
-    "repeat": "fortran::repeat", "scan": "fortran::scan",
-    "verify": "fortran::verify",
+    "trim": "ftn::trim", "len": "ftn::len",
+    "len_trim": "ftn::len_trim", "index": "ftn::index",
+    "adjustl": "ftn::adjustl", "adjustr": "ftn::adjustr",
+    "repeat": "ftn::repeat", "scan": "ftn::scan",
+    "verify": "ftn::verify",
     # Rounding / truncating conversions (plain int/real/dble are casts,
     # handled separately in _lower_conversion_intrinsic).
-    "nint": "fortran::nint", "aint": "fortran::aint",
-    "anint": "fortran::anint", "dint": "fortran::aint",
+    "nint": "ftn::nint", "aint": "ftn::aint",
+    "anint": "ftn::anint", "dint": "ftn::aint",
     # Lexical (collating-sequence) string comparisons.
-    "llt": "fortran::llt", "lle": "fortran::lle",
-    "lgt": "fortran::lgt", "lge": "fortran::lge",
+    "llt": "ftn::llt", "lle": "ftn::lle",
+    "lgt": "ftn::lgt", "lge": "ftn::lge",
 }
 
 
 # Kind-dependent numeric conversion intrinsics -> C++ casts.  The
 # target C++ type depends on the (optional) kind argument.
 _INT_KIND_CPP = {
-    None: "std::int32_t", 1: "std::int8_t", 2: "std::int16_t",
-    4: "std::int32_t", 8: "std::int64_t",
+    None: "int32_t", 1: "int8_t", 2: "int16_t",
+    4: "int32_t", 8: "int64_t",
 }
 _REAL_KIND_CPP = {None: "float", 4: "float", 8: "double"}
 
@@ -5752,11 +5752,11 @@ def _lower_function_reference(node: Node) -> IRExpr:
     Handles, in this order:
 
     * ``PRESENT(x)`` → ``x.has_value()`` (optional scalar test);
-    * ``ASSOCIATED(p)`` → ``fortran::associated(p)``;
+    * ``ASSOCIATED(p)`` → ``ftn::associated(p)``;
     * conversion intrinsics (``INT``, ``REAL``, ``DBLE``, ``FLOAT``,
       ``IFIX``, ``IDINT``, ``DFLOAT``, ``SNGL``) → ``IRCast``;
     * ``RESHAPE(src, [d1, d2, ...])`` with a literal shape → a fixed-rank
-      ``fortran::reshape(src, d1, d2, ...)`` so the rank deduces at
+      ``ftn::reshape(src, d1, d2, ...)`` so the rank deduces at
       compile time;
     * everything else — a user function or a plain intrinsic — emits an
       ``IRFunctionCall`` whose ``arg_categories`` carry each actual's
@@ -5771,10 +5771,10 @@ def _lower_function_reference(node: Node) -> IRExpr:
     if callee == "present" and len(args) == 1 and isinstance(args[0], IRName):
         return IRRaw(f"({args[0].name}.has_value())")
 
-    # associated(p) -> fortran::associated(p) using the raw pointer name
+    # associated(p) -> ftn::associated(p) using the raw pointer name
     # (not the deref'd value), overloaded for T* and ArrayRef.
     if callee == "associated" and len(args) == 1 and isinstance(args[0], IRName):
-        return IRRaw(f"fortran::associated({args[0].name})")
+        return IRRaw(f"ftn::associated({args[0].name})")
 
     # Conversion intrinsics become static_casts whose target type
     # depends on the kind argument.
@@ -5782,13 +5782,13 @@ def _lower_function_reference(node: Node) -> IRExpr:
     if conv is not None:
         return conv
 
-    # reshape(source, [d1, d2, ...]) -> fortran::reshape(source, d1, d2, ...)
+    # reshape(source, [d1, d2, ...]) -> ftn::reshape(source, d1, d2, ...)
     # so the result rank is deduced from the (literal) shape's length.
     if callee == "reshape" and len(args) >= 2 and isinstance(
         args[1], IRArrayConstructor
     ):
         flat = (args[0], *args[1].elements)
-        return IRFunctionCall(callee="fortran::reshape", args=flat)
+        return IRFunctionCall(callee="ftn::reshape", args=flat)
 
     # Not an intrinsic -> a user function; safe-name it to match the
     # (safe-named) subprogram definition.
@@ -5806,7 +5806,7 @@ def _lower_conversion_intrinsic(
     operand = args[0]
     kind = _literal_int_value(args[1]) if len(args) > 1 else None
     if callee in ("int", "ifix", "idint"):  # ifix/idint: F77 real/double -> int
-        return IRCast(cpp_type=_INT_KIND_CPP.get(kind, "std::int32_t"),
+        return IRCast(cpp_type=_INT_KIND_CPP.get(kind, "int32_t"),
                       operand=operand)
     if callee in ("real", "float"):
         return IRCast(cpp_type=_REAL_KIND_CPP.get(kind, "float"),
@@ -5995,7 +5995,7 @@ _BINARY_OP_MAP: dict[str, str] = {
     "AND": "&&", "OR": "||",
     "EQV": "==", "NEQV": "!=",
     "Power": "**",         # placeholder — lowered to std::pow
-    "Concat": "//",        # placeholder — lowered to fortran::concat
+    "Concat": "//",        # placeholder — lowered to ftn::concat
     "DefinedBinary": "?",  # user-defined op — TODO, emit as call
 }
 
@@ -6018,7 +6018,7 @@ def _lower_expr_operator(node: Node) -> IRExpr:
             if kind == "Power":
                 return IRFunctionCall(callee="std::pow", args=(lhs, rhs))
             if kind == "Concat":
-                return IRFunctionCall(callee="fortran::concat", args=(lhs, rhs))
+                return IRFunctionCall(callee="ftn::concat", args=(lhs, rhs))
             return IRBinaryOp(op=_BINARY_OP_MAP[kind], lhs=lhs, rhs=rhs)
     if kind in _UNARY_OP_MAP:
         operand = next((c for c in node.children if c.kind == "Expr"), None)

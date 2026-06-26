@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 //
 // Free-function implementations of Fortran's array intrinsics, in the
-// ``fortran::`` namespace.  The converter maps the Fortran intrinsic
+// ``ftn::`` namespace.  The converter maps the Fortran intrinsic
 // names (SIZE, SUM, MAXVAL, ...) onto these.  Each is templated on the
 // array-like argument so it accepts both owning ``Array`` and
 // non-owning ``ArrayRef`` of any element constness.
@@ -34,7 +34,7 @@
 #include <string_view>
 #include <type_traits>
 
-namespace fortran {
+namespace ftn {
 
 // ---- Argument copy-in ------------------------------------------------------
 //
@@ -64,10 +64,10 @@ constexpr std::remove_cvref_t<T> val(T &&value) noexcept {
 // ---- Elemental math intrinsics --------------------------------------------
 //
 // Fortran's math intrinsics are *elemental*: applied to an array they map
-// over every element.  Each ``fortran::<fn>`` therefore has a scalar
+// over every element.  Each ``ftn::<fn>`` therefore has a scalar
 // overload (delegating to the standard-library function) and an array
 // overload returning a fresh Array (like the array-returning intrinsics).
-// The converter emits ``fortran::<fn>`` so the same spelling works for
+// The converter emits ``ftn::<fn>`` so the same spelling works for
 // scalar and array arguments.
 
 #define FORTRAN_RT_ELEMENTAL(NAME, FN)                                         \
@@ -152,7 +152,7 @@ constexpr std::common_type_t<A, B> min(A a, B b) noexcept {
 }
 template <typename A, typename B, typename... R>
 constexpr auto min(A a, B b, R... rest) noexcept {
-  return fortran::min(fortran::min(a, b), rest...);
+  return ftn::min(ftn::min(a, b), rest...);
 }
 template <typename A, typename B>
 constexpr std::common_type_t<A, B> max(A a, B b) noexcept {
@@ -162,7 +162,7 @@ constexpr std::common_type_t<A, B> max(A a, B b) noexcept {
 }
 template <typename A, typename B, typename... R>
 constexpr auto max(A a, B b, R... rest) noexcept {
-  return fortran::max(fortran::max(a, b), rest...);
+  return ftn::max(ftn::max(a, b), rest...);
 }
 
 // ---- Numeric inquiry intrinsics -------------------------------------------
@@ -251,8 +251,8 @@ T merge(const T &t_source, const T &f_source, bool mask) {
 // are the ones that round or truncate.
 
 /// NINT — round to the nearest integer.
-template <typename T> std::int32_t nint(T x) {
-  return static_cast<std::int32_t>(std::llround(x));
+template <typename T> int32_t nint(T x) {
+  return static_cast<int32_t>(std::llround(x));
 }
 
 /// AINT — truncate toward zero, result stays real.
@@ -601,6 +601,6 @@ template <typename A, typename B> auto dot_product(const A &a, const B &b) {
   return acc;
 }
 
-} // namespace fortran
+} // namespace ftn
 
 #endif // FORTRAN_RT_INTRINSICS_HPP

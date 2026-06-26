@@ -60,12 +60,12 @@ def _convert(src: str) -> str:
 class ImpliedDoEmitTests(unittest.TestCase):
     def test_constructor_implied_do_is_fill_loop(self) -> None:
         cpp = _convert(ID_F90)
-        self.assertIn("for (fortran::index_t i = 1; i <= 5; ++i)", cpp)
+        self.assertIn("for (ftn::index_t i = 1; i <= 5; ++i)", cpp)
         self.assertRegex(cpp, r"a\(a\.lbound\(1\) \+ i - 1\) = i \* i;")
 
     def test_io_implied_do_is_loop(self) -> None:
         cpp = _convert(ID_F90)
-        self.assertIn("for (fortran::index_t i = 1; i <= n; ++i)", cpp)
+        self.assertIn("for (ftn::index_t i = 1; i <= n; ++i)", cpp)
         self.assertIn("std::cout << a(i) << ' ';", cpp)
 
     def test_read_implied_do_is_loop(self) -> None:

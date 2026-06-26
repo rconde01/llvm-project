@@ -41,10 +41,10 @@ class CommandLineEmitTests(unittest.TestCase):
 
     def test_intrinsics_and_main_signature(self) -> None:
         cpp = self._convert(ARGS_F)
-        self.assertIn("fortran::iargc()", cpp)
-        self.assertIn("fortran::getarg(", cpp)
+        self.assertIn("ftn::iargc()", cpp)
+        self.assertIn("ftn::getarg(", cpp)
         self.assertIn("int main(int argc, char** argv)", cpp)
-        self.assertIn("fortran::set_command_args(argc, argv)", cpp)
+        self.assertIn("ftn::set_command_args(argc, argv)", cpp)
 
 
 @unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")

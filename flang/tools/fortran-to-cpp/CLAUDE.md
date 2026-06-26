@@ -119,7 +119,7 @@ the whole pipeline.  The shape is:
    - `_infer_readonly_scalar_params` — F77 dummies that look read-only get
      `intent(in)` / `const T&`.  Skips `intent_declared` params (the
      declared intent is authoritative).
-   - `_materialize_value_args` — wrap rvalue actuals in `fortran::byref`
+   - `_materialize_value_args` — wrap rvalue actuals in `ftn::byref`
      when the dummy is a modifiable scalar.  Now driven by AST `category`.
 
 4. **State plumbing** (`state_plumbing.py::plumb_state`):
@@ -162,8 +162,8 @@ See `README.md` §D8 and `docs/CONSTRUCTS.md` §"Dummy procedures".
 
 F77's implicit interface lets an actual of one type bind a dummy of
 another (a `DOUBLE PRECISION` array passed to an integer copier; a `double`
-local used as an `int*` ID).  The runtime offers `fortran::storage_ref<To>`
-and `fortran::reinterpret_array<To>` for this, inserted at call sites
+local used as an `int*` ID).  The runtime offers `ftn::storage_ref<To>`
+and `ftn::reinterpret_array<To>` for this, inserted at call sites
 **only where the C++ binding would otherwise fail to compile** (a non-const
 ref to a different scalar type, or an `ArrayRef<U,R>` → `ArrayRef<T,R>`
 with `U ≠ T`).  See `docs/CONSTRUCTS.md` §"Mismatched types".

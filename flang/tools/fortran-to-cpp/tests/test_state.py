@@ -180,7 +180,7 @@ class StateEmitTests(unittest.TestCase):
     def test_save_generates_struct_and_param(self) -> None:
         cpp = self._convert(SAVE_F90)
         self.assertIn("struct CounterSave {", cpp)
-        self.assertIn("std::int32_t n{};", cpp)
+        self.assertIn("int32_t n{};", cpp)
         self.assertIn("void counter(CounterSave& counter_save)", cpp)
         # State bound with auto& so the body stays clean.
         self.assertIn("auto& n = counter_save.n;", cpp)
@@ -215,7 +215,7 @@ class StateEmitTests(unittest.TestCase):
         # over the shared storage, not an auto& to the 1-D canonical field.
         cpp = self._convert(COMMON_RESHAPE_F90)
         self.assertIn(
-            "auto b = fortran::ArrayRef<float, 2>(w_common.a.data(), {2, 3});",
+            "auto b = ftn::ArrayRef<float, 2>(w_common.a.data(), {2, 3});",
             cpp,
         )
 
@@ -238,14 +238,14 @@ class StateEmitTests(unittest.TestCase):
         cpp = self._convert(COMMON_ALIAS_F90)
         self.assertIn("struct C1Common {", cpp)
         # No disambiguated field needed -- each offset has one canonical name.
-        self.assertEqual(cpp.count("std::int32_t k{};"), 1)
+        self.assertEqual(cpp.count("int32_t k{};"), 1)
         # one()'s "k" and "iy" land on canonical "r" and "s" via a type-pun
         # reinterpret so the routine's INTEGER writes land as INTEGER bytes.
         self.assertIn(
-            "auto& k = *reinterpret_cast<std::int32_t*>(&c1_common.r);", cpp
+            "auto& k = *reinterpret_cast<int32_t*>(&c1_common.r);", cpp
         )
         self.assertIn(
-            "auto& iy = *reinterpret_cast<std::int32_t*>(&c1_common.s);", cpp
+            "auto& iy = *reinterpret_cast<int32_t*>(&c1_common.s);", cpp
         )
 
 

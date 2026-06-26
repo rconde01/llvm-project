@@ -79,13 +79,13 @@ class TypeBoundEmitTests(unittest.TestCase):
     def test_type_becomes_struct_with_initializer(self) -> None:
         cpp = _convert(COUNTER_F90)
         self.assertIn("struct Counter {", cpp)
-        self.assertIn("std::int32_t n = 0;", cpp)
+        self.assertIn("int32_t n = 0;", cpp)
 
     def test_passed_object_is_first_param(self) -> None:
         cpp = _convert(COUNTER_F90)
         # ``this`` is a C++ keyword, sanitized to ``this_``.
         self.assertIn("void increment(Counter& this_)", cpp)
-        self.assertIn("std::int32_t get(const Counter& this_)", cpp)
+        self.assertIn("int32_t get(const Counter& this_)", cpp)
 
     def test_call_is_rewritten_to_free_function(self) -> None:
         cpp = _convert(COUNTER_F90)

@@ -9,24 +9,24 @@ Translation rules (R4, R5, D3, D7):
   ============================== =================================
   Fortran                        C++
   ============================== =================================
-  ``integer``                    ``std::int32_t``
-  ``integer(kind=2)``            ``std::int16_t``
-  ``integer(kind=4)``            ``std::int32_t``
-  ``integer(kind=8)``            ``std::int64_t``
+  ``integer``                    ``int32_t``
+  ``integer(kind=2)``            ``int16_t``
+  ``integer(kind=4)``            ``int32_t``
+  ``integer(kind=8)``            ``int64_t``
   ``real``                       ``float``
   ``real(kind=4)``               ``float``
   ``real(kind=8)``               ``double``
   ``double precision``           ``double``
   ``logical``                    ``bool``
   ``logical(kind=N)``            ``bool``
-  ``character``                  ``fortran::FortranString<1>``
-  ``character(len=N)``           ``fortran::FortranString<N>``
+  ``character``                  ``ftn::FortranString<1>``
+  ``character(len=N)``           ``ftn::FortranString<N>``
   ``character(len=*)``           ``std::string_view``    (intent(in))
   ``complex``                    ``std::complex<float>``
   ``complex(kind=8)``            ``std::complex<double>``
   ============================== =================================
 
-Array types wrap any of the above in ``fortran::Array<T, Rank>`` (the
+Array types wrap any of the above in ``ftn::Array<T, Rank>`` (the
 rank is determined by the ``ArraySpec`` node in the AST).
 """
 
@@ -123,8 +123,8 @@ def _lower_intrinsic(intrinsic_spec: Node) -> IRType:
 
 def _make_integer(kind: int | None) -> IRType:
     k = kind if kind is not None else _DEFAULT_INTEGER_KIND
-    cpp = {1: "std::int8_t", 2: "std::int16_t",
-           4: "std::int32_t", 8: "std::int64_t"}.get(k, "std::int32_t")
+    cpp = {1: "int8_t", 2: "int16_t",
+           4: "int32_t", 8: "int64_t"}.get(k, "int32_t")
     return IRType(cpp=cpp, fortran=f"integer(kind={k})", is_integer=True)
 
 
@@ -150,7 +150,7 @@ def _make_complex(kind: int | None) -> IRType:
 def _make_character(char_spec: Node) -> IRType:
     """Lower a ``CHARACTER`` declaration.
 
-    ``CHARACTER(LEN=N)`` becomes ``fortran::FortranString<N>``;
+    ``CHARACTER(LEN=N)`` becomes ``ftn::FortranString<N>``;
     ``CHARACTER`` alone is ``FortranString<1>`` (Fortran's default).
     ``CHARACTER(LEN=*)`` (assumed length) becomes ``std::string_view``
     — only valid as an ``intent(in)`` parameter, which the lowering
@@ -165,7 +165,7 @@ def _make_character(char_spec: Node) -> IRType:
         )
     n = length if length is not None else 1
     return IRType(
-        cpp=f"fortran::FortranString<{n}>",
+        cpp=f"ftn::FortranString<{n}>",
         fortran=f"character(len={n})",
         is_character=True,
     )

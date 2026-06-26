@@ -55,11 +55,11 @@ class SpreadEoshiftEmitTests(unittest.TestCase):
         cpp = _convert(SPREAD_F90)
         # spread returns a rank-2 array; it must stay a whole-array
         # assignment, not be elementwise-expanded into a loop.
-        self.assertIn("m = fortran::spread(v, 1, 2);", cpp)
+        self.assertIn("m = ftn::spread(v, 1, 2);", cpp)
 
     def test_eoshift_mapped(self) -> None:
         cpp = _convert(SPREAD_F90)
-        self.assertIn("fortran::eoshift(v, 1)", cpp)
+        self.assertIn("ftn::eoshift(v, 1)", cpp)
 
 
 @unittest.skipUnless(

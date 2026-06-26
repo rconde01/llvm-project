@@ -67,17 +67,17 @@ class ConversionEmitTests(unittest.TestCase):
     def test_casts(self) -> None:
         cpp = _convert(CONV_F90)
         self.assertIn("static_cast<float>(i)", cpp)
-        self.assertIn("static_cast<std::int32_t>(x)", cpp)
+        self.assertIn("static_cast<int32_t>(x)", cpp)
         self.assertIn("static_cast<double>(i)", cpp)
 
     def test_nint_uses_helper(self) -> None:
         cpp = _convert(CONV_F90)
-        self.assertIn("fortran::nint(x)", cpp)
+        self.assertIn("ftn::nint(x)", cpp)
 
     def test_kind_selects_target_type(self) -> None:
         cpp = _convert(KIND_F90)
         # int(x, 8) -> int64; real(big, 8) -> double.
-        self.assertIn("static_cast<std::int64_t>(x)", cpp)
+        self.assertIn("static_cast<int64_t>(x)", cpp)
         self.assertIn("static_cast<double>(big)", cpp)
 
 

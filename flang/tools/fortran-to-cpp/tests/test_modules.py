@@ -87,7 +87,7 @@ class ModuleEmitTests(unittest.TestCase):
         self.assertIn("struct ConfigModule {", cpp)
         # Initializer preserved.
         self.assertIn("float gravity = 9.8f;", cpp)
-        self.assertIn("std::int32_t count{};", cpp)
+        self.assertIn("int32_t count{};", cpp)
 
     def test_module_procedure_takes_module_state(self) -> None:
         cpp = _convert(CONFIG_F90)
@@ -116,10 +116,10 @@ class ModuleEmitTests(unittest.TestCase):
         cpp = _convert(PARAMS_F90)
         # A module PARAMETER is a compile-time constant: emitted as a free
         # ``inline constexpr`` and referenced without threading a module.
-        self.assertIn("inline constexpr std::int32_t n = 4;", cpp)
+        self.assertIn("inline constexpr int32_t n = 4;", cpp)
         self.assertNotIn("LimitsModule&", cpp)  # no instance threaded
         # Usable as a local array bound (the case that previously broke).
-        self.assertIn("fortran::Array<float, 1> a{{n}}", cpp)
+        self.assertIn("ftn::Array<float, 1> a{{n}}", cpp)
 
 
 PARAMS_F90 = """\

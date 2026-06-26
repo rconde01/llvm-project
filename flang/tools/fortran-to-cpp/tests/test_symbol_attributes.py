@@ -84,11 +84,11 @@ end subroutine
 class DeclaredIntentRespectedTests(unittest.TestCase):
     def test_declared_inout_is_not_demoted(self) -> None:
         cpp = convert(DECLARED_INOUT_F90)
-        # receiver's x stays std::int32_t&, not const std::int32_t&,
+        # receiver's x stays int32_t&, not const int32_t&,
         # because INTENT(INOUT) was declared by the source.
         sig = _signature_of(cpp, "receiver")
-        self.assertIn("std::int32_t& x", sig)
-        self.assertNotIn("const std::int32_t& x", sig)
+        self.assertIn("int32_t& x", sig)
+        self.assertNotIn("const int32_t& x", sig)
 
 
 # An explicit ``real(8) function`` prefix and the body's actual result

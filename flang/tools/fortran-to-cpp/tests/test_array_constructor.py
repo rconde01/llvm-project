@@ -52,15 +52,15 @@ def _convert(src: str) -> str:
 class ArrayConstructorEmitTests(unittest.TestCase):
     def test_assignment_uses_array_of_move(self) -> None:
         cpp = _convert(AC_F90)
-        self.assertIn("a = fortran::array_of(10, 20, 30);", cpp)
+        self.assertIn("a = ftn::array_of(10, 20, 30);", cpp)
 
     def test_paren_slash_form(self) -> None:
         cpp = _convert(AC_F90)
-        self.assertIn("fortran::array_of(1.5f, 2.5f)", cpp)
+        self.assertIn("ftn::array_of(1.5f, 2.5f)", cpp)
 
     def test_constructor_as_intrinsic_arg(self) -> None:
         cpp = _convert(AC_F90)
-        self.assertIn("fortran::sum(fortran::array_of(1, 2, 3, 4))", cpp)
+        self.assertIn("ftn::sum(ftn::array_of(1, 2, 3, 4))", cpp)
 
 
 @unittest.skipUnless(

@@ -1,7 +1,7 @@
 """Helpers for the compile-time-lower-bounds array form.
 
-The runtime's ``fortran::Array<T, Rank, Lower>`` and
-``fortran::ArrayRef<T, Rank, Lower>`` accept an optional NTTP ``Lower``
+The runtime's ``ftn::Array<T, Rank, Lower>`` and
+``ftn::ArrayRef<T, Rank, Lower>`` accept an optional NTTP ``Lower``
 that pins the per-dimension lower bound at the type level so indexing
 constant-folds the ``(idx - lower)`` subtraction.  These helpers tell
 the emitter when a declared array can use that form (every declared
@@ -46,15 +46,15 @@ def try_static_lower_literals(
 
 
 def static_lower_nttp(rank: int, lowers: tuple[int, ...]) -> str:
-    """Render the ``std::array<fortran::index_t, R>{...}`` NTTP literal."""
+    """Render the ``std::array<ftn::index_t, R>{...}`` NTTP literal."""
     inner = ",".join(str(v) for v in lowers)
-    return f"std::array<fortran::index_t, {rank}>{{{inner}}}"
+    return f"std::array<ftn::index_t, {rank}>{{{inner}}}"
 
 
 def static_lower_cpp_type(cpp: str, rank: int, lower_exprs: tuple[str, ...]
                           ) -> str | None:
     """Splice the static-``Lower`` NTTP into ``cpp`` (a runtime
-    ``fortran::Array<...>`` / ``fortran::ArrayRef<...>`` spelling)
+    ``ftn::Array<...>`` / ``ftn::ArrayRef<...>`` spelling)
     when every entry in ``lower_exprs`` is a literal integer.
     Returns ``None`` when the runtime form must be used."""
     lbs = try_static_lower_literals(lower_exprs)

@@ -13,7 +13,7 @@
 
 #include <type_traits>
 
-using namespace fortran;
+using namespace ftn;
 
 static Array<float, 1> iota4() {
   Array<float, 1> a({4});

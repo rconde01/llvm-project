@@ -59,11 +59,11 @@ class BlockAssociateEmitTests(unittest.TestCase):
     def test_associate_binds_full_selector(self) -> None:
         cpp = _convert(AS_F90)
         # Regression: the whole sqrt(...) selector, not just its arg.
-        self.assertIn("auto&& h = fortran::sqrt(x * x + y * y);", cpp)
+        self.assertIn("auto&& h = ftn::sqrt(x * x + y * y);", cpp)
 
     def test_block_has_scoped_local(self) -> None:
         cpp = _convert(AS_F90)
-        self.assertIn("std::int32_t tmp{};", cpp)
+        self.assertIn("int32_t tmp{};", cpp)
 
 
 @unittest.skipUnless(

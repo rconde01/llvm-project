@@ -68,11 +68,11 @@ SCALAR_PUN_F77 = """\
 class StoragePunEmitTests(unittest.TestCase):
     def test_array_actual_is_reinterpreted(self) -> None:
         cpp = convert_project(ARRAY_PUN_F77, suffix=".f")
-        self.assertIn("fortran::reinterpret_array<std::int32_t>(a)", cpp)
+        self.assertIn("ftn::reinterpret_array<int32_t>(a)", cpp)
 
     def test_scalar_actual_is_reinterpreted(self) -> None:
         cpp = convert_project(SCALAR_PUN_F77, suffix=".f")
-        self.assertIn("fortran::storage_ref<std::int32_t>(x)", cpp)
+        self.assertIn("ftn::storage_ref<int32_t>(x)", cpp)
 
 
 @unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")

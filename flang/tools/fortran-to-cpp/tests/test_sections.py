@@ -87,8 +87,8 @@ class SectionEmitTests(unittest.TestCase):
 
     def test_section_as_reduction_arg_uses_view(self) -> None:
         cpp = _convert(SEC_EXPR_F90)
-        # sum(a(1:5)) -> fortran::sum(a.section(1, 5))
-        self.assertIn("fortran::sum(a.section(1, 5))", cpp)
+        # sum(a(1:5)) -> ftn::sum(a.section(1, 5))
+        self.assertIn("ftn::sum(a.section(1, 5))", cpp)
 
 
 @unittest.skipUnless(

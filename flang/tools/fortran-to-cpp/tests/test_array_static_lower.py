@@ -21,7 +21,7 @@ def _emit(loc: IRLocal) -> str:
 def _array_type(*, rank: int, lower_exprs: tuple[str, ...],
                 extent_exprs: tuple[str, ...]) -> IRType:
     return IRType(
-        cpp=f"fortran::Array<float, {rank}>",
+        cpp=f"ftn::Array<float, {rank}>",
         fortran="real",
         is_array=True,
         is_real=True,
@@ -76,9 +76,9 @@ class EmitLocalStaticLowerTests(unittest.TestCase):
             type=_array_type(rank=1, lower_exprs=(), extent_exprs=("10",)),
         )
         cpp = _emit(loc)
-        self.assertIn("fortran::Array<float, 1> a{{10}};", cpp)
+        self.assertIn("ftn::Array<float, 1> a{{10}};", cpp)
         # Sanity: no static NTTP form on default-lb arrays.
-        self.assertNotIn("std::array<fortran::index_t,", cpp)
+        self.assertNotIn("std::array<ftn::index_t,", cpp)
 
     def test_literal_lower_uses_static_form(self) -> None:
         # Explicit lb=0 -> compile-time-lower-bounds form: the bound is
@@ -89,7 +89,7 @@ class EmitLocalStaticLowerTests(unittest.TestCase):
         )
         cpp = _emit(loc)
         self.assertIn(
-            "fortran::Array<float, 1, std::array<fortran::index_t, 1>{0}> a{{10}};",
+            "ftn::Array<float, 1, std::array<ftn::index_t, 1>{0}> a{{10}};",
             cpp,
         )
 
@@ -100,7 +100,7 @@ class EmitLocalStaticLowerTests(unittest.TestCase):
         )
         cpp = _emit(loc)
         self.assertIn(
-            "fortran::Array<float, 1, std::array<fortran::index_t, 1>{-5}> b{{11}};",
+            "ftn::Array<float, 1, std::array<ftn::index_t, 1>{-5}> b{{11}};",
             cpp,
         )
 
@@ -113,7 +113,7 @@ class EmitLocalStaticLowerTests(unittest.TestCase):
         )
         cpp = _emit(loc)
         self.assertIn(
-            "fortran::Array<float, 2, std::array<fortran::index_t, 2>{0,-1}> m{{4, 3}};",
+            "ftn::Array<float, 2, std::array<ftn::index_t, 2>{0,-1}> m{{4, 3}};",
             cpp,
         )
 
@@ -125,10 +125,10 @@ class EmitLocalStaticLowerTests(unittest.TestCase):
         )
         cpp = _emit(loc)
         self.assertIn(
-            "fortran::Array<float, 1> a{{n}, {m - n + 1}};",
+            "ftn::Array<float, 1> a{{n}, {m - n + 1}};",
             cpp,
         )
-        self.assertNotIn("std::array<fortran::index_t,", cpp)
+        self.assertNotIn("std::array<ftn::index_t,", cpp)
 
     def test_static_form_with_scalar_initializer(self) -> None:
         # ``real :: a(0:9) = 0.0`` -> static-lower form using the
@@ -140,7 +140,7 @@ class EmitLocalStaticLowerTests(unittest.TestCase):
         )
         cpp = _emit(loc)
         self.assertIn(
-            "fortran::Array<float, 1, std::array<fortran::index_t, 1>{0}> a{{10}, 0.0f};",
+            "ftn::Array<float, 1, std::array<ftn::index_t, 1>{0}> a{{10}, 0.0f};",
             cpp,
         )
 
@@ -153,7 +153,7 @@ class EmitLocalStaticLowerTests(unittest.TestCase):
         )
         cpp = _emit(loc)
         self.assertIn(
-            "fortran::Array<float, 1> a{{1}, {n}, 0.0f};",
+            "ftn::Array<float, 1> a{{1}, {n}, 0.0f};",
             cpp,
         )
 
@@ -178,7 +178,7 @@ class ParamDeclStaticLowerTests(unittest.TestCase):
             intent="inout",
         )
         decl = p.cpp_param_decl(with_default=False)
-        self.assertEqual(decl, "fortran::ArrayRef<float, 1> a")
+        self.assertEqual(decl, "ftn::ArrayRef<float, 1> a")
 
     def test_literal_lb_uses_static_arrayref(self) -> None:
         p = self._array_param(
@@ -188,7 +188,7 @@ class ParamDeclStaticLowerTests(unittest.TestCase):
         decl = p.cpp_param_decl(with_default=False)
         self.assertEqual(
             decl,
-            "fortran::ArrayRef<float, 1, std::array<fortran::index_t, 1>{0}> a",
+            "ftn::ArrayRef<float, 1, std::array<ftn::index_t, 1>{0}> a",
         )
 
     def test_negative_lb_uses_static_arrayref(self) -> None:
@@ -199,8 +199,8 @@ class ParamDeclStaticLowerTests(unittest.TestCase):
         decl = p.cpp_param_decl(with_default=False)
         self.assertEqual(
             decl,
-            "fortran::ArrayRef<const float, 1, "
-            "std::array<fortran::index_t, 1>{-3}> b",
+            "ftn::ArrayRef<const float, 1, "
+            "std::array<ftn::index_t, 1>{-3}> b",
         )
 
     def test_non_literal_lb_falls_back(self) -> None:
@@ -210,7 +210,7 @@ class ParamDeclStaticLowerTests(unittest.TestCase):
             intent="inout",
         )
         decl = p.cpp_param_decl(with_default=False)
-        self.assertEqual(decl, "fortran::ArrayRef<float, 1> a")
+        self.assertEqual(decl, "ftn::ArrayRef<float, 1> a")
 
 
 if __name__ == "__main__":

@@ -159,7 +159,7 @@ class EquivalenceEmitTests(unittest.TestCase):
     def test_same_type_emits_reference_binding(self) -> None:
         cpp = _convert(SAME_TYPE_F)
         # One canonical local, then a ref-binding alias -- no proxy struct.
-        self.assertIn("fortran::Array<float, 1> a{{4}};", cpp)
+        self.assertIn("ftn::Array<float, 1> a{{4}};", cpp)
         self.assertIn("auto& b = a;", cpp)
         self.assertNotIn("EquivArray", cpp)
         self.assertNotIn("EquivSlot", cpp)
@@ -168,9 +168,9 @@ class EquivalenceEmitTests(unittest.TestCase):
         cpp = _convert(PUN_ARRAY_F)
         # Shared 32-byte buffer (4 * 8 == 8 * 4) -- one EquivArray per name.
         self.assertIn("alignas(8) std::byte _store[32]", cpp)
-        self.assertIn("fortran::EquivArray<double, 4, 0> dbuf{_store};", cpp)
+        self.assertIn("ftn::EquivArray<double, 4, 0> dbuf{_store};", cpp)
         self.assertIn(
-            "fortran::EquivArray<std::int32_t, 8, 0> ibuf{_store};", cpp
+            "ftn::EquivArray<int32_t, 8, 0> ibuf{_store};", cpp
         )
         # And the binding so the body keeps using bare names.
         self.assertIn("auto& dbuf = _eq0.dbuf;", cpp)
@@ -178,8 +178,8 @@ class EquivalenceEmitTests(unittest.TestCase):
         # Critically: the original locals must NOT be re-declared after
         # the alias (which would shadow the EquivArray and silently
         # ignore the equivalence).
-        self.assertNotIn("fortran::Array<double, 1> dbuf{{4}};", cpp)
-        self.assertNotIn("fortran::Array<std::int32_t, 1> ibuf{{8}};", cpp)
+        self.assertNotIn("ftn::Array<double, 1> dbuf{{4}};", cpp)
+        self.assertNotIn("ftn::Array<int32_t, 1> ibuf{{8}};", cpp)
 
     def test_element_alias_binds_to_array_slot(self) -> None:
         # The array's storage IS the storage; the bare-name aliases bind
@@ -189,10 +189,10 @@ class EquivalenceEmitTests(unittest.TestCase):
         self.assertIn("auto& end = ptr(2);", cpp)
         # The bare-name locals must not be re-declared by implicit
         # typing -- they're now references into the array.
-        self.assertNotIn("std::int32_t begin{};", cpp)
-        self.assertNotIn("std::int32_t end{};", cpp)
+        self.assertNotIn("int32_t begin{};", cpp)
+        self.assertNotIn("int32_t end{};", cpp)
         # The array itself must keep its own declaration.
-        self.assertIn("fortran::Array<std::int32_t, 1> ptr{{2}};", cpp)
+        self.assertIn("ftn::Array<int32_t, 1> ptr{{2}};", cpp)
 
     def test_multi_rank_errors(self) -> None:
         with self.assertRaises(ConversionError):

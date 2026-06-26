@@ -65,9 +65,9 @@ def _convert(src: str) -> str:
 class IntrinsicSubroutineEmitTests(unittest.TestCase):
     def test_calls_map_to_runtime(self) -> None:
         cpp = _convert(TIMING_F90)
-        self.assertIn("fortran::cpu_time(t1);", cpp)
-        self.assertIn("fortran::system_clock(c1, rate, cmax);", cpp)
-        self.assertIn("fortran::system_clock(c2);", cpp)
+        self.assertIn("ftn::cpu_time(t1);", cpp)
+        self.assertIn("ftn::system_clock(c1, rate, cmax);", cpp)
+        self.assertIn("ftn::system_clock(c2);", cpp)
 
 
 @unittest.skipUnless(

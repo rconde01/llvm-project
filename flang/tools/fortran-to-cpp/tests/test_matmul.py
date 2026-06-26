@@ -67,14 +67,14 @@ class MatmulEmitTests(unittest.TestCase):
     def test_array_returning_calls_are_move_assigned(self) -> None:
         cpp = _convert(MM_F90)
         # NOT expanded into element loops; plain move-assignment.
-        self.assertIn("b = fortran::transpose(a);", cpp)
-        self.assertIn("c = fortran::matmul(a, b);", cpp)
+        self.assertIn("b = ftn::transpose(a);", cpp)
+        self.assertIn("c = ftn::matmul(a, b);", cpp)
 
     def test_reshape_flattens_shape_to_dim_args(self) -> None:
         cpp = _convert(RESHAPE_F90)
         # shape [2,3] becomes trailing dim args so the rank is deduced.
         self.assertIn(
-            "fortran::reshape(fortran::array_of(1, 2, 3, 4, 5, 6), 2, 3)",
+            "ftn::reshape(ftn::array_of(1, 2, 3, 4, 5, 6), 2, 3)",
             cpp,
         )
 

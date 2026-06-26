@@ -57,21 +57,21 @@ def _convert(src: str) -> str:
 class IntrinsicEmitTests(unittest.TestCase):
     def test_char_intrinsics_mapped(self) -> None:
         cpp = _convert(INTR_F90)
-        self.assertIn("fortran::achar(i)", cpp)
-        self.assertIn('fortran::ichar("B"sv)', cpp)
+        self.assertIn("ftn::achar(i)", cpp)
+        self.assertIn('ftn::ichar("B"sv)', cpp)
 
     def test_bit_intrinsics_mapped(self) -> None:
         cpp = _convert(INTR_F90)
-        self.assertIn("fortran::iand(12, 10)", cpp)
-        self.assertIn("fortran::ior(12, 10)", cpp)
-        self.assertIn("fortran::ishft(1, 3)", cpp)
+        self.assertIn("ftn::iand(12, 10)", cpp)
+        self.assertIn("ftn::ior(12, 10)", cpp)
+        self.assertIn("ftn::ishft(1, 3)", cpp)
 
     def test_variadic_max_maps_to_fortran_min_max(self) -> None:
         cpp = _convert(INTR_F90)
-        # MIN/MAX map to the variadic, mixed-type-tolerant fortran:: helpers
+        # MIN/MAX map to the variadic, mixed-type-tolerant ftn:: helpers
         # (std::min/std::max require a fixed arity and identical types).
-        self.assertIn("fortran::max(1, 2, 3)", cpp)
-        self.assertIn("fortran::min(4, 2)", cpp)
+        self.assertIn("ftn::max(1, 2, 3)", cpp)
+        self.assertIn("ftn::min(4, 2)", cpp)
 
 
 @unittest.skipUnless(

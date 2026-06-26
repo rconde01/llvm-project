@@ -168,7 +168,7 @@ def _convert(src: str) -> str:
 class DataEmitTests(unittest.TestCase):
     def test_array_data_uses_array_of(self) -> None:
         cpp = _convert(DATA_F90)
-        self.assertIn("a = fortran::array_of(10, 20, 30);", cpp)
+        self.assertIn("a = ftn::array_of(10, 20, 30);", cpp)
 
     def test_scalar_data_pairs(self) -> None:
         cpp = _convert(DATA_F90)
@@ -180,12 +180,12 @@ class DataEmitTests(unittest.TestCase):
     def test_data_runs_before_body(self) -> None:
         cpp = _convert(DATA_F90)
         # Inits precede the print statement.
-        self.assertLess(cpp.index("a = fortran::array_of"), cpp.index("std::cout"))
+        self.assertLess(cpp.index("a = ftn::array_of"), cpp.index("std::cout"))
 
     def test_repeat_count_expanded(self) -> None:
         cpp = _convert(REPEAT_F90)
         # ``3*7`` expands to three 7s.
-        self.assertIn("k = fortran::array_of(1, 2, 7, 7, 7, 9);", cpp)
+        self.assertIn("k = ftn::array_of(1, 2, 7, 7, 7, 9);", cpp)
 
     def test_real_data_keeps_source_spelling(self) -> None:
         # ``0.05`` must stay ``0.05f``, NOT flang's exact-decimal float
@@ -193,10 +193,10 @@ class DataEmitTests(unittest.TestCase):
         # their sign + magnitude; doubles keep the ``d``/no-``f`` form;
         # ints negate cleanly; a named constant lowers to its reference.
         cpp = _convert(PRECISION_F90)
-        self.assertIn("c = fortran::array_of(0.05f, -0.1f, 0.05f);", cpp)
-        self.assertIn("d = fortran::array_of(1.5e-3, -2.0e0);", cpp)
-        self.assertIn("m = fortran::array_of(-3, 4);", cpp)
-        self.assertIn("u = fortran::array_of(pi, 0.0f);", cpp)
+        self.assertIn("c = ftn::array_of(0.05f, -0.1f, 0.05f);", cpp)
+        self.assertIn("d = ftn::array_of(1.5e-3, -2.0e0);", cpp)
+        self.assertIn("m = ftn::array_of(-3, 4);", cpp)
+        self.assertIn("u = ftn::array_of(pi, 0.0f);", cpp)
         # The ugly expansion must appear nowhere.
         self.assertNotIn("e-2f", cpp)
         self.assertNotIn("5000000", cpp)

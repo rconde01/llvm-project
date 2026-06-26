@@ -62,19 +62,19 @@ def _convert(src: str) -> str:
 class ParameterEmitTests(unittest.TestCase):
     def test_constexpr_with_value(self) -> None:
         cpp = _convert(PAR_F)
-        self.assertIn("constexpr std::int32_t n = 5;", cpp)
+        self.assertIn("constexpr int32_t n = 5;", cpp)
         self.assertIn("constexpr float pi = 3.14159f;", cpp)
 
     def test_bound_folds_using_parameter(self) -> None:
         cpp = _convert(PAR_F)
-        self.assertIn("fortran::Array<float, 1> a{{5}};", cpp)
+        self.assertIn("ftn::Array<float, 1> a{{5}};", cpp)
 
     def test_type_decl_plus_parameter_not_duplicated(self) -> None:
         cpp = _convert(TYPED_PAR_F)
         # ``integer m`` + ``parameter (m=3)`` -> one constexpr, not a
         # mutable ``m`` plus a constexpr ``m``.
-        self.assertIn("constexpr std::int32_t m = 3;", cpp)
-        self.assertNotIn("std::int32_t m{};", cpp)
+        self.assertIn("constexpr int32_t m = 3;", cpp)
+        self.assertNotIn("int32_t m{};", cpp)
 
 
 @unittest.skipUnless(

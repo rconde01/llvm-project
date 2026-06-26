@@ -89,7 +89,7 @@ class LoweringTests(unittest.TestCase):
         sub = tu.subprograms[0]
         self.assertEqual(len(sub.locals), 1)
         self.assertEqual(sub.locals[0].name, "n")
-        self.assertEqual(sub.locals[0].type.cpp, "std::int32_t")
+        self.assertEqual(sub.locals[0].type.cpp, "int32_t")
 
     def test_real_kind_8_becomes_double(self) -> None:
         tu = self._lower(
@@ -107,7 +107,7 @@ class LoweringTests(unittest.TestCase):
         )
         sub = tu.subprograms[0]
         self.assertEqual(
-            sub.locals[0].type.cpp, "fortran::FortranString<10>"
+            sub.locals[0].type.cpp, "ftn::FortranString<10>"
         )
 
     def test_binary_operators_lower_to_irbinaryop(self) -> None:
@@ -279,7 +279,7 @@ class EmitTests(unittest.TestCase):
 
     def test_sum_to_n_translates_full_control_flow(self) -> None:
         cpp = self._convert(SUM_F90)
-        self.assertIn("std::int32_t s{};", cpp)
+        self.assertIn("int32_t s{};", cpp)
         self.assertIn("for (i = 1; i <= n; ++i)", cpp)
         self.assertIn("s = s + i;", cpp)
         self.assertIn("if (s > 50)", cpp)
@@ -301,7 +301,7 @@ class EmitTests(unittest.TestCase):
         )
         self.assertIn("// head note", cpp)
         # Trailing comment lands on the declaration line.
-        decl_idx = cpp.find("std::int32_t i{};")
+        decl_idx = cpp.find("int32_t i{};")
         trailing_idx = cpp.find("// count")
         self.assertGreater(decl_idx, -1)
         self.assertGreater(trailing_idx, decl_idx)
@@ -312,7 +312,7 @@ class EmitTests(unittest.TestCase):
     def test_subroutine_with_inout_args(self) -> None:
         cpp = self._convert(PARAMS_F90)
         self.assertIn(
-            "void swap(std::int32_t& a, std::int32_t& b)", cpp,
+            "void swap(int32_t& a, int32_t& b)", cpp,
         )
 
     def test_function_with_intent_in_and_prefix_return_type(self) -> None:
@@ -323,28 +323,28 @@ class EmitTests(unittest.TestCase):
         # The function name local should be renamed to <name>_result
         # and a trailing return statement added.
         self.assertIn("float hypot_result{};", cpp)
-        self.assertIn("hypot_result = fortran::sqrt(", cpp)
+        self.assertIn("hypot_result = ftn::sqrt(", cpp)
         self.assertIn("return hypot_result;", cpp)
 
     def test_intrinsic_calls_map_to_std(self) -> None:
         cpp = self._convert(PARAMS_F90)
         # ``sqrt`` is a Fortran intrinsic; we route it to <cmath>.
-        self.assertIn("fortran::sqrt(", cpp)
+        self.assertIn("ftn::sqrt(", cpp)
 
     def test_array_declaration_uses_fortran_array(self) -> None:
         cpp = self._convert(ARRAY_F90)
         # Brace-init form (works as both local and struct member).  The
         # main program's arrays stay as direct locals (no workspace).
-        self.assertIn("fortran::Array<std::int32_t, 1> a{{10}};", cpp)
+        self.assertIn("ftn::Array<int32_t, 1> a{{10}};", cpp)
         # Explicit *literal* lower bound is lifted into the type's
         # ``Lower`` NTTP; the constructor takes only the extents.
         self.assertIn(
-            "fortran::Array<std::int32_t, 1, "
-            "std::array<fortran::index_t, 1>{0}> b{{",
+            "ftn::Array<int32_t, 1, "
+            "std::array<ftn::index_t, 1>{0}> b{{",
             cpp,
         )
         # 2-D array.
-        self.assertIn("fortran::Array<std::int32_t, 2> c{{3, 4}};", cpp)
+        self.assertIn("ftn::Array<int32_t, 2> c{{3, 4}};", cpp)
 
     def test_array_index_translates_to_call_operator(self) -> None:
         cpp = self._convert(ARRAY_F90)
@@ -355,9 +355,9 @@ class EmitTests(unittest.TestCase):
         cpp = self._convert(ARRAY_PARAM_F90)
         # intent(out) array -> mutable ArrayRef
         self.assertIn(
-            "fortran::ArrayRef<std::int32_t, 1> a", cpp,
+            "ftn::ArrayRef<int32_t, 1> a", cpp,
         )
-        self.assertNotIn("fortran::Array<std::int32_t, 1>& a", cpp)
+        self.assertNotIn("ftn::Array<int32_t, 1>& a", cpp)
 
 
 # ---------------------------------------------------------------------------

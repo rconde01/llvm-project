@@ -55,14 +55,14 @@ class LogicalOutputEmitTests(unittest.TestCase):
     def test_logical_items_wrapped(self) -> None:
         cpp = _convert(LOGICAL_F90)
         # Logical variables and comparisons get the T/F formatter.
-        self.assertIn("fortran::logical_text(a)", cpp)
-        self.assertIn("fortran::logical_text(b)", cpp)
-        self.assertIn("fortran::logical_text((1 < 2))", cpp)
+        self.assertIn("ftn::logical_text(a)", cpp)
+        self.assertIn("ftn::logical_text(b)", cpp)
+        self.assertIn("ftn::logical_text((1 < 2))", cpp)
 
     def test_non_logical_items_not_wrapped(self) -> None:
         cpp = _convert(LOGICAL_F90)
         # An integer item is streamed plainly.
-        self.assertNotIn("fortran::logical_text(n)", cpp)
+        self.assertNotIn("ftn::logical_text(n)", cpp)
 
 
 @unittest.skipUnless(

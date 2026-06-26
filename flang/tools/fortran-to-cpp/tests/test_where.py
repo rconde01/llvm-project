@@ -59,7 +59,7 @@ def _convert(src: str) -> str:
 class WhereEmitTests(unittest.TestCase):
     def test_construct_is_masked_loop(self) -> None:
         cpp = _convert(WHERE_F90)
-        self.assertRegex(cpp, r"for \(fortran::index_t _i\d = b\.lbound")
+        self.assertRegex(cpp, r"for \(ftn::index_t _i\d = b\.lbound")
         self.assertRegex(cpp, r"if \(a\(_i\d\) > 0\.0f\) \{")
         self.assertRegex(cpp, r"b\(_i\d\) = a\(_i\d\);")
         self.assertIn("} else {", cpp)

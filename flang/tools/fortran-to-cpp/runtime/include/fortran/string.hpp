@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// fortran::FortranString<N>
+// ftn::FortranString<N>
 //
 // Fixed-length character variable with Fortran's semantics:
 //   * Length N is part of the type — different N is a different type.
@@ -40,7 +40,7 @@
 #include <string>
 #include <string_view>
 
-namespace fortran {
+namespace ftn {
 
 namespace detail {
 
@@ -617,15 +617,15 @@ inline int verify(std::string_view s, std::string_view set,
   return 0;
 }
 
-} // namespace fortran
+} // namespace ftn
 
 // std::format support: a FortranString formats like its (fixed-width)
 // character view, honoring the usual string format spec.
 template <std::size_t N>
-struct std::formatter<fortran::FortranString<N>, char>
+struct std::formatter<ftn::FortranString<N>, char>
     : std::formatter<std::string_view, char> {
   template <typename FmtContext>
-  auto format(const fortran::FortranString<N> &s, FmtContext &ctx) const {
+  auto format(const ftn::FortranString<N> &s, FmtContext &ctx) const {
     return std::formatter<std::string_view, char>::format(s.view(), ctx);
   }
 };

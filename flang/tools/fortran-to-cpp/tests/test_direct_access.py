@@ -2,7 +2,7 @@
 
 A direct-access OPEN gives each record a fixed RECL-byte slot; a
 ``READ(unit, fmt, REC=n)`` fetches record ``n`` and parses fixed-width
-fields out of it (see ``fortran::io::Units::read_record`` and the
+fields out of it (see ``ftn::io::Units::read_record`` and the
 ``read_field_*`` helpers in runtime/io.hpp).  This is how the IRI
 atmospheric models read their ``ap.dat`` geomagnetic-index file.
 """
@@ -148,9 +148,9 @@ class DirectAccessEmitTests(unittest.TestCase):
         cpp = _convert(DIRECT_F)
         self.assertIn("_units.read_record(9, 2)", cpp)
         # Two I3 ints at offsets 0 and 3, an F6.1 real at offset 6.
-        self.assertIn("fortran::io::read_field_int(_rec, 0, 3)", cpp)
-        self.assertIn("fortran::io::read_field_int(_rec, 3, 3)", cpp)
-        self.assertIn("fortran::io::read_field_real(_rec, 6, 6, 1)", cpp)
+        self.assertIn("ftn::io::read_field_int(_rec, 0, 3)", cpp)
+        self.assertIn("ftn::io::read_field_int(_rec, 3, 3)", cpp)
+        self.assertIn("ftn::io::read_field_real(_rec, 6, 6, 1)", cpp)
 
     def test_write_uses_write_record(self) -> None:
         cpp = _convert(ROUNDTRIP_F)
@@ -169,14 +169,14 @@ class DirectAccessEmitTests(unittest.TestCase):
     def test_unformatted_write_uses_write_record_raw(self) -> None:
         cpp = _convert(UNFORMATTED_F)
         self.assertIn("std::vector<std::byte> _wrec;", cpp)
-        self.assertIn("fortran::io::append_bytes(_wrec, drec);", cpp)
+        self.assertIn("ftn::io::append_bytes(_wrec, drec);", cpp)
         self.assertIn("_units.write_record_raw(9, 1, _wrec);", cpp)
 
     def test_unformatted_read_uses_read_record_raw(self) -> None:
         cpp = _convert(UNFORMATTED_F)
         self.assertIn("auto _rrec = _units.read_record_raw(9, 1);", cpp)
         self.assertIn(
-            "fortran::io::take_bytes(_rrec, _roff, drec);", cpp
+            "ftn::io::take_bytes(_rrec, _roff, drec);", cpp
         )
 
     def test_keyword_unit_form_lowers(self) -> None:

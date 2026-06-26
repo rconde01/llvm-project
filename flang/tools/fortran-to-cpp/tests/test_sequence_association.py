@@ -3,7 +3,7 @@
 FORTRAN 77 lets an actual argument's storage be reinterpreted to match a
 dummy of a different shape.  This file covers the *whole-array actual to a
 scalar dummy* form: the dummy is storage-associated with the array's first
-element, so the converter passes ``fortran::first(array)``.
+element, so the converter passes ``ftn::first(array)``.
 """
 
 from __future__ import annotations
@@ -56,13 +56,13 @@ SEQ_ASSOC_DUMMY_BOUNDS_F = """\
 class WholeArrayToScalarEmitTests(unittest.TestCase):
     def test_actual_passed_as_first_element(self) -> None:
         cpp = convert_project(WHOLE_ARRAY_TO_SCALAR_F, suffix=".f")
-        self.assertIn("head(fortran::first(a))", cpp)
+        self.assertIn("head(ftn::first(a))", cpp)
 
     def test_dummy_bounds_use_caller_actuals(self) -> None:
         cpp = convert_project(SEQ_ASSOC_DUMMY_BOUNDS_F, suffix=".f")
         # Extents NR, NC become the actual arguments 2 and 3 -- not the
         # callee's dummy names.
-        self.assertIn("fortran::seq_assoc<2>(a, {1, 1}, {(2), (3)})", cpp)
+        self.assertIn("ftn::seq_assoc<2>(a, {1, 1}, {(2), (3)})", cpp)
         self.assertNotIn("{nr, nc}", cpp)
 
 

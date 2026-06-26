@@ -63,7 +63,7 @@ class OptionalEmitTests(unittest.TestCase):
     def test_optional_param_is_std_optional_with_default(self) -> None:
         cpp = _convert(OPT_F90)
         self.assertIn(
-            "std::optional<std::int32_t> times = std::nullopt", cpp
+            "std::optional<int32_t> times = std::nullopt", cpp
         )
 
     def test_present_uses_has_value(self) -> None:
@@ -146,9 +146,9 @@ class OptionalOrderingTests(unittest.TestCase):
         cpp = _convert(INTERLEAVED_F90)
         # ``a`` precedes the non-optional array ``b`` -> no default;
         # trailing ``c`` keeps its default.
-        self.assertIn("std::optional<std::int32_t> a,", cpp)
-        self.assertIn("std::optional<std::int32_t> c = std::nullopt", cpp)
-        self.assertNotIn("std::optional<std::int32_t> a = std::nullopt", cpp)
+        self.assertIn("std::optional<int32_t> a,", cpp)
+        self.assertIn("std::optional<int32_t> c = std::nullopt", cpp)
+        self.assertNotIn("std::optional<int32_t> a = std::nullopt", cpp)
 
     def test_omitted_optional_filled_with_nullopt(self) -> None:
         cpp = _convert(INTERLEAVED_F90)

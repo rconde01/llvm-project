@@ -6,12 +6,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// fortran::ArrayRef<T, Rank>
+// ftn::ArrayRef<T, Rank>
 //
 // A non-owning view of an N-dimensional Fortran-style array.  Stores a
 // base pointer, per-dimension lower bounds, extents, and **explicit
 // strides** so that views can describe non-contiguous slices.  The
-// indexing API mirrors fortran::Array exactly: ``r(i, j, ...)`` is the
+// indexing API mirrors ftn::Array exactly: ``r(i, j, ...)`` is the
 // same expression in both.
 //
 // Used for three things:
@@ -38,6 +38,7 @@
 #include <array>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <istream>
 #include <ostream>
@@ -45,14 +46,14 @@
 #include <type_traits>
 #include <utility>
 
-namespace fortran {
+namespace ftn {
 
 // Default for ``Lower`` is supplied on the forward declaration in
 // array.hpp; do not repeat it here (C++ allows a default template
 // argument to be given only once across redeclarations).
 template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
 class ArrayRef {
-  static_assert(Rank >= 1, "fortran::ArrayRef rank must be >= 1");
+  static_assert(Rank >= 1, "ftn::ArrayRef rank must be >= 1");
 
 public:
   using element_type = T;
@@ -740,12 +741,12 @@ inline CharRef first(const CharArrayRef &cell) noexcept {
   return cell(cell.lbound(1));
 }
 
-} // namespace fortran
+} // namespace ftn
 
 // std::format support: a whole array formats its elements (Fortran
 // element / column-major order) back-to-back, each with the element
 // format spec — matching ``write(u,'(2i4)') name`` style output.
-namespace fortran::detail {
+namespace ftn::detail {
 template <typename Arr, typename T>
 struct array_formatter : std::formatter<T, char> {
   template <typename FmtContext>
@@ -756,15 +757,15 @@ struct array_formatter : std::formatter<T, char> {
     return ctx.out();
   }
 };
-} // namespace fortran::detail
+} // namespace ftn::detail
 
-template <typename T, std::size_t R, std::array<fortran::index_t, R> Lower>
-struct std::formatter<fortran::Array<T, R, Lower>, char>
-    : fortran::detail::array_formatter<fortran::Array<T, R, Lower>, T> {};
+template <typename T, std::size_t R, std::array<ftn::index_t, R> Lower>
+struct std::formatter<ftn::Array<T, R, Lower>, char>
+    : ftn::detail::array_formatter<ftn::Array<T, R, Lower>, T> {};
 
 template <typename T, std::size_t R>
-struct std::formatter<fortran::ArrayRef<T, R>, char>
-    : fortran::detail::array_formatter<fortran::ArrayRef<T, R>,
+struct std::formatter<ftn::ArrayRef<T, R>, char>
+    : ftn::detail::array_formatter<ftn::ArrayRef<T, R>,
                                        std::remove_cv_t<T>> {};
 
 #endif // FORTRAN_RT_ARRAY_REF_HPP

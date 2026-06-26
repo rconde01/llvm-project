@@ -72,13 +72,13 @@ class SectionEmitTests(unittest.TestCase):
         cpp = _convert(SECTIONS_F90)
         # a(2, :) -> fixed first index, Slice over the (1-based) 2nd dim.
         self.assertIn(
-            "a.section(2, fortran::Slice{a.lbound(2), a.ubound(2), 1})", cpp
+            "a.section(2, ftn::Slice{a.lbound(2), a.ubound(2), 1})", cpp
         )
 
     def test_block_section_uses_two_slices(self) -> None:
         cpp = _convert(SECTIONS_F90)
         self.assertIn(
-            "a.section(fortran::Slice{1, 2, 1}, fortran::Slice{2, 3, 1})", cpp
+            "a.section(ftn::Slice{1, 2, 1}, ftn::Slice{2, 3, 1})", cpp
         )
 
 

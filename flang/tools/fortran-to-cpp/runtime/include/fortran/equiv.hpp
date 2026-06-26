@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// fortran::EquivSlot<T, Offset>
+// ftn::EquivSlot<T, Offset>
 //
 // One accessor proxy per Fortran name in an EQUIVALENCE class.  Each
 // proxy holds a pointer to the equivalence class's shared
@@ -23,8 +23,8 @@
 //
 //   struct XBits_Equiv {
 //     std::array<std::byte, sizeof(float)> _store{};
-//     fortran::EquivSlot<float,        0> x   { _store.data() };
-//     fortran::EquivSlot<std::int32_t, 0> bits{ _store.data() };
+//     ftn::EquivSlot<float,        0> x   { _store.data() };
+//     ftn::EquivSlot<int32_t, 0> bits{ _store.data() };
 //   };
 //
 //   XBits_Equiv e;
@@ -40,11 +40,12 @@
 
 #include <bit>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <type_traits>
 #include <vector>
 
-namespace fortran {
+namespace ftn {
 
 // Tag base so the unformatted byte-I/O helpers can recognise an
 // EquivArray element proxy (its value is reached via memcpy, not a
@@ -190,7 +191,7 @@ public:
   }
 
   /// Raw byte access -- used by the unformatted-direct I/O helpers
-  /// ``fortran::io::append_bytes`` / ``take_bytes`` to read / write the
+  /// ``ftn::io::append_bytes`` / ``take_bytes`` to read / write the
   /// whole aliased buffer in one go.
   std::byte *byte_data() noexcept { return base_; }
   const std::byte *byte_data() const noexcept { return base_; }
@@ -236,17 +237,17 @@ inline ArrayRef<T, 1> elem_tail_n(EquivArray<T, N, O> &a, index_t n,
 template <typename To, typename From>
 constexpr To bit_cast(const From &from) noexcept {
   static_assert(sizeof(To) == sizeof(From),
-                "fortran::bit_cast: sizes must match");
+                "ftn::bit_cast: sizes must match");
   static_assert(std::is_trivially_copyable_v<To>,
-                "fortran::bit_cast: To must be trivially copyable");
+                "ftn::bit_cast: To must be trivially copyable");
   static_assert(std::is_trivially_copyable_v<From>,
-                "fortran::bit_cast: From must be trivially copyable");
+                "ftn::bit_cast: From must be trivially copyable");
   return std::bit_cast<To>(from);
 }
 
-} // namespace fortran
+} // namespace ftn
 
-namespace fortran::io {
+namespace ftn::io {
 
 // Unformatted record I/O of a single equivalenced element
 // (``read(u) (DPBUF(i), i=1,128)`` -- one Cell per iteration).  The
@@ -255,7 +256,7 @@ namespace fortran::io {
 // SFINAE on EquivCellTag keeps these disjoint from the arithmetic /
 // contiguous-view overloads in io.hpp.
 template <class C, std::enable_if_t<std::is_base_of_v<
-                       fortran::EquivCellTag, std::remove_cvref_t<C>>, int> = 0>
+                       ftn::EquivCellTag, std::remove_cvref_t<C>>, int> = 0>
 inline void append_bytes(std::vector<std::byte> &buf, const C &cell) {
   using T = typename std::remove_cvref_t<C>::value_type;
   T v = static_cast<T>(cell);
@@ -265,7 +266,7 @@ inline void append_bytes(std::vector<std::byte> &buf, const C &cell) {
 }
 
 template <class C, std::enable_if_t<std::is_base_of_v<
-                       fortran::EquivCellTag, std::remove_cvref_t<C>>, int> = 0>
+                       ftn::EquivCellTag, std::remove_cvref_t<C>>, int> = 0>
 inline std::size_t take_bytes(const std::vector<std::byte> &rec,
                               std::size_t off, C &&cell) {
   using T = typename std::remove_cvref_t<C>::value_type;
@@ -277,6 +278,6 @@ inline std::size_t take_bytes(const std::vector<std::byte> &rec,
   return off + sizeof(T);
 }
 
-} // namespace fortran::io
+} // namespace ftn::io
 
 #endif // FORTRAN_RT_EQUIV_HPP

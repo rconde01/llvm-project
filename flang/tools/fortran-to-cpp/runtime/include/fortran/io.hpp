@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// fortran::io
+// ftn::io
 //
 // Helper functions for Fortran edit descriptors that can **not** be
 // expressed directly in ``std::format``.  Generated code uses
@@ -24,7 +24,7 @@
 //   $       — non-advancing output (extension)
 //
 // Goal: when a Fortran ``WRITE`` does **not** need any of these, the
-// generated code reads as plain C++ — no ``fortran::io`` mention at
+// generated code reads as plain C++ — no ``ftn::io`` mention at
 // all.  See ../README.md (rule R8 and decision D5) for the policy.
 //
 //===----------------------------------------------------------------------===//
@@ -53,7 +53,7 @@
 #include <vector>
 #include <vector>
 
-namespace fortran::io {
+namespace ftn::io {
 
 // ---------------------------------------------------------------------------
 // Connected file units.
@@ -691,13 +691,13 @@ inline std::size_t take_bytes(const std::vector<std::byte> &rec,
 // takes the record plus a 0-based start offset and width.
 // ---------------------------------------------------------------------------
 
-inline std::int64_t read_field_int(std::string_view rec, std::size_t pos,
+inline int64_t read_field_int(std::string_view rec, std::size_t pos,
                                    std::size_t width) {
   if (pos >= rec.size()) {
     return 0;
   }
   std::size_t end{std::min(pos + width, rec.size())};
-  std::int64_t v{0};
+  int64_t v{0};
   int sign{1};
   std::size_t i{pos};
   while (i < end && rec[i] == ' ') {
@@ -1440,15 +1440,15 @@ std::string fmt_int_no_sign(const A &a, int w) {
   return out;
 }
 
-} // namespace fortran::io
+} // namespace ftn::io
 
-namespace fortran {
+namespace ftn {
 
 /// List-directed logical output character.  Fortran prints logicals as
 /// ``T`` / ``F`` rather than C++'s default ``1`` / ``0``; generated
 /// ``print *`` chains wrap logical items in this so the output matches.
 inline char logical_text(bool b) noexcept { return b ? 'T' : 'F'; }
 
-} // namespace fortran
+} // namespace ftn
 
 #endif // FORTRAN_RT_IO_HPP

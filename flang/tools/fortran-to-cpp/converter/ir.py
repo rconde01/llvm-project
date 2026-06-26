@@ -27,7 +27,7 @@ class IRType:
     """A Fortran type, already lowered to its C++ rendering."""
 
     cpp: str
-    """How to spell this type in C++ (e.g. ``"std::int32_t"``)."""
+    """How to spell this type in C++ (e.g. ``"int32_t"``)."""
 
     fortran: str
     """Human-readable Fortran spelling (e.g. ``"integer(kind=4)"``).
@@ -59,10 +59,10 @@ class IRType:
 
     is_pointer: bool = False
     """True for POINTER variables: scalar pointers are ``T*``, array
-    pointers are non-owning ``fortran::ArrayRef``."""
+    pointers are non-owning ``ftn::ArrayRef``."""
 
     element_type_cpp: str = ""
-    """For arrays, the element type spelling (e.g. ``"std::int32_t"``)."""
+    """For arrays, the element type spelling (e.g. ``"int32_t"``)."""
 
     is_procedure: bool = False
     """True for a dummy-procedure parameter: a function/subroutine passed
@@ -272,7 +272,7 @@ class IRPrint:
     When ``format`` is ``None`` the output is list-directed and the
     emitter renders a plain ``<<`` chain.  When ``format`` holds a
     Fortran format string (e.g. ``"(I5, 1X, F8.2)"``) the emitter maps
-    each edit descriptor to inline ``std::format`` or a ``fortran::io``
+    each edit descriptor to inline ``std::format`` or a ``ftn::io``
     helper (see format.py / decision D5).
     """
 
@@ -281,7 +281,7 @@ class IRPrint:
     format: str | None = None
     # When set, the FORMAT is built at run time (e.g. ``WRITE(s, FMTVAR)``
     # with FMTVAR assembled by REPMI).  The emitter routes items through
-    # ``fortran::io::format_record(<format_expr>, items...)`` -- a runtime
+    # ``ftn::io::format_record(<format_expr>, items...)`` -- a runtime
     # format interpreter -- instead of inline ``std::format`` calls.
     # Mutually exclusive with ``format``.
     format_expr: "IRExpr | None" = None
@@ -472,7 +472,7 @@ class IRDo:
     body: list["IRStatement"] = field(default_factory=list)
     declare: bool = False
     """When True the emitter declares the index variable in the for-init
-    (``for (fortran::index_t i = ...)``).  Set for compiler-synthesized
+    (``for (ftn::index_t i = ...)``).  Set for compiler-synthesized
     loops (e.g. whole-array assignment expansion); user ``do`` loops use
     a pre-declared variable."""
 
@@ -559,8 +559,8 @@ class IRGoto:
 class IRAllocate:
     """``allocate(a(n))`` — re-sizes a heap-backed array.
 
-    Lowers to a move-assignment of a freshly-sized ``fortran::Array``.
-    ``cpp_type`` (the full ``fortran::Array<T, R>`` spelling) is filled
+    Lowers to a move-assignment of a freshly-sized ``ftn::Array``.
+    ``cpp_type`` (the full ``ftn::Array<T, R>`` spelling) is filled
     in by a resolution pass once the declared type of ``obj`` is known.
     """
 
@@ -769,7 +769,7 @@ class IRParameter:
         """C++ parameter declaration string.
 
         Scalars use a reference (``T&`` or ``const T&`` per intent).
-        Arrays use ``fortran::ArrayRef`` by value — ArrayRef is a
+        Arrays use ``ftn::ArrayRef`` by value — ArrayRef is a
         small, non-owning view, so the caller's owning ``Array``
         converts implicitly and the function body can take slices
         without making the caller's storage assumption explicit.
@@ -792,10 +792,10 @@ class IRParameter:
                 self.type.element_type_cpp == "std::string_view"
                 and self.type.array_rank == 1
             ):
-                return f"fortran::CharArrayRef {self.name}"
+                return f"ftn::CharArrayRef {self.name}"
             const_q = "const " if self.intent == "in" else ""
             runtime_ref = (
-                f"fortran::ArrayRef<{const_q}{self.type.element_type_cpp}, "
+                f"ftn::ArrayRef<{const_q}{self.type.element_type_cpp}, "
                 f"{self.type.array_rank}>"
             )
             # When every declared lower bound is a literal integer, encode
@@ -816,14 +816,14 @@ class IRParameter:
                 decl += " = {}"
             return decl
         # An assumed-length CHARACTER*(*) dummy is a non-owning character
-        # view: ``fortran::CharRef``.  It reads as a string_view, writes
+        # view: ``ftn::CharRef``.  It reads as a string_view, writes
         # through to the caller's storage (for an intent(out/inout) dummy),
         # and supports substring indexing ``s(lo, hi)`` — which a plain
         # ``std::string_view`` does not.  Used for both intent(in) and
         # writable dummies so substrings work uniformly; a read-only dummy
         # simply isn't written.
         if not self.type.is_array and self.type.cpp == "std::string_view":
-            return f"fortran::CharRef {self.name}"
+            return f"ftn::CharRef {self.name}"
         if self.intent == "in":
             return f"const {self.type.cpp}& {self.name}"
         return f"{self.type.cpp}& {self.name}"
@@ -869,7 +869,7 @@ class IRStateBinding:
 class IREquivMember:
     """One member of an EQUIVALENCE class -- a Fortran name aliased over
     the class's shared byte buffer.  ``cpp_elem_type`` is the C++ scalar
-    type (``double``, ``std::int32_t``, ...); ``count`` is the element
+    type (``double``, ``int32_t``, ...); ``count`` is the element
     count (None for a scalar slot); ``alignment`` is the natural alignment
     of the element type.  All members share offset 0 in this pass (the
     common SPICE pattern); partial-overlap alignment with explicit element

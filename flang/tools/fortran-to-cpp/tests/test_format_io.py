@@ -57,7 +57,7 @@ class FormatParserTests(unittest.TestCase):
 
     def test_e_descriptor_uses_runtime_helper(self) -> None:
         chunks, _ = render_format("(E12.4)", ["x"])
-        self.assertEqual(chunks, ["fortran::io::fmt_E(x, 12, 4)"])
+        self.assertEqual(chunks, ["ftn::io::fmt_E(x, 12, 4)"])
 
     def test_repeat_count(self) -> None:
         chunks, _ = render_format("(3I4)", ["a", "b", "c"])
@@ -99,7 +99,7 @@ class FormatParserTests(unittest.TestCase):
         chunks, _ = render_format("(1PE12.2)", ["x"])
         self.assertEqual(
             chunks,
-            ["fortran::io::fmt_E_with_scale(x, 1, 12, 2)"],
+            ["ftn::io::fmt_E_with_scale(x, 1, 12, 2)"],
         )
 
     def test_slash_alt(self) -> None:
@@ -151,7 +151,7 @@ class FormatEmitTests(unittest.TestCase):
 
     def test_runtime_helper_for_e(self) -> None:
         cpp = self._convert(IO_F90)
-        self.assertIn("fortran::io::fmt_E(x, 12, 4)", cpp)
+        self.assertIn("ftn::io::fmt_E(x, 12, 4)", cpp)
 
     def test_write_to_star_uses_cout(self) -> None:
         cpp = self._convert(IO_F90)
@@ -162,7 +162,7 @@ class FormatEmitTests(unittest.TestCase):
         # constant, so it must route through the runtime interpreter
         # rather than silently degrade to list-directed output.
         cpp = self._convert(RUNTIME_FMT_F)
-        self.assertIn("fortran::io::format_record(fmt, x)", cpp)
+        self.assertIn("ftn::io::format_record(fmt, x)", cpp)
 
 
 # The format lives in a CHARACTER variable, so flang reports it as a

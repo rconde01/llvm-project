@@ -1,6 +1,6 @@
 """Tests for OPEN/CLOSE and unit-directed file I/O.
 
-File units are modeled as a ``fortran::io::Units`` table threaded through
+File units are modeled as a ``ftn::io::Units`` table threaded through
 the call graph as caller-owned state (decision D2.b) -- no globals, so
 the I/O stays thread-safe and supports multiple simultaneous program
 states.  Routines doing unit I/O receive a ``Units&`` parameter; the top
@@ -111,7 +111,7 @@ c     to 7 + 6 = 13 items.  Cycling reads 5 records: 3+3+3+3+1.
 # Fortran's ``/`` terminator in list-directed input ends the list early
 # and leaves remaining items at their **current** values.  C++11's
 # ``operator>>`` zeros the target on failure (since C++11), so the
-# converter routes through ``fortran::io::read_list_item`` which saves
+# converter routes through ``ftn::io::read_list_item`` which saves
 # the destination and restores it if ``>>`` fails.
 READ_SLASH_TERMINATOR_F = """\
       program p
@@ -175,8 +175,8 @@ class FileIoEmitTests(unittest.TestCase):
     def test_units_threaded_as_state(self) -> None:
         cpp = _convert(ROUNDTRIP_F)
         # Routines doing unit I/O take a Units& param; main owns the table.
-        self.assertIn("void wr(fortran::io::Units& _units)", cpp)
-        self.assertIn("fortran::io::Units _units", cpp)  # owned by main
+        self.assertIn("void wr(ftn::io::Units& _units)", cpp)
+        self.assertIn("ftn::io::Units _units", cpp)  # owned by main
         self.assertIn("wr(_units);", cpp)
 
     def test_read_end_label_emits_eof_jump(self) -> None:
@@ -195,8 +195,8 @@ class FileIoEmitTests(unittest.TestCase):
         # correctly -- not the ``>>`` chain, which would space-tokenize.
         cpp = _convert(READ_FORMATTED_FIXED_WIDTH_F)
         self.assertIn("std::getline(_units.in(13), _rec)", cpp)
-        self.assertIn("fortran::io::read_field_int(_rec,", cpp)
-        self.assertIn("fortran::io::read_field_real(_rec,", cpp)
+        self.assertIn("ftn::io::read_field_int(_rec,", cpp)
+        self.assertIn("ftn::io::read_field_real(_rec,", cpp)
         # And no ``>>`` chain for the fixed-width read.
         self.assertNotIn("_units.in(13) >> ny", cpp)
 

@@ -3,7 +3,7 @@
 Fortran lets any expression be an actual argument; for an INOUT dummy it
 binds a temporary (the write-back is discarded).  C++ can't bind a
 non-const ``T&`` to an rvalue, so the converter routes such actuals
-through ``fortran::byref``, which materializes the value for the call.
+through ``ftn::byref``, which materializes the value for the call.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ end program
 class ArgumentCopyinEmitTests(unittest.TestCase):
     def test_expression_actual_wrapped_in_byref(self) -> None:
         cpp = convert(COPYIN_F90)
-        self.assertIn("fortran::byref(", cpp)
+        self.assertIn("ftn::byref(", cpp)
 
 
 @unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")

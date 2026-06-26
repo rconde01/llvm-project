@@ -30,7 +30,7 @@ class SubstringEmitTests(unittest.TestCase):
         # s(lo:hi) -> s(lo, hi); an open upper bound uses the length.
         self.assertIn("s(1, 5)", cpp)
         self.assertIn("s(7, 11)", cpp)
-        self.assertIn("s(7, fortran::len(s))", cpp)
+        self.assertIn("s(7, ftn::len(s))", cpp)
 
 
 SUBSTRING_CMP_F90 = """\

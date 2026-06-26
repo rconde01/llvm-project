@@ -15,37 +15,37 @@
 #include <cstdint>
 #include <vector>
 
-using fortran::ArrayRef;
-using fortran::EquivArray;
-using fortran::EquivSlot;
+using ftn::ArrayRef;
+using ftn::EquivArray;
+using ftn::EquivSlot;
 
 // Case 1 — same-size type pun: REAL <-> INTEGER over one 4-byte cell.
 struct XBits {
   std::array<std::byte, sizeof(float)> _store{};
   EquivSlot<float, 0>        x   {_store.data()};
-  EquivSlot<std::int32_t, 0> bits{_store.data()};
+  EquivSlot<int32_t, 0> bits{_store.data()};
 };
 
 TEST(equiv_type_pun_float_to_int_and_back) {
   XBits e;
   e.x = 1.0f;
   // IEEE-754: 1.0f bit pattern is 0x3F800000.
-  CHECK_EQ(static_cast<std::int32_t>(e.bits), 0x3F800000);
+  CHECK_EQ(static_cast<int32_t>(e.bits), 0x3F800000);
   e.bits = 0;
   CHECK_EQ(static_cast<float>(e.x), 0.0f);
 }
 
 TEST(equiv_slot_arithmetic_helpers) {
   struct One {
-    std::array<std::byte, sizeof(std::int32_t)> _store{};
-    EquivSlot<std::int32_t, 0> n{_store.data()};
+    std::array<std::byte, sizeof(int32_t)> _store{};
+    EquivSlot<int32_t, 0> n{_store.data()};
   };
   One e;
   e.n = 5;
   e.n += 3;
-  CHECK_EQ(static_cast<std::int32_t>(e.n), 8);
+  CHECK_EQ(static_cast<int32_t>(e.n), 8);
   e.n -= 10;
-  CHECK_EQ(static_cast<std::int32_t>(e.n), -2);
+  CHECK_EQ(static_cast<int32_t>(e.n), -2);
 }
 
 // Case 2 — array overlap with offset.  100 floats; ``tail`` views the
@@ -85,7 +85,7 @@ TEST(equiv_array_overlap_writes_through) {
 struct DafBuf {
   alignas(8) std::array<std::byte, 2 * sizeof(double)> _store{};
   EquivArray<double, 2, 0>       dp{_store.data()};
-  EquivArray<std::int32_t, 4, 0> in{_store.data()};
+  EquivArray<int32_t, 4, 0> in{_store.data()};
 };
 
 TEST(equivarray_view_as_arrayref_writes_through) {
@@ -95,8 +95,8 @@ TEST(equivarray_view_as_arrayref_writes_through) {
   fill(e.dp);  // implicit EquivArray -> ArrayRef
   CHECK_EQ(static_cast<double>(e.dp(1)), 1.5);
   // Low 32 bits of 1.5 are 0; high 32 are 0x3FF80000.
-  CHECK_EQ(static_cast<std::int32_t>(e.in(1)), 0);
-  CHECK_EQ(static_cast<std::int32_t>(e.in(2)), 0x3FF80000);
+  CHECK_EQ(static_cast<int32_t>(e.in(1)), 0);
+  CHECK_EQ(static_cast<int32_t>(e.in(2)), 0x3FF80000);
 }
 
 TEST(equivarray_cell_byte_io_round_trip) {
@@ -105,14 +105,14 @@ TEST(equivarray_cell_byte_io_round_trip) {
   e.dp(2) = 2.5;
   // Serialize the buffer element-by-element (unformatted I/O path).
   std::vector<std::byte> rec;
-  fortran::io::append_bytes(rec, e.dp(1));
-  fortran::io::append_bytes(rec, e.dp(2));
+  ftn::io::append_bytes(rec, e.dp(1));
+  ftn::io::append_bytes(rec, e.dp(2));
   // Clear, then read it back through the element proxies.
   e.dp(1) = 0.0;
   e.dp(2) = 0.0;
   std::size_t off = 0;
-  off = fortran::io::take_bytes(rec, off, e.dp(1));
-  off = fortran::io::take_bytes(rec, off, e.dp(2));
+  off = ftn::io::take_bytes(rec, off, e.dp(1));
+  off = ftn::io::take_bytes(rec, off, e.dp(2));
   CHECK_EQ(static_cast<double>(e.dp(1)), 1.5);
   CHECK_EQ(static_cast<double>(e.dp(2)), 2.5);
   CHECK_EQ(off, rec.size());
@@ -124,18 +124,18 @@ TEST(equivarray_elem_tail_views_from_element) {
   d(1) = 9.5;
   // A dummy that views the buffer from element 2 onward.
   auto fill2 = [](ArrayRef<double, 1> a) { a(1) = 1.5; a(2) = 2.5; };
-  fill2(fortran::elem_tail(d, 2));
+  fill2(ftn::elem_tail(d, 2));
   CHECK_EQ(static_cast<double>(d(1)), 9.5);  // untouched
   CHECK_EQ(static_cast<double>(d(2)), 1.5);
   CHECK_EQ(static_cast<double>(d(3)), 2.5);
 }
 
-// ---- fortran::bit_cast helper ---------------------------------------------
+// ---- ftn::bit_cast helper ---------------------------------------------
 
 TEST(bit_cast_round_trip) {
   const float f = -3.14f;
-  const auto bits = fortran::bit_cast<std::uint32_t>(f);
-  CHECK_EQ(fortran::bit_cast<float>(bits), f);
+  const auto bits = ftn::bit_cast<uint32_t>(f);
+  CHECK_EQ(ftn::bit_cast<float>(bits), f);
 }
 
 FORTRAN_RT_TEST_MAIN()

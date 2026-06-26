@@ -34,7 +34,7 @@ different name.  The few that appear repeatedly in this document:
 | **execution part** | the rest of the function body | Where actual statements live. |
 | **intrinsic** | language built-in / standard-library function | Compiler-provided functions like `SQRT`, `SIZE`, `INDEX` — no `import` / `#include` needed. |
 | **implicit interface** | function called without a visible declaration | FORTRAN 77's default: at a call site the compiler doesn't know the callee's signature.  Argument types and ranks are *only* checked through the actual-vs-dummy correspondence at runtime — there is no compile-time check.  Modules and interface blocks restore the compile-time check. |
-| **assumed-shape / assumed-size / assumed-length** dummy | parameter whose shape/length comes from the caller | `a(*)` (assumed-size, F77), `a(:)` (assumed-shape, F90), `s*(*)` (assumed-length CHARACTER).  All map to `fortran::ArrayRef` / `fortran::CharRef`. |
+| **assumed-shape / assumed-size / assumed-length** dummy | parameter whose shape/length comes from the caller | `a(*)` (assumed-size, F77), `a(:)` (assumed-shape, F90), `s*(*)` (assumed-length CHARACTER).  All map to `ftn::ArrayRef` / `ftn::CharRef`. |
 | **host association** | a contained routine reads its enclosing routine's locals | Like a C++ lambda's `[&]` capture, but built into the language for nested subprograms. |
 | **use association** | `USE m` brings module `m`'s exports into scope | The Fortran 90+ replacement for `COMMON` blocks and `INCLUDE` files. |
 | **storage association** | shared storage between differently-named variables | Made by `COMMON`, `EQUIVALENCE`, or passing a whole array to a differently-shaped dummy.  C++ has no analogous mechanism; the converter emits view objects (`ArrayRef`, `EquivArray`) when storage association is unavoidable. |
@@ -122,7 +122,7 @@ end program
 
 ```cpp
 void p() {
-  std::int32_t n{};
+  int32_t n{};
   double x{};
 
   n = 42;
@@ -382,8 +382,8 @@ computed `GOTO` lower to ordinary branches feeding the same machinery.
 
 ## Arrays
 
-Arrays use the runtime's `fortran::Array<T, Rank>` (owning) and
-`fortran::ArrayRef<T, Rank>` (non-owning view).  Storage is
+Arrays use the runtime's `ftn::Array<T, Rank>` (owning) and
+`ftn::ArrayRef<T, Rank>` (non-owning view).  Storage is
 **column-major** and indexing follows the Fortran convention: 1-based
 by default, with **arbitrary per-dimension lower bounds** when the
 declaration sets them (`a(0:9)`, `m(-1:1, 1:n)`).
@@ -395,8 +395,8 @@ m(2,1) = 4.0
 ```
 
 ```cpp
-fortran::Array<float, 1> v{{3}};
-fortran::Array<float, 2> m{{2, 2}};
+ftn::Array<float, 1> v{{3}};
+ftn::Array<float, 2> m{{2, 2}};
 
 v(1) = 1.0f;
 m(2, 1) = 4.0f;
@@ -413,8 +413,8 @@ grid(-n, -n) = 0.0
 ```
 
 ```cpp
-fortran::Array<float, 1> coef{{0}, {lmax + 1}};    // {lower}, {extent}
-fortran::Array<float, 2> grid{{-n, -n}, {2*n + 1, 2*n + 1}};
+ftn::Array<float, 1> coef{{0}, {lmax + 1}};    // {lower}, {extent}
+ftn::Array<float, 2> grid{{-n, -n}, {2*n + 1, 2*n + 1}};
 
 coef(0) = 1.0f;
 grid(-n, -n) = 0.0f;
@@ -428,7 +428,7 @@ grid(-n, -n) = 0.0f;
 | `std::mdspan` (C++23) | a *view* only — doesn't own storage, no bounds checking, no whole-array ops |
 | raw `T*` + manual index math | loses bounds, lower bounds, and shape; unreadable |
 
-`fortran::Array` bakes in the four things Fortran assumes and C++ does
+`ftn::Array` bakes in the four things Fortran assumes and C++ does
 not: 1-based subscripts, arbitrary lower bounds (`a(0:9)`), column-major
 layout, and shape-aware whole-array operations.  `ArrayRef` is the
 *dummy* form (Fortran's term for a function parameter — see the
@@ -442,7 +442,7 @@ to implicitly, so a subroutine can take any slice without copying.
   ten elements indexed `0..9`; `t(-n:n)` is `2n+1` elements indexed
   `-n..n`.  The Fortran subscript and the C++ subscript stay
   *character-for-character identical* in the converted code —
-  `fortran::Array` does the per-dimension shift internally.  When the
+  `ftn::Array` does the per-dimension shift internally.  When the
   bound is a literal integer the converter encodes it in the type
   (`Array<T, 1, std::array{0}>`) so the subtraction constant-folds.
 * **Column-major.** `a(i, j)` is contiguous along `i`, not `j`.  This is
@@ -466,7 +466,7 @@ v = v + 1.0
 ```
 
 ```cpp
-for (fortran::index_t _i1 = v.lbound(1); _i1 <= v.ubound(1); ++_i1) {
+for (ftn::index_t _i1 = v.lbound(1); _i1 <= v.ubound(1); ++_i1) {
   v(_i1) = v(_i1) + 1.0f;
 }
 ```
@@ -478,12 +478,12 @@ b(1:3) = a(3:5)
 ```
 
 ```cpp
-for (fortran::index_t _k2 = 0; _k2 <= 3 - 1 + 1 - 1; ++_k2) {
+for (ftn::index_t _k2 = 0; _k2 <= 3 - 1 + 1 - 1; ++_k2) {
   b(1 + _k2) = a(3 + _k2);
 }
 ```
 
-**Design — loop expansion vs. operator overloading.** `fortran::Array`
+**Design — loop expansion vs. operator overloading.** `ftn::Array`
 *does* define elementwise operators, so `v = v + 1.0` could be emitted
 verbatim. But chained array expressions (`d = a + b*c`) would then
 allocate a temporary per operator. Expanding elementwise statements into
@@ -502,7 +502,7 @@ denote rank-1 views into an array (or section), and `a(i, :)`,
 section is *first-class*: it's an lvalue, can be the LHS of an
 assignment (`a(2:4) = 0`), and can be passed as an argument (the dummy
 sees just those elements with whatever lb it declared).  In C++ a
-section becomes a `fortran::ArrayRef<T, R>` — a small view of base
+section becomes a `ftn::ArrayRef<T, R>` — a small view of base
 pointer + lower bounds + extents + strides — so the syntax stays close
 but the section's non-contiguous strides survive intact for later
 indexing.
@@ -512,7 +512,7 @@ indexing.
 ## Characters and substrings
 
 A `CHARACTER(len=N)` is a fixed-length, blank-padded
-`fortran::FortranString<N>`.
+`ftn::FortranString<N>`.
 
 ```fortran
 character(len=5) :: name
@@ -521,13 +521,13 @@ print *, name
 ```
 
 ```cpp
-fortran::FortranString<5> name{};
+ftn::FortranString<5> name{};
 name = "abc"sv;
 std::cout << name << '\n';
 ```
 
 A substring is a 1-based inclusive slice; an omitted bound defaults to
-`1` / the length (`fortran::len`, which works for any character base):
+`1` / the length (`ftn::len`, which works for any character base):
 
 ```fortran
 print *, s(1:5)
@@ -536,7 +536,7 @@ print *, s(7:)
 
 ```cpp
 std::cout << s(1, 5) << '\n';
-std::cout << s(7, fortran::len(s)) << '\n';
+std::cout << s(7, ftn::len(s)) << '\n';
 ```
 
 The base can be any character designator, not just a name — a substring
@@ -565,7 +565,7 @@ structs with the right storage size.
   pad with blanks on the right; longer ones truncate.  Comparison is
   blank-padded too — `"AB"` equals `"AB   "`.
 * The Fortran string operator is **`//`** (concatenation), not `+`.
-  In converted code it shows as `fortran::concat(a, b)`.
+  In converted code it shows as `ftn::concat(a, b)`.
 * A **substring** is `s(lo:hi)`, *inclusive on both ends*, 1-based.
   The omitted-bound forms `s(lo:)` and `s(:hi)` default to the
   string's length and 1 respectively.  In converted code it becomes
@@ -573,7 +573,7 @@ structs with the right storage size.
   meaning).
 * An **assumed-length CHARACTER dummy** (`CHARACTER*(*)`) takes
   whatever length the caller provided — analogous to a `string_view`
-  but writable.  Converted as `fortran::CharRef`, which exposes the
+  but writable.  Converted as `ftn::CharRef`, which exposes the
   substring `()` operator the same way the owning `FortranString<N>`
   does.
 
@@ -586,7 +586,7 @@ character*(nwc) :: rcbufc(bufszc)
 ```
 
 ```cpp
-fortran::Array<fortran::FortranString<1024>, 1> rcbufc{{bufszc}};
+ftn::Array<ftn::FortranString<1024>, 1> rcbufc{{bufszc}};
 ```
 
 The declaration's syntax tree only carries the symbolic length `NWC`, so
@@ -672,17 +672,17 @@ C++ terms).  A few specifics:
 Fortran lets *any* expression be an actual argument; for a modifiable
 dummy it binds a temporary and discards the write-back. C++ refuses to
 bind a non-`const` `T&` to an rvalue, so the converter routes such
-actuals through `fortran::byref`:
+actuals through `ftn::byref`:
 
 ```fortran
 call add_one(2.0 + 3.0)   ! add_one writes its dummy
 ```
 
 ```cpp
-add_one(fortran::byref(2.0f + 3.0f));
+add_one(ftn::byref(2.0f + 3.0f));
 ```
 
-`fortran::byref` materializes the value into an lvalue whose lifetime
+`ftn::byref` materializes the value into an lvalue whose lifetime
 spans the call. **Design — helper vs. a hoisted named temporary.** A
 named temp (`float _t = 2.0f + 3.0f; add_one(_t);`) would also work, but
 needs statement-level rewriting and a fresh name; `byref` keeps the call
@@ -907,7 +907,7 @@ end subroutine
 
 ```cpp
 struct CounterSave {
-  std::int32_t n{};
+  int32_t n{};
 };
 
 void counter(CounterSave& counter_save) {
@@ -943,8 +943,8 @@ data t /10, 20, 30/
 ```
 
 ```cpp
-fortran::Array<std::int32_t, 1> t{{3}};
-t = fortran::array_of(10, 20, 30);
+ftn::Array<int32_t, 1> t{{3}};
+t = ftn::array_of(10, 20, 30);
 ```
 
 **For a C++ reader.** `DATA` is the original FORTRAN 77 way to give
@@ -1155,7 +1155,7 @@ adjustable-bound dummy.
 ```
 
 ```cpp
-void sumit(fortran::ArrayRef<float, 1> a, const std::int32_t& n, float& s) {
+void sumit(ftn::ArrayRef<float, 1> a, const int32_t& n, float& s) {
   s = 0.0f;
   for (i = 1; i <= n; ++i) {
     s = s + a(i);
@@ -1181,7 +1181,7 @@ call work(m, 12)       ! whole 2-D array -> work's  real v(*)
 ```
 
 ```cpp
-fortran::Array<float, 2> m{{3, 4}};
+ftn::Array<float, 2> m{{3, 4}};
 work(m, 12);           // Array<float,2> -> ArrayRef<float,1> (flat view)
 ```
 
@@ -1212,10 +1212,10 @@ explicitly:
 ```
 
 ```cpp
-i = touchi(fortran::first(dladsc));  // *dladsc.data() -- the first element
+i = touchi(ftn::first(dladsc));  // *dladsc.data() -- the first element
 ```
 
-`fortran::first` returns a reference to the column-major origin
+`ftn::first` returns a reference to the column-major origin
 (`*a.data()`), so it works for both owning `Array` and `ArrayRef` and
 preserves const-ness. (When the receiving routine then re-passes that
 scalar to an *array* dummy of its own — the SPICE "counter array" idiom —
@@ -1246,14 +1246,14 @@ PRECISION` local:
 ```
 
 ```cpp
-movei(fortran::reinterpret_array<std::int32_t>(arrfrm), 2 * ndim,
-      fortran::reinterpret_array<std::int32_t>(arrto));
-zzbods2c(..., fortran::storage_ref<std::int32_t>(instid), found);
+movei(ftn::reinterpret_array<int32_t>(arrfrm), 2 * ndim,
+      ftn::reinterpret_array<int32_t>(arrto));
+zzbods2c(..., ftn::storage_ref<int32_t>(instid), found);
 ```
 
 A C++ reference or `ArrayRef` view cannot bind a value of a different type,
-so the call site reinterprets the storage: `fortran::storage_ref<To>` for a
-scalar (`*reinterpret_cast<To*>(&x)`) and `fortran::reinterpret_array<To>`
+so the call site reinterprets the storage: `ftn::storage_ref<To>` for a
+scalar (`*reinterpret_cast<To*>(&x)`) and `ftn::reinterpret_array<To>`
 for a rank-1 array (a flat view of the same bytes, the element count
 rescaled by the size ratio). This matches Fortran's by-reference aliasing.
 
@@ -1274,7 +1274,7 @@ interface block.)
 ## Assumed-length CHARACTER dummies
 
 A `CHARACTER*(*)` dummy has a caller-determined length. It becomes a
-`fortran::CharRef` — a non-owning character view (the string analog of
+`ftn::CharRef` — a non-owning character view (the string analog of
 `ArrayRef`):
 
 ```fortran
@@ -1285,14 +1285,14 @@ A `CHARACTER*(*)` dummy has a caller-determined length. It becomes a
 ```
 
 ```cpp
-void ucase(fortran::CharRef in, fortran::CharRef out) {
+void ucase(ftn::CharRef in, ftn::CharRef out) {
   out = in;              // copies characters into the caller's storage
 }
 ```
 
 A `CharRef` reads as a `std::string_view`, assigns with Fortran
 blank-pad/truncate semantics, supports substring indexing `out(lo, hi)`
-(an open upper bound `s(lo:)` lowers to `s(lo, fortran::len(s))`, which
+(an open upper bound `s(lo:)` lowers to `s(lo, ftn::len(s))`, which
 works for a `CharRef` or a `FortranString`), blank-padded comparison
 (`==` / `!=`), and list-directed `>>` reads. It is constructible from a
 mutable or `const`
@@ -1333,7 +1333,7 @@ if (eqchr(type, "C"sv)) ...           // CharRef -> FortranString<1> (first char
 An assumed-length character *array* dummy — `CHARACTER*(*) cell(*)`, the
 SPICE "character cell" — can't be an `ArrayRef<std::string_view>`: the
 element length is a runtime value, not a C++ type. It becomes a
-`fortran::CharArrayRef`, whose indexing yields a `CharRef`:
+`ftn::CharArrayRef`, whose indexing yields a `CharRef`:
 
 ```fortran
       subroutine first(cell, item)
@@ -1343,7 +1343,7 @@ element length is a runtime value, not a C++ type. It becomes a
 ```
 
 ```cpp
-void first(fortran::CharArrayRef cell, fortran::CharRef item) {
+void first(ftn::CharArrayRef cell, ftn::CharRef item) {
   cell(1) = item;        // cell(1) is a CharRef -> writes element 1
 }
 ```
@@ -1359,7 +1359,7 @@ shared body into each entry, so a cell that is a dummy of *one* entry can
 be referenced in code duplicated into a *sibling* entry that does not
 declare it. There it is not a parameter, so it would be emitted as an
 (impossible) `Array<std::string_view, 1>` local. Instead it becomes a
-null `fortran::CharArrayRef` — the referencing code is unreachable for
+null `ftn::CharArrayRef` — the referencing code is unreachable for
 that entry (the entry returns first), so the view is never dereferenced;
 it only has to compile and bind to the `CharArrayRef` callees it is
 forwarded to.
@@ -1416,7 +1416,7 @@ files included into every routine that needs them.
 The toolkit's command-line programs reach the process environment through
 de-facto-standard vendor intrinsics: `IARGC` / `NARGS` / `GETARG` (command
 arguments), `GETENVQQ` (environment variables), and `SYSTEMQQ` / `SYSTEM`
-(run a shell command). These map to `fortran::` runtime helpers.
+(run a shell command). These map to `ftn::` runtime helpers.
 
 ```fortran
       n = iargc()
@@ -1424,8 +1424,8 @@ arguments), `GETENVQQ` (environment variables), and `SYSTEMQQ` / `SYSTEM`
 ```
 
 ```cpp
-n = fortran::iargc();
-fortran::getarg(1, arg, status);
+n = ftn::iargc();
+ftn::getarg(1, arg, status);
 ```
 
 The command line is genuinely process-global, set once at start-up and
@@ -1435,7 +1435,7 @@ than threaded state:
 
 ```cpp
 int main(int argc, char** argv) {
-  fortran::set_command_args(argc, argv);
+  ftn::set_command_args(argc, argv);
   shellmain();
   return 0;
 }

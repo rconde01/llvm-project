@@ -100,14 +100,14 @@ class WorkspaceEmitTests(unittest.TestCase):
         cpp = _convert(WORKSPACE_F90)
         # The array moves onto a workspace struct, sized once.
         self.assertIn("struct ProcessWorkspace {", cpp)
-        self.assertIn("fortran::Array<float, 1> buffer{{1000}};", cpp)
+        self.assertIn("ftn::Array<float, 1> buffer{{1000}};", cpp)
         # The routine takes the workspace and binds the array with auto&.
         self.assertIn(
             "void process(ProcessWorkspace& process_workspace", cpp
         )
         self.assertIn("auto& buffer = process_workspace.buffer;", cpp)
         # No per-call array declaration left in the body.
-        self.assertNotIn("fortran::Array<float, 1> buffer{{1000}};\n\n  ", cpp)
+        self.assertNotIn("ftn::Array<float, 1> buffer{{1000}};\n\n  ", cpp)
 
     def test_workspace_allocated_once_in_caller(self) -> None:
         cpp = _convert(WORKSPACE_F90)
@@ -119,14 +119,14 @@ class WorkspaceEmitTests(unittest.TestCase):
         cpp = _convert(RECURSIVE_F90)
         # No workspace for a recursive routine; the array stays local.
         self.assertNotIn("DescendWorkspace", cpp)
-        self.assertIn("fortran::Array<float, 1> scratch{{100}};", cpp)
+        self.assertIn("ftn::Array<float, 1> scratch{{100}};", cpp)
 
     def test_automatic_array_is_not_hoisted(self) -> None:
         cpp = _convert(AUTOMATIC_F90)
         # tmp(n) has a runtime bound, so it can't be sized once in a
         # workspace; it stays a per-call local.
         self.assertNotIn("WorkWorkspace", cpp)
-        self.assertIn("fortran::Array<float, 1> tmp{{n}};", cpp)
+        self.assertIn("ftn::Array<float, 1> tmp{{n}};", cpp)
 
     def test_no_static_or_thread_local(self) -> None:
         cpp = _convert(WORKSPACE_F90)

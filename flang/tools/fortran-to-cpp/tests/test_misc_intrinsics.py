@@ -56,14 +56,14 @@ class MiscIntrinsicEmitTests(unittest.TestCase):
     def test_integer_mod_uses_runtime_helper(self) -> None:
         cpp = _convert(MISC_F90)
         # Not std::fmod (which would be wrong for integers).
-        self.assertIn("fortran::mod(", cpp)
+        self.assertIn("ftn::mod(", cpp)
         self.assertNotIn("std::fmod", cpp)
 
     def test_others_mapped(self) -> None:
         cpp = _convert(MISC_F90)
-        self.assertIn("fortran::modulo(", cpp)
-        self.assertIn("fortran::maxloc(a, 1)", cpp)
-        self.assertIn("fortran::merge(", cpp)
+        self.assertIn("ftn::modulo(", cpp)
+        self.assertIn("ftn::maxloc(a, 1)", cpp)
+        self.assertIn("ftn::merge(", cpp)
 
 
 @unittest.skipUnless(

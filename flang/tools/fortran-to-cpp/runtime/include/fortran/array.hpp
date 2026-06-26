@@ -6,25 +6,25 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// fortran::Array<T, Rank, Lower>
+// ftn::Array<T, Rank, Lower>
 //
 // Owning, move-only, column-major N-dimensional array with arbitrary
 // per-dimension lower bounds, matching Fortran's storage layout and
 // indexing exactly.  See ../README.md (rule R1 and decision D1) for the
 // rationale.
 //
-//   fortran::Array<int, 2> a({3, 4});           // 1:3, 1:4 (default lb=1)
+//   ftn::Array<int, 2> a({3, 4});           // 1:3, 1:4 (default lb=1)
 //   a(1, 1) = 42;                                // 1-based
 //   a(3, 4) = 7;
 //
-//   fortran::Array<double, 1> b({-5}, {11});    // -5:5, runtime bounds
+//   ftn::Array<double, 1> b({-5}, {11});    // -5:5, runtime bounds
 //   b(-5) = 1.0;
 //
 //   // Compile-time bounds via the third template argument.  The lower
 //   // bound becomes part of the type and is constant-folded into the
 //   // indexing math instead of being read from a member each access.
 //   //
-//   //   fortran::Array<float, 1, std::array<index_t, 1>{0}> c({10});  // 0:9
+//   //   ftn::Array<float, 1, std::array<index_t, 1>{0}> c({10});  // 0:9
 //   //
 //   // Defaults to the runtime sentinel ``Lower = detail::runtime_lower``,
 //   // so every existing ``Array<T, R>`` keeps its runtime-stored bound.
@@ -48,7 +48,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace fortran {
+namespace ftn {
 
 /// Signed integer type used everywhere for indices, bounds, and extents.
 /// Signed so that arbitrary lower bounds (including negative ones) are
@@ -145,7 +145,7 @@ total_size(const std::array<index_t, Rank> &extents) noexcept {
   // generated code can choose to catch and continue.
   char buf[256];
   std::snprintf(buf, sizeof(buf),
-                "fortran::Array: %s index %lld out of range [%lld, %lld]",
+                "ftn::Array: %s index %lld out of range [%lld, %lld]",
                 what, static_cast<long long>(idx),
                 static_cast<long long>(lo), static_cast<long long>(hi));
   throw std::out_of_range(buf);
@@ -153,7 +153,7 @@ total_size(const std::array<index_t, Rank> &extents) noexcept {
 #define FORTRAN_RT_CHECK_BOUNDS(idx, lo, hi, dim)                              \
   do {                                                                         \
     if ((idx) < (lo) || (idx) > (hi)) {                                        \
-      ::fortran::detail::bounds_error(dim, (idx), (lo), (hi));                 \
+      ::ftn::detail::bounds_error(dim, (idx), (lo), (hi));                 \
     }                                                                          \
   } while (0)
 #else
@@ -169,7 +169,7 @@ constexpr index_t linear_offset(
     [[maybe_unused]] const std::array<index_t, Rank> &upper,
     const std::array<index_t, Rank> &strides, Idx... idxs) {
   static_assert(sizeof...(Idx) == Rank,
-                "wrong number of indices for fortran::Array");
+                "wrong number of indices for ftn::Array");
   static_assert((std::is_integral_v<Idx> && ...),
                 "indices must be integral");
   const std::array<index_t, Rank> idx{static_cast<index_t>(idxs)...};
@@ -194,7 +194,7 @@ constexpr index_t linear_offset_static(
     [[maybe_unused]] const std::array<index_t, Rank> &upper,
     const std::array<index_t, Rank> &strides, Idx... idxs) {
   static_assert(sizeof...(Idx) == Rank,
-                "wrong number of indices for fortran::Array");
+                "wrong number of indices for ftn::Array");
   static_assert((std::is_integral_v<Idx> && ...),
                 "indices must be integral");
   const std::array<index_t, Rank> idx{static_cast<index_t>(idxs)...};
@@ -230,7 +230,7 @@ class ArrayRef;
 template <typename T, std::size_t Rank,
           std::array<index_t, Rank> Lower = detail::runtime_lower<Rank>()>
 class Array {
-  static_assert(Rank >= 1, "fortran::Array rank must be >= 1");
+  static_assert(Rank >= 1, "ftn::Array rank must be >= 1");
 
 public:
   using value_type = T;
@@ -574,6 +574,6 @@ private:
   std::unique_ptr<T[]> storage_{};
 };
 
-} // namespace fortran
+} // namespace ftn
 
 #endif // FORTRAN_RT_ARRAY_HPP

@@ -16,7 +16,7 @@
 
 TEST(cpu_time_is_nonnegative_and_monotonic) {
   float a = -1.0f;
-  fortran::cpu_time(a);
+  ftn::cpu_time(a);
   CHECK(a >= 0.0f);
   // Burn a little CPU so the second reading can't be earlier.
   volatile double acc = 0.0;
@@ -24,37 +24,37 @@ TEST(cpu_time_is_nonnegative_and_monotonic) {
     acc += i;
   }
   float b = -1.0f;
-  fortran::cpu_time(b);
+  ftn::cpu_time(b);
   CHECK(b >= a);
 }
 
 TEST(system_clock_count_only) {
-  std::int64_t c = -1;
-  fortran::system_clock(c);
+  int64_t c = -1;
+  ftn::system_clock(c);
   CHECK(c >= 0);
 }
 
 TEST(system_clock_rate_is_1000) {
-  std::int32_t c = 0;
-  std::int32_t rate = 0;
-  fortran::system_clock(c, rate);
+  int32_t c = 0;
+  int32_t rate = 0;
+  ftn::system_clock(c, rate);
   CHECK_EQ(rate, 1000);
 }
 
 TEST(system_clock_count_max_matches_type) {
-  std::int32_t c = 0;
-  std::int32_t rate = 0;
-  std::int32_t cmax = 0;
-  fortran::system_clock(c, rate, cmax);
-  CHECK_EQ(cmax, std::numeric_limits<std::int32_t>::max());
+  int32_t c = 0;
+  int32_t rate = 0;
+  int32_t cmax = 0;
+  ftn::system_clock(c, rate, cmax);
+  CHECK_EQ(cmax, std::numeric_limits<int32_t>::max());
 }
 
 TEST(system_clock_is_monotonic) {
-  std::int64_t c1 = 0;
-  fortran::system_clock(c1);
+  int64_t c1 = 0;
+  ftn::system_clock(c1);
   std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  std::int64_t c2 = 0;
-  fortran::system_clock(c2);
+  int64_t c2 = 0;
+  ftn::system_clock(c2);
   CHECK(c2 >= c1);
 }
 

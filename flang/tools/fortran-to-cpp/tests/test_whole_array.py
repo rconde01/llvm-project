@@ -78,7 +78,7 @@ def _convert(src: str) -> str:
 class WholeArrayEmitTests(unittest.TestCase):
     def test_elementwise_add_expands_to_loop(self) -> None:
         cpp = _convert(WHOLE_F90)
-        self.assertIn("for (fortran::index_t _i", cpp)
+        self.assertIn("for (ftn::index_t _i", cpp)
         # Both operands indexed by the synthesized loop variable.
         self.assertRegex(
             cpp, r"a\(_i\d\) = b\(_i\d\) \+ c\(_i\d\);"
@@ -97,13 +97,13 @@ class WholeArrayEmitTests(unittest.TestCase):
 
     def test_elemental_intrinsic_indexes_arg(self) -> None:
         cpp = _convert(WHOLE_2D_F90)
-        # ``w = sqrt(v)`` -> ``w(_i) = fortran::sqrt(v(_i))``
-        self.assertRegex(cpp, r"w\(_i\d\) = fortran::sqrt\(v\(_i\d\)\);")
+        # ``w = sqrt(v)`` -> ``w(_i) = ftn::sqrt(v(_i))``
+        self.assertRegex(cpp, r"w\(_i\d\) = ftn::sqrt\(v\(_i\d\)\);")
 
     def test_reduction_arg_not_indexed(self) -> None:
         cpp = _convert(WHOLE_2D_F90)
-        # ``v = sum(w)`` -> ``v(_i) = fortran::sum(w)`` (w whole-array).
-        self.assertRegex(cpp, r"v\(_i\d\) = fortran::sum\(w\);")
+        # ``v = sum(w)`` -> ``v(_i) = ftn::sum(w)`` (w whole-array).
+        self.assertRegex(cpp, r"v\(_i\d\) = ftn::sum\(w\);")
 
 
 @unittest.skipUnless(

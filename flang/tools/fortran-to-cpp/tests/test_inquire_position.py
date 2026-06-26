@@ -6,7 +6,7 @@ cursor.  All three are SPICE-essential for file management around DAF
 binary tables and text-file reopening.
 
 The lowering walks the matching ``*Stmt`` parse-tree nodes and emits
-calls to the new ``fortran::io::Units`` helpers
+calls to the new ``ftn::io::Units`` helpers
 ``inquire_by_file`` / ``inquire_by_unit`` / ``backspace`` / ``rewind``.
 """
 
@@ -126,7 +126,7 @@ class InquirePositionEmitTests(unittest.TestCase):
         # signature) so the emitted _units.inquire_by_file is declared.
         cpp = _convert(INQUIRE_ONLY_SUB_F)
         self.assertIn('_units.inquire_by_file("/etc/hostname"sv)', cpp)
-        self.assertIn("fortran::io::Units", cpp)
+        self.assertIn("ftn::io::Units", cpp)
 
 
 @unittest.skipUnless(

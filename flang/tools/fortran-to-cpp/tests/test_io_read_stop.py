@@ -58,8 +58,8 @@ class ReadStopEmitTests(unittest.TestCase):
         # List-directed READ routes through ``read_list_item`` so a
         # Fortran ``/`` terminator preserves the destination's current
         # value (C++11's ``>>`` zeros the target on failure).
-        self.assertIn("fortran::io::read_list_item(std::cin, n)", cpp)
-        self.assertIn("fortran::io::read_list_item(std::cin, x)", cpp)
+        self.assertIn("ftn::io::read_list_item(std::cin, n)", cpp)
+        self.assertIn("ftn::io::read_list_item(std::cin, x)", cpp)
 
     def test_bare_stop_exits_zero(self) -> None:
         cpp = _convert(READ_STOP_F90)

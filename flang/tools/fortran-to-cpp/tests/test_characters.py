@@ -96,23 +96,23 @@ def convert_file_to_tmp(src: str) -> str:
 class CharacterEmitTests(unittest.TestCase):
     def test_concat_uses_runtime_helper(self) -> None:
         cpp = _convert(CHARS_F90)
-        self.assertIn("fortran::concat(", cpp)
+        self.assertIn("ftn::concat(", cpp)
 
     def test_trim_adjustl_nested_args_not_duplicated(self) -> None:
         cpp = _convert(CHARS_F90)
         # Regression: nested calls must not flatten their arg lists.
-        self.assertIn("fortran::trim(fortran::adjustl(name))", cpp)
+        self.assertIn("ftn::trim(ftn::adjustl(name))", cpp)
 
     def test_intrinsics_mapped(self) -> None:
         cpp = _convert(CHARS_F90)
-        self.assertIn("fortran::len_trim(name)", cpp)
-        self.assertIn("fortran::index(greeting,", cpp)
+        self.assertIn("ftn::len_trim(name)", cpp)
+        self.assertIn("ftn::index(greeting,", cpp)
 
     def test_repeat_scan_verify_mapped(self) -> None:
         cpp = _convert(REPEAT_SCAN_F90)
-        self.assertIn('fortran::repeat("ab"sv, 3)', cpp)
-        self.assertIn('fortran::scan("hello"sv, "l"sv)', cpp)
-        self.assertIn('fortran::verify("hello"sv, "helo"sv)', cpp)
+        self.assertIn('ftn::repeat("ab"sv, 3)', cpp)
+        self.assertIn('ftn::scan("hello"sv, "l"sv)', cpp)
+        self.assertIn('ftn::verify("hello"sv, "helo"sv)', cpp)
 
 
 @unittest.skipUnless(

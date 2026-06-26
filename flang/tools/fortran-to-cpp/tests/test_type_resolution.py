@@ -68,17 +68,17 @@ class TypeResolutionEmitTests(unittest.TestCase):
         cpp = _convert(DP_F)
         # implicit double precision (a-h,o-z): x and d are double.
         self.assertIn("double x{};", cpp)
-        self.assertIn("fortran::Array<double, 1> d{{5}};", cpp)
+        self.assertIn("ftn::Array<double, 1> d{{5}};", cpp)
 
     def test_in_letters_still_integer(self) -> None:
         cpp = _convert(DP_F)
         # n falls under the default i-n integer rule (not overridden).
-        self.assertIn("std::int32_t n{};", cpp)
+        self.assertIn("int32_t n{};", cpp)
 
     def test_star_kind_explicit_decl(self) -> None:
         cpp = _convert(DP_F)
         # integer*8 -> 64-bit, resolved from the symbol table.
-        self.assertIn("std::int64_t big{};", cpp)
+        self.assertIn("int64_t big{};", cpp)
 
 
 CLASSIFY_F90 = """\
@@ -122,16 +122,16 @@ class ShapeFromSymbolTests(unittest.TestCase):
 
     def test_constant_and_parameter_bounds(self) -> None:
         cpp = _convert(SHAPE_F)
-        self.assertIn("fortran::Array<float, 1> d{{5}};", cpp)
+        self.assertIn("ftn::Array<float, 1> d{{5}};", cpp)
         # g(nmax) with nmax==4 is folded.
-        self.assertIn("fortran::Array<float, 1> g{{4}};", cpp)
+        self.assertIn("ftn::Array<float, 1> g{{4}};", cpp)
 
     def test_arbitrary_lower_bound(self) -> None:
         cpp = _convert(SHAPE_F)
         # e(0:9): literal lb=0 lifts the bound into the type's ``Lower``
         # NTTP so the constructor only needs the extents.
         self.assertIn(
-            "fortran::Array<float, 1, std::array<fortran::index_t, 1>{0}> "
+            "ftn::Array<float, 1, std::array<ftn::index_t, 1>{0}> "
             "e{{10}};",
             cpp,
         )
@@ -153,7 +153,7 @@ class ClassificationTests(unittest.TestCase):
         cpp = _convert_f90(CLASSIFY_F90)
         # gcount is module state (threaded), never a local of the program.
         prog = cpp[cpp.index("void p("):] if "void p(" in cpp else cpp
-        self.assertNotIn("std::int32_t gcount{};", prog)
+        self.assertNotIn("int32_t gcount{};", prog)
 
 
 @unittest.skipUnless(

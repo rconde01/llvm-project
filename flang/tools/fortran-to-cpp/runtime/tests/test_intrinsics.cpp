@@ -11,8 +11,8 @@
 #include "fortran/intrinsics.hpp"
 #include "test_main.hpp"
 
-using fortran::Array;
-using fortran::ArrayRef;
+using ftn::Array;
+using ftn::ArrayRef;
 
 static Array<int, 1> make_squares() {
   Array<int, 1> a({5});
@@ -24,24 +24,24 @@ static Array<int, 1> make_squares() {
 
 TEST(size_and_bounds) {
   Array<int, 2> a({-1, 0}, {4, 3}); // (-1:2, 0:2)
-  CHECK_EQ(fortran::size(a), 12);
-  CHECK_EQ(fortran::size(a, 1), 4);
-  CHECK_EQ(fortran::size(a, 2), 3);
-  CHECK_EQ(fortran::lbound(a, 1), -1);
-  CHECK_EQ(fortran::ubound(a, 1), 2);
-  CHECK_EQ(fortran::lbound(a, 2), 0);
+  CHECK_EQ(ftn::size(a), 12);
+  CHECK_EQ(ftn::size(a, 1), 4);
+  CHECK_EQ(ftn::size(a, 2), 3);
+  CHECK_EQ(ftn::lbound(a, 1), -1);
+  CHECK_EQ(ftn::ubound(a, 1), 2);
+  CHECK_EQ(ftn::lbound(a, 2), 0);
 }
 
 TEST(sum_and_product) {
   auto a = make_squares();
-  CHECK_EQ(fortran::sum(a), 55);
-  CHECK_EQ(fortran::product(a), 1 * 4 * 9 * 16 * 25);
+  CHECK_EQ(ftn::sum(a), 55);
+  CHECK_EQ(ftn::product(a), 1 * 4 * 9 * 16 * 25);
 }
 
 TEST(maxval_minval) {
   auto a = make_squares();
-  CHECK_EQ(fortran::maxval(a), 25);
-  CHECK_EQ(fortran::minval(a), 1);
+  CHECK_EQ(ftn::maxval(a), 25);
+  CHECK_EQ(ftn::minval(a), 1);
 }
 
 TEST(count_any_all) {
@@ -50,11 +50,11 @@ TEST(count_any_all) {
   b(2) = false;
   b(3) = true;
   b(4) = false;
-  CHECK_EQ(fortran::count(b), 2);
-  CHECK(fortran::any(b));
-  CHECK(!fortran::all(b));
+  CHECK_EQ(ftn::count(b), 2);
+  CHECK(ftn::any(b));
+  CHECK(!ftn::all(b));
   b.fill(true);
-  CHECK(fortran::all(b));
+  CHECK(ftn::all(b));
 }
 
 TEST(dot_product) {
@@ -62,7 +62,7 @@ TEST(dot_product) {
   Array<int, 1> b({3});
   a(1) = 1; a(2) = 2; a(3) = 3;
   b(1) = 4; b(2) = 5; b(3) = 6;
-  CHECK_EQ(fortran::dot_product(a, b), 4 + 10 + 18);
+  CHECK_EQ(ftn::dot_product(a, b), 4 + 10 + 18);
 }
 
 TEST(reductions_work_on_strided_ref) {
@@ -70,8 +70,8 @@ TEST(reductions_work_on_strided_ref) {
   // correctly via for_each.
   int buf[6] = {1, 99, 2, 99, 3, 99};
   ArrayRef<int, 1> r(buf, {1}, {3}, {2}); // 1, 2, 3
-  CHECK_EQ(fortran::sum(r), 6);
-  CHECK_EQ(fortran::maxval(r), 3);
+  CHECK_EQ(ftn::sum(r), 6);
+  CHECK_EQ(ftn::maxval(r), 3);
 }
 
 TEST(matmul_matrix_matrix) {
@@ -86,7 +86,7 @@ TEST(matmul_matrix_matrix) {
   for (int i = 1; i <= 2; ++i)
     for (int j = 1; j <= 3; ++j)
       b(j, i) = a(i, j);
-  auto c = fortran::matmul(a, b);
+  auto c = ftn::matmul(a, b);
   CHECK_EQ(c.extent(1), 2);
   CHECK_EQ(c.extent(2), 2);
   CHECK_EQ(c(1, 1), 1 + 4 + 9);
@@ -98,7 +98,7 @@ TEST(matmul_matrix_vector) {
   Array<int, 1> x({2});
   a(1, 1) = 1; a(1, 2) = 2; a(2, 1) = 3; a(2, 2) = 4;
   x(1) = 5; x(2) = 6;
-  auto y = fortran::matmul(a, x); // [1*5+2*6, 3*5+4*6] = [17, 39]
+  auto y = ftn::matmul(a, x); // [1*5+2*6, 3*5+4*6] = [17, 39]
   CHECK_EQ(y.size(), 2);
   CHECK_EQ(y(1), 17);
   CHECK_EQ(y(2), 39);
@@ -110,7 +110,7 @@ TEST(transpose_2d) {
   for (int j = 1; j <= 3; ++j)
     for (int i = 1; i <= 2; ++i)
       a(i, j) = v++;
-  auto t = fortran::transpose(a);
+  auto t = ftn::transpose(a);
   CHECK_EQ(t.extent(1), 3);
   CHECK_EQ(t.extent(2), 2);
   CHECK_EQ(t(1, 2), a(2, 1));
@@ -125,8 +125,8 @@ TEST(reductions_over_2d) {
       m(i, j) = v++; // 1..6
     }
   }
-  CHECK_EQ(fortran::sum(m), 21);
-  CHECK_EQ(fortran::maxval(m), 6);
+  CHECK_EQ(ftn::sum(m), 21);
+  CHECK_EQ(ftn::maxval(m), 6);
 }
 
 TEST(eoshift_rank1_default_boundary) {
@@ -134,7 +134,7 @@ TEST(eoshift_rank1_default_boundary) {
   a(1) = 1;
   a(2) = 2;
   a(3) = 3;
-  auto r = fortran::eoshift(a, 1); // [2, 3, 0]
+  auto r = ftn::eoshift(a, 1); // [2, 3, 0]
   CHECK_EQ(r(1), 2);
   CHECK_EQ(r(2), 3);
   CHECK_EQ(r(3), 0);
@@ -145,7 +145,7 @@ TEST(eoshift_negative_shift_with_boundary) {
   a(1) = 1;
   a(2) = 2;
   a(3) = 3;
-  auto r = fortran::eoshift(a, -1, 9); // [9, 1, 2]
+  auto r = ftn::eoshift(a, -1, 9); // [9, 1, 2]
   CHECK_EQ(r(1), 9);
   CHECK_EQ(r(2), 1);
   CHECK_EQ(r(3), 2);
@@ -156,7 +156,7 @@ TEST(spread_dim1_replicates_rows) {
   v(1) = 1;
   v(2) = 2;
   v(3) = 3;
-  auto m = fortran::spread(v, 1, 2); // shape (2, 3), m(i, j) = v(j)
+  auto m = ftn::spread(v, 1, 2); // shape (2, 3), m(i, j) = v(j)
   CHECK_EQ(m.extent(1), 2);
   CHECK_EQ(m.extent(2), 3);
   CHECK_EQ(m(1, 2), 2);
@@ -168,7 +168,7 @@ TEST(spread_dim2_replicates_cols) {
   v(1) = 1;
   v(2) = 2;
   v(3) = 3;
-  auto m = fortran::spread(v, 2, 4); // shape (3, 4), m(i, j) = v(i)
+  auto m = ftn::spread(v, 2, 4); // shape (3, 4), m(i, j) = v(i)
   CHECK_EQ(m.extent(1), 3);
   CHECK_EQ(m.extent(2), 4);
   CHECK_EQ(m(2, 1), 2);
@@ -176,38 +176,38 @@ TEST(spread_dim2_replicates_cols) {
 }
 
 TEST(bit_logical_ops) {
-  CHECK_EQ(fortran::iand(12, 10), 8);
-  CHECK_EQ(fortran::ior(12, 10), 14);
-  CHECK_EQ(fortran::ieor(12, 10), 6);
+  CHECK_EQ(ftn::iand(12, 10), 8);
+  CHECK_EQ(ftn::ior(12, 10), 14);
+  CHECK_EQ(ftn::ieor(12, 10), 6);
 }
 
 TEST(ishft_left_and_right) {
-  CHECK_EQ(fortran::ishft(1, 3), 8);
-  CHECK_EQ(fortran::ishft(16, -2), 4);
-  CHECK_EQ(fortran::ishft(1, 100), 0); // shift beyond width -> 0
+  CHECK_EQ(ftn::ishft(1, 3), 8);
+  CHECK_EQ(ftn::ishft(16, -2), 4);
+  CHECK_EQ(ftn::ishft(1, 100), 0); // shift beyond width -> 0
 }
 
 TEST(btest_ibset_ibclr) {
-  CHECK(fortran::btest(5, 0));   // 101b, bit 0 set
-  CHECK(!fortran::btest(5, 1));  // bit 1 clear
-  CHECK_EQ(fortran::ibset(0, 4), 16);
-  CHECK_EQ(fortran::ibclr(15, 1), 13);
+  CHECK(ftn::btest(5, 0));   // 101b, bit 0 set
+  CHECK(!ftn::btest(5, 1));  // bit 1 clear
+  CHECK_EQ(ftn::ibset(0, 4), 16);
+  CHECK_EQ(ftn::ibclr(15, 1), 13);
 }
 
 TEST(numeric_inquiry) {
   float f = 0.0f;
   double d = 0.0;
-  std::int32_t i32 = 0;
-  std::int64_t i64 = 0;
-  CHECK(fortran::huge(f) > 1.0e30f);
-  CHECK(fortran::tiny(f) > 0.0f);
-  CHECK(fortran::epsilon(f) > 0.0f);
-  CHECK_EQ(fortran::huge(i32), 2147483647);
-  CHECK_EQ(fortran::kind(f), 4);
-  CHECK_EQ(fortran::kind(d), 8);
-  CHECK_EQ(fortran::kind(i64), 8);
-  CHECK_EQ(fortran::bit_size(i32), 32);
-  CHECK_EQ(fortran::bit_size(i64), 64);
+  int32_t i32 = 0;
+  int64_t i64 = 0;
+  CHECK(ftn::huge(f) > 1.0e30f);
+  CHECK(ftn::tiny(f) > 0.0f);
+  CHECK(ftn::epsilon(f) > 0.0f);
+  CHECK_EQ(ftn::huge(i32), 2147483647);
+  CHECK_EQ(ftn::kind(f), 4);
+  CHECK_EQ(ftn::kind(d), 8);
+  CHECK_EQ(ftn::kind(i64), 8);
+  CHECK_EQ(ftn::bit_size(i32), 32);
+  CHECK_EQ(ftn::bit_size(i64), 64);
 }
 
 FORTRAN_RT_TEST_MAIN()

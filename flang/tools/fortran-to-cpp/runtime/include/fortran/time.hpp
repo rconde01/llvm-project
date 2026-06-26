@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 //
 // Implementations of Fortran's timing intrinsic *subroutines* —
-// ``CPU_TIME`` and ``SYSTEM_CLOCK`` — in the ``fortran::`` namespace.
+// ``CPU_TIME`` and ``SYSTEM_CLOCK`` — in the ``ftn::`` namespace.
 // These are pure system queries (no shared mutable state), so they are
 // safe to call from multiple threads.
 //
@@ -29,7 +29,7 @@
 #include <limits>
 #include <string_view>
 
-namespace fortran {
+namespace ftn {
 
 /// CPU_TIME(time): processor CPU time consumed so far, in seconds.
 template <typename T> void cpu_time(T &seconds) noexcept {
@@ -101,6 +101,6 @@ void date_and_time(D &&date, T &&time, Z &&zone, V &&values) noexcept {
   values(8) = static_cast<int>(ms);
 }
 
-} // namespace fortran
+} // namespace ftn
 
 #endif // FORTRAN_RT_TIME_HPP

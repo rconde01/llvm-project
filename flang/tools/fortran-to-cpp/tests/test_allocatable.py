@@ -71,11 +71,11 @@ class AllocatableEmitTests(unittest.TestCase):
     def test_declaration_is_empty_array(self) -> None:
         cpp = _convert(ALLOC_F90)
         # Deferred-shape decl: default-constructed (no extents).
-        self.assertIn("fortran::Array<float, 1> a;", cpp)
+        self.assertIn("ftn::Array<float, 1> a;", cpp)
 
     def test_allocate_move_assigns_sized_array(self) -> None:
         cpp = _convert(ALLOC_F90)
-        self.assertIn("a = fortran::Array<float, 1>({n});", cpp)
+        self.assertIn("a = ftn::Array<float, 1>({n});", cpp)
 
     def test_deallocate_calls_method(self) -> None:
         cpp = _convert(ALLOC_F90)
@@ -84,7 +84,7 @@ class AllocatableEmitTests(unittest.TestCase):
     def test_allocate_with_lower_bound(self) -> None:
         cpp = _convert(ALLOC_LOWER_F90)
         # allocate(a(0:4)) -> (lower, extent) ctor form.
-        self.assertIn("a = fortran::Array<std::int32_t, 1>({0}, {", cpp)
+        self.assertIn("a = ftn::Array<int32_t, 1>({0}, {", cpp)
 
 
 @unittest.skipUnless(

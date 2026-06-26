@@ -56,11 +56,11 @@ def _convert(src: str) -> str:
 class NumericInquiryEmitTests(unittest.TestCase):
     def test_mapped(self) -> None:
         cpp = _convert(INQUIRY_F90)
-        self.assertIn("fortran::huge(x)", cpp)
-        self.assertIn("fortran::tiny(x)", cpp)
-        self.assertIn("fortran::epsilon(x)", cpp)
-        self.assertIn("fortran::kind(x)", cpp)
-        self.assertIn("fortran::bit_size(i)", cpp)
+        self.assertIn("ftn::huge(x)", cpp)
+        self.assertIn("ftn::tiny(x)", cpp)
+        self.assertIn("ftn::epsilon(x)", cpp)
+        self.assertIn("ftn::kind(x)", cpp)
+        self.assertIn("ftn::bit_size(i)", cpp)
 
 
 @unittest.skipUnless(

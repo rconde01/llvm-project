@@ -52,7 +52,7 @@ see [`docs/CONSTRUCTS.md`](docs/CONSTRUCTS.md).
 
 Fortran arrays are 1-indexed by default, allow arbitrary lower bounds
 (`integer :: a(0:9)`), and use column-major storage.  Emit a custom
-`fortran::Array<T, Rank>` (name TBD) that preserves the **exact same
+`ftn::Array<T, Rank>` (name TBD) that preserves the **exact same
 indexing expressions** as the Fortran source.
 
   * `a(i)`, `a(i,j)`, `a(i,j,k)` translate verbatim to `a(i)`,
@@ -124,9 +124,9 @@ A subprogram's `save`d locals are bundled into a per-subprogram struct
 "state-is-explicit" invariant of R3.  Subprograms with no `save`
 locals don't need such a struct.
 
-### R8 — I/O via standard C++ libraries (`fortran::io` only when needed)
+### R8 — I/O via standard C++ libraries (`ftn::io` only when needed)
 
-**Default to plain standard-library I/O.**  `fortran::io::*` exists
+**Default to plain standard-library I/O.**  `ftn::io::*` exists
 only for cases where a Fortran edit descriptor can't be expressed
 directly in `std::format`.  Generated code should read like
 hand-written modern C++ for someone who has never seen Fortran.
@@ -137,7 +137,7 @@ hand-written modern C++ for someone who has never seen Fortran.
   * `read(unit, *) x`       → `in >> x;`
   * `print '(I5)', x`       → `std::cout << std::format("{:5d}", x);`
   * `print '(F10.4)', x`    → `std::cout << std::format("{:10.4f}", x);`
-  * `print '(G12.5)', x`    → `std::cout << fortran::io::fmt_G(x, 12, 5);`
+  * `print '(G12.5)', x`    → `std::cout << ftn::io::fmt_G(x, 12, 5);`
                               (`G` has no `std::format` equivalent)
   * File `open` / `close`   → `std::ofstream` / `std::ifstream`
                               held in the state struct the routine
@@ -148,7 +148,7 @@ hand-written modern C++ for someone who has never seen Fortran.
 descriptor to an inline `std::format` spec.  Only when that fails —
 `G`, `P` scale factors, `BN`/`BZ`, `T*`, `S*`, parenthesized repetition
 groups, `$` carriage control — does it fall back to a
-`fortran::io::fmt_*` helper.  See D5 for details.
+`ftn::io::fmt_*` helper.  See D5 for details.
 
 ---
 
@@ -159,7 +159,7 @@ the first emitter is written.
 
 ### D1 — Array class implementation **(resolved: roll our own, C++20)**
 
-We will hand-write `fortran::Array<T, Rank>` targeting C++20 (no
+We will hand-write `ftn::Array<T, Rank>` targeting C++20 (no
 `std::mdspan` dependency).  Key responsibilities:
 
   * Runtime per-dimension lower bounds (default 1) and extents.
@@ -352,7 +352,7 @@ reference and lifetime management is on the caller.
 
   * `std::string_view`  for read-only views — character literals
     (already R5) and `intent(in)` `CHARACTER` parameters.
-  * `fortran::FortranString<N>`  for declared fixed-length variables
+  * `ftn::FortranString<N>`  for declared fixed-length variables
     (the common case).  Owns `std::array<char, N>` storage; assignment
     pads with blanks or truncates; equality is length-padded; the
     substring operator `name(lo, hi)` returns a writable proxy when
@@ -423,9 +423,9 @@ consistent:
   * Save struct name → `<Subprogram>Save`?  `<Subprogram>State`?
   * Module namespace name → match Fortran spelling, or lowercase?
 
-### D5 — Formatted I/O **(resolved: inline `std::format` first, `fortran::io::*` only for descriptors that need fidelity)**
+### D5 — Formatted I/O **(resolved: inline `std::format` first, `ftn::io::*` only for descriptors that need fidelity)**
 
-Goal: generated code reads like plain modern C++.  `fortran::io::*`
+Goal: generated code reads like plain modern C++.  `ftn::io::*`
 helpers exist only where they have to.
 
 Emitter algorithm for each edit descriptor in a format string:
@@ -439,12 +439,12 @@ Emitter algorithm for each edit descriptor in a format string:
   3. **Otherwise** — `G` (general), `P` scale factor, `BN`/`BZ`
      blank interpretation, `T*` tab controls, `S*` sign controls,
      repetition with parenthesized groups, `$` carriage control →
-     call a `fortran::io::fmt_*` helper.
+     call a `ftn::io::fmt_*` helper.
 
 The runtime exposes only the helpers that group (3) actually needs:
 
 ```cpp
-namespace fortran::io {
+namespace ftn::io {
   std::string fmt_G(double value, int w, int d,
                     std::optional<int> e = {});           // G edit descriptor
   std::string fmt_P(double value, int scale, char base,
@@ -461,7 +461,7 @@ out << std::format("{:5d}", i) << ' ' << std::format("{:10.4f}", x) << '\n';
 ```
 
 with **no** runtime helper call.  Only descriptors that genuinely
-have no `std::format` equivalent reach into `fortran::io::*`.
+have no `std::format` equivalent reach into `ftn::io::*`.
 
 ### D6 — Modules and `USE`
 
@@ -498,8 +498,8 @@ equivalence (x, bits)
 ```cpp
 struct XBits_Equiv {
   std::array<std::byte, sizeof(float)> _store{};
-  fortran::EquivSlot<float,         0> x   { _store.data() };
-  fortran::EquivSlot<std::int32_t,  0> bits{ _store.data() };
+  ftn::EquivSlot<float,         0> x   { _store.data() };
+  ftn::EquivSlot<int32_t,  0> bits{ _store.data() };
 };
 ```
 
@@ -513,8 +513,8 @@ equivalence (big(91), tail(1))
 ```cpp
 struct BigTail_Equiv {
   std::array<std::byte, 100 * sizeof(float)> _store{};
-  fortran::ArrayRef<float, 1> big { _store.data(),  /*offset=*/ 0, /*extent=*/100 };
-  fortran::ArrayRef<float, 1> tail{ _store.data(),  /*offset=*/90, /*extent=*/ 10 };
+  ftn::ArrayRef<float, 1> big { _store.data(),  /*offset=*/ 0, /*extent=*/100 };
+  ftn::ArrayRef<float, 1> tail{ _store.data(),  /*offset=*/90, /*extent=*/ 10 };
 };
 ```
 

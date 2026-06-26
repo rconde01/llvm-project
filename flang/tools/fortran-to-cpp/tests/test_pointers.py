@@ -73,11 +73,11 @@ class PointerEmitTests(unittest.TestCase):
         self.assertIn("float* p = nullptr;", cpp)
         self.assertIn("p = &x;", cpp)        # => takes address
         self.assertIn("(*p) = 99.0f;", cpp)  # value assign derefs
-        self.assertIn("fortran::associated(p)", cpp)
+        self.assertIn("ftn::associated(p)", cpp)
 
     def test_array_pointer_is_arrayref(self) -> None:
         cpp = _convert(ARRAY_PTR_F90)
-        self.assertIn("fortran::ArrayRef<float, 1> p;", cpp)
+        self.assertIn("ftn::ArrayRef<float, 1> p;", cpp)
         # POINTER assignment ``p => target`` rebinds the view; element-wise
         # ``=`` would copy data instead (the IRI read_data_SD pattern).
         self.assertIn("p.rebind(a.section(2, 8, 2));", cpp)

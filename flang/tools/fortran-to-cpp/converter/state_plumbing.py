@@ -260,15 +260,15 @@ def _common_elem_size(t: IRType) -> int:
     sizes = {
         "bool": 4,  # Fortran LOGICAL kind 4 -- see comment above
         "char": 1, "signed char": 1, "unsigned char": 1,
-        "std::int8_t": 1, "std::uint8_t": 1,
-        "std::int16_t": 2, "std::uint16_t": 2,
-        "std::int32_t": 4, "std::uint32_t": 4,
-        "std::int64_t": 8, "std::uint64_t": 8,
+        "int8_t": 1, "uint8_t": 1,
+        "int16_t": 2, "uint16_t": 2,
+        "int32_t": 4, "uint32_t": 4,
+        "int64_t": 8, "uint64_t": 8,
         "float": 4, "double": 8, "long double": 16,
     }
     if cpp in sizes:
         return sizes[cpp]
-    if cpp.startswith("fortran::FortranString<"):
+    if cpp.startswith("ftn::FortranString<"):
         try:
             n = int(cpp[cpp.index("<") + 1 : cpp.rindex(">")])
             return n
@@ -559,7 +559,7 @@ def _common_spanview(
     ext_list = ", ".join(extents)
     anchor = covered[0][0]
     return (
-        f"fortran::ArrayRef<{elem_cpp}, {routine_type.array_rank}>("
+        f"ftn::ArrayRef<{elem_cpp}, {routine_type.array_rank}>("
         f"&{param}.{anchor}, {{{ext_list}}})"
     )
 
@@ -597,14 +597,14 @@ def _common_subview(
             # reference to the appropriate element (Fortran 1-based).
             return (
                 f"{param}.{field}"
-                f"(static_cast<fortran::index_t>({elem_off + 1}))"
+                f"(static_cast<ftn::index_t>({elem_off + 1}))"
             )
         if not routine_type.array_extent_exprs:
             return None
         rank = routine_type.array_rank
         ext_list = ", ".join(routine_type.array_extent_exprs)
         return (
-            f"fortran::ArrayRef<{routine_type.element_type_cpp}, {rank}>("
+            f"ftn::ArrayRef<{routine_type.element_type_cpp}, {rank}>("
             f"{param}.{field}.data() + {elem_off}, {{{ext_list}}})"
         )
     # Type pun: the routine's view interprets the canonical field's bytes
@@ -629,7 +629,7 @@ def _common_subview(
     rank = routine_type.array_rank
     ext_list = ", ".join(routine_type.array_extent_exprs)
     return (
-        f"fortran::ArrayRef<{routine_elem_cpp}, {rank}>("
+        f"ftn::ArrayRef<{routine_elem_cpp}, {rank}>("
         f"reinterpret_cast<{routine_elem_cpp}*>("
         f"reinterpret_cast<unsigned char*>({param}.{field}.data())"
         f" + {byte_off_within}), {{{ext_list}}})"
@@ -687,14 +687,14 @@ def _common_reshape_view(
     if same_element:
         # Reshape only.
         return (
-            f"fortran::ArrayRef<{elem}, {member_type.array_rank}>("
+            f"ftn::ArrayRef<{elem}, {member_type.array_rank}>("
             f"{param}.{field}.data(), {{{ext_list}}})"
         )
     # Type pun: same offset (0) and total size; differ only in element
     # type.  The canonical field's storage is contiguous bytes; reinterpret
     # them as the routine's element type.
     return (
-        f"fortran::ArrayRef<{elem}, {member_type.array_rank}>("
+        f"ftn::ArrayRef<{elem}, {member_type.array_rank}>("
         f"reinterpret_cast<{elem}*>({param}.{field}.data()), "
         f"{{{ext_list}}})"
     )
@@ -836,12 +836,12 @@ def _recursive_routines(tu: IRTranslationUnit) -> set[str]:
 # Connected file units (OPEN/CLOSE and unit-directed I/O)
 # ---------------------------------------------------------------------------
 
-_UNITS_TYPE = "fortran::io::Units"
+_UNITS_TYPE = "ftn::io::Units"
 _UNITS_PARAM = "_units"
 
 
 def _build_unit_state(tu: IRTranslationUnit) -> None:
-    """Thread a ``fortran::io::Units`` table into routines that OPEN/CLOSE
+    """Thread a ``ftn::io::Units`` table into routines that OPEN/CLOSE
     a unit or do unit-directed (file / variable-unit) I/O."""
     for sub in tu.subprograms:
         if _uses_units(sub.body):
@@ -995,7 +995,7 @@ def _storage_pun(
         and _is_arith(actual_ty)
         and pty.cpp != actual_ty.cpp
     ):
-        return IRRaw(text=f"fortran::storage_ref<{pty.cpp}>({arg.name})")
+        return IRRaw(text=f"ftn::storage_ref<{pty.cpp}>({arg.name})")
 
     # Array pun: a rank-1 element-type mismatch has no converting ctor (the
     # ArrayRef converting ctor only adds ``const``), so it can't bind.
@@ -1009,7 +1009,7 @@ def _storage_pun(
         and pty.element_type_cpp != actual_ty.element_type_cpp
     ):
         return IRRaw(
-            text=f"fortran::reinterpret_array<{pty.element_type_cpp}>({arg.name})"
+            text=f"ftn::reinterpret_array<{pty.element_type_cpp}>({arg.name})"
         )
     return None
 

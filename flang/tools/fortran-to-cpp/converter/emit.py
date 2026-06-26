@@ -5,8 +5,8 @@ AST.  It walks the IR top-down, prints subprograms in order, and
 preserves comments attached by ``annotate``.
 
 Aim is *readable* C++ — see R8 in the README.  We default to plain
-standard-library spellings and only reach into ``fortran::io`` /
-``fortran::FortranString`` when the rules say we must.
+standard-library spellings and only reach into ``ftn::io`` /
+``ftn::FortranString`` when the rules say we must.
 """
 
 from __future__ import annotations
@@ -274,7 +274,7 @@ def _emit_cpp_main(out: StringIO, tu: IRTranslationUnit) -> None:
         return
     main = main_progs[0]
     out.write("\nint main(int argc, char** argv) {\n")
-    out.write("  fortran::set_command_args(argc, argv);\n")
+    out.write("  ftn::set_command_args(argc, argv);\n")
     out.write(f"  {main.name}();\n")
     out.write("  return 0;\n")
     out.write("}\n")
@@ -364,9 +364,9 @@ def _emit_equiv_group(out: StringIO, g, idx: int) -> None:
     Layout (the SPICE pattern -- all members share offset 0):
         struct <CppType> {
           alignas(<A>) std::byte _store[<N>]{};
-          fortran::EquivSlot<T,0>  scalar { _store };
-          fortran::EquivArray<T,N,0> arr  { _store };
-          fortran::FortranString<L> chr;      // character member (special-cased)
+          ftn::EquivSlot<T,0>  scalar { _store };
+          ftn::EquivArray<T,N,0> arr  { _store };
+          ftn::FortranString<L> chr;      // character member (special-cased)
         } _eqK;
         auto& <name> = _eqK.<name>;
     The CHARACTER alias is emitted as a plain ``FortranString<L>`` --
@@ -379,16 +379,16 @@ def _emit_equiv_group(out: StringIO, g, idx: int) -> None:
     for m in g.members:
         if m.is_character:
             out.write(
-                f"{pad}  fortran::FortranString<{m.count}> {m.name};\n"
+                f"{pad}  ftn::FortranString<{m.count}> {m.name};\n"
             )
         elif m.count is None:
             out.write(
-                f"{pad}  fortran::EquivSlot<{m.cpp_elem_type}, 0> "
+                f"{pad}  ftn::EquivSlot<{m.cpp_elem_type}, 0> "
                 f"{m.name}{{_store}};\n"
             )
         else:
             out.write(
-                f"{pad}  fortran::EquivArray<{m.cpp_elem_type}, "
+                f"{pad}  ftn::EquivArray<{m.cpp_elem_type}, "
                 f"{m.count}, 0> {m.name}{{_store}};\n"
             )
     out.write(f"{pad}}} _eq{idx};\n")
@@ -444,7 +444,7 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
             #     offset inside an array canonical, e.g. ``ST0`` at C1(1)).
             #     Bind by reference so writes through the canonical (e.g.
             #     RECALC updating C1) are visible to this routine's name.
-            if b.view.lstrip().startswith("fortran::ArrayRef<"):
+            if b.view.lstrip().startswith("ftn::ArrayRef<"):
                 out.write(f"  auto {b.name} = {b.view};\n")
             else:
                 out.write(f"  auto& {b.name} = {b.view};\n")
@@ -507,7 +507,7 @@ def _emit_local(
     pad = "  " * indent
     _emit_comment_block(out, loc.leading_comments, indent=indent)
     # PARAMETER constants: scalars of literal type can be ``constexpr``;
-    # arrays (``fortran::Array`` — a non-literal type, often with a
+    # arrays (``ftn::Array`` — a non-literal type, often with a
     # runtime-evaluated initializer) must fall back to ``const``.  The
     # storage qualifier depends on where the declaration lives:
     #   * ``local``     — a function-body variable (no extra qualifier);
@@ -539,7 +539,7 @@ def _emit_local(
         and loc.type.element_type_cpp == "std::string_view"
         and loc.type.array_rank == 1
     ):
-        out.write(f"{pad}{prefix}fortran::CharArrayRef {loc.name}{{}};")
+        out.write(f"{pad}{prefix}ftn::CharArrayRef {loc.name}{{}};")
         _emit_trailing(out, loc.trailing_comments)
         return
     if (
@@ -615,7 +615,7 @@ def _emit_local(
     # ``std::string_view`` value — emit it as ``CharRef`` so substring
     # indexing ``s(i, j)`` and write-through still type-check.
     cpp = (
-        "fortran::CharRef"
+        "ftn::CharRef"
         if not loc.type.is_array and loc.type.cpp == "std::string_view"
         else loc.type.cpp
     )
@@ -726,13 +726,13 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
             tgt = _render_expr(target)
             if kind == "int":
                 out.write(
-                    f"{pad}  {tgt} = static_cast<std::int32_t>("
-                    f"fortran::io::read_field_int(_rec, {off}, {width}));\n"
+                    f"{pad}  {tgt} = static_cast<int32_t>("
+                    f"ftn::io::read_field_int(_rec, {off}, {width}));\n"
                 )
             else:
                 out.write(
                     f"{pad}  {tgt} = static_cast<float>("
-                    f"fortran::io::read_field_real(_rec, {off}, {width}, {dec}));\n"
+                    f"ftn::io::read_field_real(_rec, {off}, {width}, {dec}));\n"
                 )
         out.write(f"{pad}}}")
         _emit_trailing(out, stmt.trailing_comments)
@@ -834,7 +834,7 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         # remaining items keep their previous values rather than each
         # consuming further input.
         item_calls = " && ".join(
-            f"fortran::io::read_list_item({stmt.stream}, {_render_expr(item)})"
+            f"ftn::io::read_list_item({stmt.stream}, {_render_expr(item)})"
             for item in stmt.items
         )
         if item_calls:
@@ -1053,13 +1053,13 @@ def _emit_internal_write(out: StringIO, stmt: "IRPrint", *, indent: int) -> None
 
 
 def _render_format_record(stmt: "IRPrint") -> str:
-    """Render a ``fortran::io::format_record(fmt, items...)`` call for a
+    """Render a ``ftn::io::format_record(fmt, items...)`` call for a
     run-time (non-constant) FORMAT.  The first argument is the format
     string expression; the rest are the output items, flattened."""
     assert stmt.format_expr is not None
     args = [_render_expr(stmt.format_expr)]
     args.extend(_render_expr(it) for it in stmt.items)
-    return f"fortran::io::format_record({', '.join(args)})"
+    return f"ftn::io::format_record({', '.join(args)})"
 
 
 def _emit_formatted_sequential_read(
@@ -1090,13 +1090,13 @@ def _emit_formatted_sequential_read(
             tgt = _render_expr(target)
             if kind == "int":
                 out.write(
-                    f"{pad}  {tgt} = static_cast<std::int32_t>("
-                    f"fortran::io::read_field_int(_rec, {off}, {width}));\n"
+                    f"{pad}  {tgt} = static_cast<int32_t>("
+                    f"ftn::io::read_field_int(_rec, {off}, {width}));\n"
                 )
             else:
                 out.write(
                     f"{pad}  {tgt} = static_cast<float>("
-                    f"fortran::io::read_field_real(_rec, {off}, {width}, {dec}));\n"
+                    f"ftn::io::read_field_real(_rec, {off}, {width}, {dec}));\n"
                 )
     out.write(f"{pad}}}")
     _emit_trailing(out, stmt.trailing_comments)
@@ -1136,7 +1136,7 @@ def _emit_unformatted_item(
         step = _render_expr(item.step) if item.step is not None else "1"
         v = item.var
         out.write(
-            f"{pad}for (std::int32_t {v} = {lo}; {v} <= {hi}; {v} += {step}) {{\n"
+            f"{pad}for (int32_t {v} = {lo}; {v} <= {hi}; {v} += {step}) {{\n"
         )
         for inner in item.items:
             _emit_unformatted_item(
@@ -1146,12 +1146,12 @@ def _emit_unformatted_item(
         return
     if read:
         out.write(
-            f"{pad}_roff = fortran::io::take_bytes({rec_var}, _roff, "
+            f"{pad}_roff = ftn::io::take_bytes({rec_var}, _roff, "
             f"{_render_expr(item)});\n"
         )
     else:
         out.write(
-            f"{pad}fortran::io::append_bytes({rec_var}, "
+            f"{pad}ftn::io::append_bytes({rec_var}, "
             f"{_render_expr(item)});\n"
         )
 
@@ -1168,7 +1168,7 @@ def _emit_runtime_formatted_implied_do(
     pad = "  " * indent
     _emit_comment_block(out, stmt.leading_comments, indent=indent)
     out.write(f"{pad}{{\n")
-    out.write(f"{pad}  std::vector<fortran::io::FmtArg> _args;\n")
+    out.write(f"{pad}  std::vector<ftn::io::FmtArg> _args;\n")
 
     def push_item(item, ind: int) -> None:
         ipad = "  " * ind
@@ -1183,7 +1183,7 @@ def _emit_runtime_formatted_implied_do(
             )
             incr = f"++{var}" if step == "1" else f"{var} += {step}"
             out.write(
-                f"{ipad}for (fortran::index_t {var} = {lo}; "
+                f"{ipad}for (ftn::index_t {var} = {lo}; "
                 f"{cond}; {incr}) {{\n"
             )
             for sub in item.items:
@@ -1193,7 +1193,7 @@ def _emit_runtime_formatted_implied_do(
             rendered = _render_expr(item)
             out.write(
                 f"{ipad}_args.push_back("
-                f"fortran::io::make_fmt_arg({rendered}));\n"
+                f"ftn::io::make_fmt_arg({rendered}));\n"
             )
 
     for it in stmt.items:
@@ -1205,7 +1205,7 @@ def _emit_runtime_formatted_implied_do(
         fmt_expr = _csl(stmt.format)
     out.write(
         f"{pad}  {stmt.stream} << "
-        f"fortran::io::vformat_record({fmt_expr}, _args) << '\\n';\n"
+        f"ftn::io::vformat_record({fmt_expr}, _args) << '\\n';\n"
     )
     out.write(f"{pad}}}")
     _emit_trailing(out, stmt.trailing_comments)
@@ -1232,7 +1232,7 @@ def _emit_io_with_implied_do(out, stmt, *, write: bool, indent: int) -> None:
             )
             incr = f"++{var}" if step == "1" else f"{var} += {step}"
             out.write(
-                f"{ipad}for (fortran::index_t {var} = {lo}; {cond}; {incr}) {{\n"
+                f"{ipad}for (ftn::index_t {var} = {lo}; {cond}; {incr}) {{\n"
             )
             for sub in item.items:
                 emit_item(sub, ind + 1)
@@ -1472,7 +1472,7 @@ def _emit_do(out: StringIO, node: IRDo, *, indent: int) -> None:
     pad = "  " * indent
     _emit_comment_block(out, node.leading_comments, indent=indent)
     var = node.var
-    decl = "fortran::index_t " if node.declare else ""
+    decl = "ftn::index_t " if node.declare else ""
     lo = _render_expr(node.lower)
     hi = _render_expr(node.upper)
     step = _render_expr(node.step) if node.step is not None else "1"
@@ -1511,7 +1511,7 @@ def _render_section(expr: "IRSection") -> str:
 
     A rank-1 single-triplet section emits the scalar ``section(lo, hi,
     stride)`` overload.  Multi-dimensional or mixed sections emit the
-    general overload, passing a ``fortran::Slice`` for each kept
+    general overload, passing a ``ftn::Slice`` for each kept
     dimension and a plain index for each dropped one."""
     a = expr.array
     triplets = [s for s in expr.subscripts if isinstance(s, IRTriplet)]
@@ -1528,7 +1528,7 @@ def _render_section(expr: "IRSection") -> str:
             lo = _render_expr(s.lower) if s.lower is not None else f"{a}.lbound({dim})"
             hi = _render_expr(s.upper) if s.upper is not None else f"{a}.ubound({dim})"
             stride = _render_expr(s.stride) if s.stride is not None else "1"
-            parts.append(f"fortran::Slice{{{lo}, {hi}, {stride}}}")
+            parts.append(f"ftn::Slice{{{lo}, {hi}, {stride}}}")
         else:
             parts.append(_render_expr(s))
     return f"{a}.section({', '.join(parts)})"
@@ -1561,7 +1561,7 @@ def _render_expr(expr: IRExpr) -> str:
         elems = ", ".join(_render_expr(e) for e in expr.elements)
         # Variadic (no braces) so a mixed-literal constructor deduces a
         # common element type rather than a homogeneous initializer_list.
-        return f"fortran::array_of({elems})"
+        return f"ftn::array_of({elems})"
     if isinstance(expr, IRLambda):
         params = ", ".join(f"auto {p}" for p in expr.params)
         return f"[&]({params}) {{ return {_render_expr(expr.body)}; }}"

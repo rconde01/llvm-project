@@ -104,7 +104,7 @@ class DataExecEmitTests(unittest.TestCase):
         # each element resolves to its decimal value.
         self.assertRegex(
             cpp,
-            r"a = fortran::array_of\([^,]*1[^,]*f, [^,]*2[^,]*f, [^,]*3[^,]*f\);",
+            r"a = ftn::array_of\([^,]*1[^,]*f, [^,]*2[^,]*f, [^,]*3[^,]*f\);",
         )
         self.assertIn("k = 7;", cpp)
 

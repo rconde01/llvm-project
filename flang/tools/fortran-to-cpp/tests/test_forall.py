@@ -60,13 +60,13 @@ class ForallEmitTests(unittest.TestCase):
 
     def test_single_index_forall_is_a_loop(self) -> None:
         cpp = _convert(FORALL_F90)
-        self.assertIn("for (fortran::index_t i = 1; i <= 5; ++i)", cpp)
+        self.assertIn("for (ftn::index_t i = 1; i <= 5; ++i)", cpp)
         self.assertIn("a(i) = i * i;", cpp)
 
     def test_multi_index_forall_is_nested_loops(self) -> None:
         cpp = _convert(FORALL_F90)
-        self.assertIn("for (fortran::index_t i = 1; i <= 3; ++i)", cpp)
-        self.assertIn("for (fortran::index_t j = 1; j <= 3; ++j)", cpp)
+        self.assertIn("for (ftn::index_t i = 1; i <= 3; ++i)", cpp)
+        self.assertIn("for (ftn::index_t j = 1; j <= 3; ++j)", cpp)
         self.assertIn("b(i, j) = i * 10 + j;", cpp)
 
 

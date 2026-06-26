@@ -63,12 +63,12 @@ def _convert(src: str) -> str:
 class DoConcurrentEmitTests(unittest.TestCase):
     def test_single_index(self) -> None:
         cpp = _convert(DC_F90)
-        self.assertIn("for (fortran::index_t i = 1; i <= 5; ++i)", cpp)
+        self.assertIn("for (ftn::index_t i = 1; i <= 5; ++i)", cpp)
 
     def test_multi_index_is_nested(self) -> None:
         cpp = _convert(DC2_F90)
-        self.assertIn("for (fortran::index_t i = 1; i <= 2; ++i)", cpp)
-        self.assertIn("for (fortran::index_t j = 1; j <= 3; ++j)", cpp)
+        self.assertIn("for (ftn::index_t i = 1; i <= 2; ++i)", cpp)
+        self.assertIn("for (ftn::index_t j = 1; j <= 3; ++j)", cpp)
 
 
 @unittest.skipUnless(

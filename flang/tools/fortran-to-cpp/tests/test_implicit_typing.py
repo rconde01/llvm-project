@@ -72,20 +72,20 @@ def _convert_path(src: str, suffix: str) -> str:
 class ImplicitTypingEmitTests(unittest.TestCase):
     def test_implicit_scalars_declared(self) -> None:
         cpp = _convert_path(F77_F, ".f")
-        self.assertIn("std::int32_t i{};", cpp)  # I-N -> integer
-        self.assertIn("std::int32_t n{};", cpp)
+        self.assertIn("int32_t i{};", cpp)  # I-N -> integer
+        self.assertIn("int32_t n{};", cpp)
 
     def test_dimension_array_gets_implicit_element_type(self) -> None:
         cpp = _convert_path(F77_F, ".f")
         # d starts with 'd' -> real; DIMENSION d(5) -> Array<float,1>.
-        self.assertIn("fortran::Array<float, 1> d{{5}};", cpp)
+        self.assertIn("ftn::Array<float, 1> d{{5}};", cpp)
 
     def test_common_members_typed(self) -> None:
         cpp = _convert_path(F77_F, ".f")
         # No unresolved-type placeholder; members get implicit types.
         self.assertNotIn("TODO: type", cpp)
         self.assertIn("float x{};", cpp)
-        self.assertIn("fortran::Array<std::int32_t, 1> narr{{3}};", cpp)
+        self.assertIn("ftn::Array<int32_t, 1> narr{{3}};", cpp)
 
     def test_continue_is_noop(self) -> None:
         cpp = _convert_path(F77_F, ".f")
@@ -94,7 +94,7 @@ class ImplicitTypingEmitTests(unittest.TestCase):
     def test_implicit_none_unaffected(self) -> None:
         # A unit with implicit none must not gain synthesized locals.
         cpp = _convert_path(IMPLICIT_NONE_F90, ".f90")
-        self.assertEqual(cpp.count("std::int32_t k"), 1)
+        self.assertEqual(cpp.count("int32_t k"), 1)
 
 
 @unittest.skipUnless(

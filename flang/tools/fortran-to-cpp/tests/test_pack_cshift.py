@@ -55,9 +55,9 @@ def _convert(src: str) -> str:
 class PackCshiftEmitTests(unittest.TestCase):
     def test_calls_mapped_and_move_assigned(self) -> None:
         cpp = _convert(PK_F90)
-        self.assertIn("b = fortran::cshift(a, 2);", cpp)
+        self.assertIn("b = ftn::cshift(a, 2);", cpp)
         # Inline array-relational mask passed as a value (a > 2).
-        self.assertIn("fortran::pack(a, a > 2)", cpp)
+        self.assertIn("ftn::pack(a, a > 2)", cpp)
 
 
 @unittest.skipUnless(

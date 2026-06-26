@@ -35,7 +35,7 @@
 
 #include <type_traits>
 
-namespace fortran {
+namespace ftn {
 namespace detail {
 
 /// An ``Array`` or ``ArrayRef`` — anything with an element type, a static
@@ -101,6 +101,6 @@ FORTRAN_RT_ELEMENTWISE(!=, bool)
 
 #undef FORTRAN_RT_ELEMENTWISE
 
-} // namespace fortran
+} // namespace ftn
 
 #endif // FORTRAN_RT_ARRAY_OPS_HPP
