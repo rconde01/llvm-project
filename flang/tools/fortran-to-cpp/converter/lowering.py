@@ -317,6 +317,17 @@ def _infer_readonly_scalar_params(tu: IRTranslationUnit) -> None:
 
     for sub in tu.subprograms:
         pnames = {p.name for p in sub.parameters}
+        # Dummy *procedure* parameters: a routine that takes a callback
+        # and calls it on one of its own dummies has an opaque write
+        # surface (the actual procedure's body is bound at the call
+        # site, and any actual we don't have the source for could write
+        # the arg).  Conservatively treat such calls as local writes
+        # below.  The fixpoint then propagates non-const-ness back up
+        # through every caller that passes its own param into that
+        # dummy.
+        proc_dummy_names = {
+            p.name for p in sub.parameters if p.type.is_procedure
+        }
         # Any scalar (non-array, non-pointer) param is a const candidate —
         # including one a prior (per-file) run already marked ``in``, so a
         # later whole-program run can correct it back to ``inout`` once a
@@ -339,7 +350,21 @@ def _infer_readonly_scalar_params(tu: IRTranslationUnit) -> None:
         w: set[str] = set()
         e: list[tuple[str, str, int]] = []
 
-        def handle_call(callee: str, args, *, _e=e, _pn=pnames) -> None:
+        def handle_call(
+            callee: str, args, *, _e=e, _pn=pnames, _w=w,
+            _proc_dummies=proc_dummy_names,
+        ) -> None:
+            # A call through a *dummy procedure* parameter has an opaque
+            # body: at the C++ template instantiation site any actual --
+            # including one we don't have the source of -- could write
+            # the arg.  Conservatively mark each scalar param passed
+            # positionally as locally written, exactly like an
+            # ``IRAssignment(target=p)`` would.
+            if callee in _proc_dummies:
+                for a in args:
+                    if isinstance(a, IRName) and a.name in _pn:
+                        _w.add(a.name)
+                return
             # Only a known user subprogram creates a dependency edge.  A
             # call-shaped node with an unknown callee is array indexing
             # (``apl(i,ic)`` — read-only subscripts) or an intrinsic
