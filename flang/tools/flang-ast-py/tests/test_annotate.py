@@ -185,6 +185,39 @@ class AnnotationTests(unittest.TestCase):
         self.assertEqual(len(s9.leading_comments), 1)
         self.assertIn("Initialise", s9.leading_comments[0].text)
 
+    def test_leading_block_separated_by_blank_lines_still_attaches(self) -> None:
+        # A doc-comment block separated from its statement by one or more
+        # blank lines (the ``C ...header...`` / blank / ``IMPLICIT NONE``
+        # shape that pervades fixed-form Fortran) must still attach to the
+        # following statement, not be orphaned.
+        source = (
+            "subroutine s\n"          # 1
+            "C ====================\n"  # 2
+            "C does a thing\n"          # 3
+            "C ====================\n"  # 4
+            "\n"                        # 5  (blank gap)
+            "      integer :: x\n"      # 6
+            "      end\n"               # 7
+        )
+        stmt = Node.from_json({
+            "kind": "Statement",
+            "source": {"text": "integer :: x", "file": "s.f", "line": 6,
+                       "col": 7, "endLine": 6, "endCol": 19},
+        })
+        prog = Node(
+            kind="SubroutineSubprogram", children=[stmt],
+            source=Node.from_json({
+                "kind": "SubroutineSubprogram",
+                "source": {"text": "subroutine s", "file": "s.f", "line": 1,
+                           "col": 1, "endLine": 1, "endCol": 13},
+            }).source,
+        )
+        root = Node(kind="Program", children=[prog])
+        annotate_tree(root, sources={"s.f": source}, fixed_form=True)
+        texts = [c.text.strip() for c in stmt.leading_comments]
+        self.assertIn("does a thing", texts)
+        self.assertEqual(len(stmt.leading_comments), 3)  # all 3 C-lines
+
     def test_leading_comments_only_attach_once(self) -> None:
         root = self._make_tree()
         annotate_tree(root, sources={"demo.f90": _FORTRAN_SOURCE})

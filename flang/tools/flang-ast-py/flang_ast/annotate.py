@@ -277,7 +277,7 @@ class CommentAnnotator:
             comments = self._comments_for(file_)
             if not comments:
                 continue
-            self._attach(file_anchors, comments)
+            self._attach(file_anchors, comments, self._blank_lines(file_))
         return root
 
     def comments_for_file(self, file: str) -> list[Comment]:
@@ -285,6 +285,21 @@ class CommentAnnotator:
         return list(self._comments_for(file))
 
     # -- Internals ---------------------------------------------------------
+
+    def _blank_lines(self, file: str) -> frozenset[int]:
+        """1-based line numbers in ``file`` that are blank (whitespace
+        only).  Used so a leading-comment block separated from its
+        statement by blank lines still attaches to it -- the common
+        ``C doc...`` / blank / ``IMPLICIT NONE`` header shape."""
+        source = self._sources.get(file)
+        if source is None:
+            # _comments_for populates the cache; call it to load the file.
+            self._comments_for(file)
+            source = self._sources.get(file, "")
+        return frozenset(
+            i for i, line in enumerate(source.splitlines(), start=1)
+            if not line.strip()
+        )
 
     def _comments_for(self, file: str) -> list[Comment]:
         cached = self._comments_cache.get(file)
@@ -307,7 +322,10 @@ class CommentAnnotator:
         return result
 
     @staticmethod
-    def _attach(anchors: list[_AnchorInfo], comments: list[Comment]) -> None:
+    def _attach(
+        anchors: list[_AnchorInfo], comments: list[Comment],
+        blank_lines: frozenset[int] = frozenset(),
+    ) -> None:
         # Sort anchors by their starting line so leading-comment search
         # can walk linearly.
         anchors_sorted = sorted(anchors, key=lambda a: (a.start_line, a.end_line))
@@ -347,6 +365,14 @@ class CommentAnnotator:
         for a in anchors_sorted:
             block: list[Comment] = []
             probe = a.start_line - 1
+            # A doc-comment block is often separated from its statement by
+            # one or more blank lines (``C ...header...`` / blank /
+            # ``IMPLICIT NONE``).  Skip the blank gap so the block still
+            # attaches to the following statement rather than being
+            # orphaned.  Only blank lines are skipped -- the scan still
+            # stops at the first line of code.
+            while probe >= 1 and probe in blank_lines and probe not in full_line_comments:
+                probe -= 1
             while probe in full_line_comments and probe not in assigned_lines:
                 block.append(full_line_comments[probe])
                 probe -= 1
