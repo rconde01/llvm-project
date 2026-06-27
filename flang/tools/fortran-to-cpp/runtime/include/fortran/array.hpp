@@ -342,7 +342,9 @@ public:
   template <typename U, std::array<index_t, Rank> SrcLower>
     requires(!std::is_same_v<U, T>)
   Array &operator=(const Array<U, Rank, SrcLower> &src) {
-    const index_t n = size();
+    // Bound by the source extent too: a shorter source (e.g. a partially
+    // specified DATA list) must not be read past its end.
+    const index_t n = std::min(size(), src.size());
     for (index_t i = 0; i < n; ++i) {
       linear_at(i) = static_cast<T>(src.linear_at(i));
     }
@@ -358,7 +360,7 @@ public:
   template <std::array<index_t, Rank> SrcLower>
     requires(SrcLower != Lower)
   Array &operator=(const Array<T, Rank, SrcLower> &src) {
-    const index_t n = size();
+    const index_t n = std::min(size(), src.size());
     for (index_t i = 0; i < n; ++i) {
       linear_at(i) = src.linear_at(i);
     }

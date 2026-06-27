@@ -115,6 +115,45 @@ class ConstantTableEmitTests(unittest.TestCase):
         self.assertIn("small = ftn::array_of(1, 2, 3, 4, 5, 6);", cpp)
         self.assertNotIn("small_data", cpp)
 
+    def test_named_constant_repeat_count_expands(self) -> None:
+        # ``DATA v / N * 0.0 /`` with ``PARAMETER (N=16)`` must expand to N
+        # elements (the count names a constant, not a literal).  Previously
+        # collapsed to a single element, which resized the array to 1.
+        src = (
+            "      SUBROUTINE S ( R )\n"
+            "      DOUBLE PRECISION R\n"
+            "      INTEGER N\n"
+            "      PARAMETER (N=16)\n"
+            "      DOUBLE PRECISION V(N)\n"
+            "      SAVE V\n"
+            "      DATA V / N * 2.5D0 /\n"
+            "      R = V(N)\n"
+            "      END\n"
+        )
+        cpp = _convert(src)
+        import re
+        m = re.search(r"v_data\[\] = \{([^}]*)\}", cpp, re.S)
+        self.assertIsNotNone(m, "expected an extracted v_data table")
+        self.assertEqual(len(m.group(1).split(",")), 16)
+
+    def test_logical_data_table_is_extracted(self) -> None:
+        # A large logical DATA repeat must become a static-constexpr table,
+        # not a giant array_of(false, ...) that overflows std::common_type.
+        src = (
+            "      SUBROUTINE S ( R )\n"
+            "      LOGICAL R\n"
+            "      INTEGER N\n"
+            "      PARAMETER (N=20)\n"
+            "      LOGICAL FLAGS(N)\n"
+            "      SAVE FLAGS\n"
+            "      DATA FLAGS / N * .FALSE. /\n"
+            "      R = FLAGS(15)\n"
+            "      END\n"
+        )
+        cpp = _convert(src)
+        self.assertIn("static constexpr bool flags_data[] = {", cpp)
+        self.assertIn("flags.assign_data(flags_data);", cpp)
+
     def test_parameter_view_carries_static_lower(self) -> None:
         cpp = _convert(LB_F90)
         self.assertIn("static constexpr double dc_data[] = {", cpp)
@@ -169,6 +208,28 @@ class ConstantTableRunTests(unittest.TestCase):
     def test_lb_table_runs(self) -> None:
         # dc(0)=0.1, dc(9)=1.0
         self.assertEqual(self._run(LB_F90), ["0.1", "1"])
+
+    def test_save_array_data_init_runs_once(self) -> None:
+        # ``DATA a / 4*0 /`` on a SAVE array is load-once; if it re-ran each
+        # call it would wipe the accumulator (the SPICE NPARSD CLASS-table
+        # bug).  Two calls must see 1 then 2.
+        src = (
+            "      SUBROUTINE ACC ( R )\n"
+            "      INTEGER R\n"
+            "      INTEGER A(4)\n"
+            "      SAVE A\n"
+            "      DATA A / 4 * 0 /\n"
+            "      A(1) = A(1) + 1\n"
+            "      R = A(1)\n"
+            "      END\n"
+            "      PROGRAM P\n"
+            "      INTEGER V\n"
+            "      CALL ACC ( V )\n"
+            "      CALL ACC ( V )\n"
+            "      PRINT *, V\n"
+            "      END\n"
+        )
+        self.assertEqual(self._run(src), ["2"])
 
     def test_common_view_table_runs(self) -> None:
         # y1(15) writes through the COMMON view, so x(15) == 1.5 in `p`.

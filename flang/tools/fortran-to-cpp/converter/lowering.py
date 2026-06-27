@@ -1667,6 +1667,12 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     # to the local's initializer (which becomes the SAVE-struct field's
     # once-only initializer) and drop it from the per-call body.
     _hoist_save_data_inits(sub, data_inits)
+    # A SAVEd *array's* DATA initializer is likewise load-once, but can't be
+    # folded into a struct-field initializer; left in the body it re-runs
+    # every call, wiping state that a first-call block set up (NPARSD zeroes
+    # its CLASS table each call, so the second parse sees no digits).  Guard
+    # those inits with a once-only SAVE flag.
+    _guard_save_array_data_inits(sub, data_inits)
     _resolve_allocations(sub)
     _resolve_pointers(sub)
     _expand_array_assignments(sub, array_resolved)
@@ -1873,6 +1879,72 @@ def _hoist_save_data_inits(
     drop = set(map(id, hoisted_stmts))
     data_inits[:] = [s for s in data_inits if id(s) not in drop]
     sub.body = [s for s in sub.body if id(s) not in drop]
+
+
+def _guard_save_array_data_inits(
+    sub: IRSubprogram, data_inits: list[IRStatement]
+) -> None:
+    """Wrap the DATA initializers of SAVEd *arrays* in a once-only guard so
+    they run at first call (load-time semantics) instead of every call.
+
+    A SAVEd array's DATA init is an assignment at the top of the body; unlike
+    a scalar it can't become a struct-field initializer, so without a guard
+    it re-initializes the persisted array on each call -- clobbering any
+    state a first-call (``IF (FIRST)``) block established (the SPICE NPARSD
+    CLASS/VALUES tables).  A synthetic SAVEd flag makes the block run once."""
+    save_arrays = {
+        loc.name for loc in sub.locals if loc.is_save and loc.type.is_array
+    }
+    if not save_arrays:
+        return
+    guarded = [
+        s
+        for s in data_inits
+        if isinstance(s, IRAssignment)
+        and isinstance(s.target, IRName)
+        and s.target.name in save_arrays
+    ]
+    if not guarded:
+        return
+    flag = "_save_data_init"
+    if not any(loc.name == flag for loc in sub.locals):
+        sub.locals.append(
+            IRLocal(
+                name=flag,
+                type=IRType(cpp="bool", fortran="logical", is_logical=True),
+                is_save=True,
+                initializer=IRLiteral(cpp_text="false", cpp_type="bool"),
+            )
+        )
+    drop = set(map(id, guarded))
+    block: list[IRStatement] = list(guarded) + [
+        IRAssignment(
+            target=IRName(name=flag, fortran=flag),
+            value=IRLiteral(cpp_text="true", cpp_type="bool"),
+        )
+    ]
+    guard = IRIf(
+        branches=[
+            (IRUnaryOp(op="!", operand=IRName(name=flag, fortran=flag)), block)
+        ],
+        else_body=None,
+    )
+    # Replace the first guarded init (in body and data_inits) with the guard
+    # block; drop the rest.  Keeps the inits' original position at body top.
+    def splice(stmts: list[IRStatement]) -> list[IRStatement]:
+        out: list[IRStatement] = []
+        placed = False
+        for s in stmts:
+            if id(s) in drop:
+                if not placed:
+                    out.append(guard)
+                    placed = True
+            else:
+                out.append(s)
+        return out
+
+    data_inits[:] = splice(data_inits)
+    sub.body = splice(sub.body)
 
 
 def _split_entry_points(
@@ -2520,13 +2592,48 @@ def _lower_data_value(value_node: Node) -> list[IRExpr]:
     count = 1
     repeat = value_node.first_child("DataStmtRepeat")
     if repeat is not None:
-        lit = repeat.find_first("IntLiteralConstant")
-        if lit is not None and lit.fortran:
-            try:
-                count = int(lit.fortran.split("_")[0])
-            except ValueError:
-                count = 1
+        count = _const_int(repeat)
+        if count is None:
+            count = 1
     return [val] * count
+
+
+def _parse_int_literal(text: str | None) -> int | None:
+    """Parse a Fortran integer literal possibly carrying a ``_kind`` suffix
+    (``"128_4"`` -> 128)."""
+    if not text:
+        return None
+    try:
+        return int(text.split("_")[0])
+    except ValueError:
+        return None
+
+
+def _const_int(node: Node) -> int | None:
+    """Best-effort constant integer value of a node subtree: a literal, a
+    flang-folded scalar ``value``, or a PARAMETER reference's ``init``.
+    Used for e.g. a ``DATA`` repeat count that names a constant
+    (``DATA V / N * 0.0 /`` with ``PARAMETER (N=128)``), which is otherwise
+    invisible to a literal-only scan."""
+    lit = node.find_first("IntLiteralConstant")
+    if lit is not None:
+        v = _parse_int_literal(lit.fortran)
+        if v is not None:
+            return v
+    # A folded scalar-int ``value`` on any expression-bearing descendant.
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if n.value is not None:
+            v = _parse_int_literal(n.value)
+            if v is not None:
+                return v
+        if n.init is not None:
+            v = _parse_int_literal(n.init)
+            if v is not None:
+                return v
+        stack.extend(n.children)
+    return None
 
 
 def _format_data_constant(text: str) -> str:
@@ -5866,11 +5973,20 @@ def _lower_char_literal(node: Node) -> IRLiteral:
 
 
 def _lower_logical_literal(node: Node) -> IRLiteral:
+    # Carry ``cpp_type="bool"`` so a homogeneous logical DATA table (e.g.
+    # ``DATA flags / 128*.FALSE. /``) qualifies for static-constexpr table
+    # extraction instead of a giant ``array_of(false, false, ...)`` that
+    # overflows std::common_type's argument fold.
     body_node = node.first_child("bool")
     if body_node and body_node.fortran is not None:
-        return IRLiteral(cpp_text="true" if body_node.fortran == "true" else "false")
+        return IRLiteral(
+            cpp_text="true" if body_node.fortran == "true" else "false",
+            cpp_type="bool",
+        )
     raw = (node.source.text if node.source else "").lower().strip(". ")
-    return IRLiteral(cpp_text="true" if "t" in raw[:1] else "false")
+    return IRLiteral(
+        cpp_text="true" if "t" in raw[:1] else "false", cpp_type="bool"
+    )
 
 
 # Fortran intrinsics that map directly to a name in <cmath> / std::.

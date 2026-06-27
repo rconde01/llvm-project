@@ -187,6 +187,13 @@ class Node:
     substitution).  ``None`` when the expression is not a scalar integer
     constant or could not be evaluated."""
 
+    init: str | None = None
+    """For a ``Name`` that resolves to a PARAMETER (or otherwise
+    statically-initialized symbol), flang's folded initial value as
+    Fortran source text -- ``"128_4"`` for ``PARAMETER (N=128)``, or a
+    ``[T:: ...]`` array constructor for an initialized array.  ``None`` for
+    symbols with no static initializer."""
+
     lower_present: bool | None = None
     """For a ``SubstringRange`` (``s(lo:hi)``), whether the lower bound was
     written.  Both bounds are optional and an omitted one is absent from the
@@ -319,6 +326,7 @@ class Node:
             attrs=_opt_str_tuple(raw.get("attrs")),
             category=_opt_str(raw.get("category")),
             value=_opt_str(raw.get("value")),
+            init=_opt_str(raw.get("init")),
             lower_present=(
                 bool(raw["lowerPresent"]) if "lowerPresent" in raw else None
             ),
