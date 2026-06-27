@@ -365,16 +365,21 @@ class CommentAnnotator:
         for a in anchors_sorted:
             block: list[Comment] = []
             probe = a.start_line - 1
-            # A doc-comment block is often separated from its statement by
-            # one or more blank lines (``C ...header...`` / blank /
-            # ``IMPLICIT NONE``).  Skip the blank gap so the block still
-            # attaches to the following statement rather than being
-            # orphaned.  Only blank lines are skipped -- the scan still
-            # stops at the first line of code.
-            while probe >= 1 and probe in blank_lines and probe not in full_line_comments:
-                probe -= 1
-            while probe in full_line_comments and probe not in assigned_lines:
-                block.append(full_line_comments[probe])
+            # Collect the comment block above the anchor, walking up through
+            # both comment lines and *blank* lines.  Doc blocks are routinely
+            # separated from their statement by blank lines, and multi-
+            # paragraph headers (a file banner, a change log) have blank
+            # lines *between* comment groups -- all of that is one logical
+            # leading block for the following statement.  The scan stops only
+            # at the first line of code, an already-assigned line, or the top
+            # of file, so it never crosses a statement to mis-attach.
+            while probe >= 1 and probe not in assigned_lines:
+                if probe in full_line_comments:
+                    block.append(full_line_comments[probe])
+                elif probe in blank_lines:
+                    pass  # skip the blank, keep scanning upward
+                else:
+                    break  # hit a line of code
                 probe -= 1
             if not block:
                 continue

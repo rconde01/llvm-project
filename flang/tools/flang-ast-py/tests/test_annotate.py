@@ -218,6 +218,64 @@ class AnnotationTests(unittest.TestCase):
         self.assertIn("does a thing", texts)
         self.assertEqual(len(stmt.leading_comments), 3)  # all 3 C-lines
 
+    def test_multi_paragraph_header_with_internal_blanks(self) -> None:
+        # A file banner / multi-paragraph header has blank lines *between*
+        # comment groups; the whole thing is one leading block for the
+        # first statement.  The scan walks up through both comments and
+        # blanks, stopping only at code -- so all three groups attach.
+        source = (
+            "C igrf.for banner line\n"   # 1
+            "C subroutine list ...\n"    # 2
+            "\n"                          # 3  internal blank
+            "C change log:\n"            # 4
+            "C  1/27/92 adopted ...\n"   # 5
+            "\n"                          # 6  internal blank
+            "C -Version- table\n"        # 7
+            "      subroutine fieldg\n"  # 8
+            "      end\n"                # 9
+        )
+        stmt = Node.from_json({
+            "kind": "Statement",
+            "source": {"text": "subroutine fieldg", "file": "i.f", "line": 8,
+                       "col": 7, "endLine": 8, "endCol": 24},
+        })
+        prog = Node(kind="SubroutineSubprogram", children=[stmt],
+                    source=stmt.source)
+        root = Node(kind="Program", children=[prog])
+        annotate_tree(root, sources={"i.f": source}, fixed_form=True)
+        texts = [c.text for c in stmt.leading_comments]
+        # The first banner line and the change-log tail both made it.
+        self.assertTrue(any("igrf.for banner" in t for t in texts))
+        self.assertTrue(any("-Version- table" in t for t in texts))
+        self.assertEqual(len(stmt.leading_comments), 5)  # all 5 C-lines
+
+    def test_blank_scan_stops_at_code(self) -> None:
+        # A comment above a *prior* statement must NOT be pulled into the
+        # next statement's leading block: the upward scan stops at code.
+        source = (
+            "      x = 1\n"              # 1  code
+            "C note about x\n"          # 2  comment (above no further code)
+            "\n"                         # 3  blank
+            "      y = 2\n"             # 4  code (its leading scan: blank,
+            "      end\n"               # 5  then comment 2, then code 1 stop)
+        )
+        s_x = Node.from_json({"kind": "Statement", "source": {
+            "text": "x = 1", "file": "c.f", "line": 1, "col": 7,
+            "endLine": 1, "endCol": 12}})
+        s_y = Node.from_json({"kind": "Statement", "source": {
+            "text": "y = 2", "file": "c.f", "line": 4, "col": 7,
+            "endLine": 4, "endCol": 12}})
+        prog = Node(kind="SubroutineSubprogram", children=[s_x, s_y],
+                    source=s_x.source)
+        root = Node(kind="Program", children=[prog])
+        annotate_tree(root, sources={"c.f": source}, fixed_form=True)
+        # "note about x" attaches to y (the next code line after it); the
+        # scan from y stops at x=1 (code), so it never crosses into earlier
+        # statements.  x itself has no leading comment.
+        self.assertEqual([c.text for c in s_x.leading_comments], [])
+        self.assertEqual(len(s_y.leading_comments), 1)
+        self.assertIn("note about x", s_y.leading_comments[0].text)
+
     def test_leading_comments_only_attach_once(self) -> None:
         root = self._make_tree()
         annotate_tree(root, sources={"demo.f90": _FORTRAN_SOURCE})
