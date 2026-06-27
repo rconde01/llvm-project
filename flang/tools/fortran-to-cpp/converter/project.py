@@ -26,6 +26,7 @@ from flang_ast import FlangError, annotate_tree, parse_fortran_file
 from flang_ast.nodes import Node
 
 from .emit import emit_shared_header, emit_translation_unit
+from .errors import ConversionError
 from .ir import IRTranslationUnit
 from .lowering import (
     _drop_external_function_locals,
@@ -49,6 +50,7 @@ def convert_files(
     *,
     flang: str | None = None,
     header_name: str = SHARED_HEADER_NAME,
+    tolerant: bool = False,
 ) -> dict[Path, str]:
     """Translate several Fortran files, honoring inter-module ``USE`` deps.
 
@@ -87,6 +89,15 @@ def convert_files(
                 # a sema error, or a dependency that itself failed).  Skip
                 # it and still convert the rest of the project rather than
                 # aborting the whole run.
+                _warn_skip(src, exc)
+                continue
+            except ConversionError as exc:
+                # The converter doesn't model some construct in this file.
+                # Normally that's a hard error (the caller wants to know),
+                # but a batch/corpus run (``tolerant``) skips the file and
+                # converts the rest -- the caller filters the survivors.
+                if not tolerant:
+                    raise
                 _warn_skip(src, exc)
                 continue
 
