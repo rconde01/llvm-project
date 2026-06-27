@@ -35,6 +35,36 @@ end program
 """
 
 
+# The "umbrella subroutine" idiom: one routine whose only purpose is to
+# host a block of bare-``SAVE`` state shared across several ENTRY points
+# (SPICE's T_STAT, KEEPER, ISON, ...).  ``setn`` stores, ``incr`` bumps,
+# ``getn`` retrieves -- all three must see the *same* ``n``.
+UMBRELLA_F77 = """\
+      SUBROUTINE UMB ( X )
+      INTEGER N
+      DOUBLE PRECISION X
+      SAVE
+      N = NINT( X )
+      RETURN
+      ENTRY INCR ( )
+      N = N + 1
+      RETURN
+      ENTRY GETN ( X )
+      X = N
+      RETURN
+      END
+
+      PROGRAM P
+      DOUBLE PRECISION V
+      CALL UMB ( 5.0D0 )
+      CALL INCR
+      CALL INCR
+      CALL GETN ( V )
+      PRINT *, V
+      END
+"""
+
+
 @unittest.skipUnless(have_flang(), "flang binary not available")
 class EntryEmitTests(unittest.TestCase):
     def test_each_entry_becomes_a_function(self) -> None:
@@ -43,6 +73,19 @@ class EntryEmitTests(unittest.TestCase):
         self.assertIn("void accumulate(", cpp)
         self.assertIn("void add_ten(", cpp)
 
+    def test_umbrella_entries_share_one_save_struct(self) -> None:
+        cpp = convert(UMBRELLA_F77)
+        # A single SAVE struct holds the shared ``n`` ...
+        self.assertIn("struct UmbSave {", cpp)
+        # ... threaded through the primary and *every* entry under one name,
+        # each binding ``n`` to the same field (not a private local).
+        for sig in ("void umb(UmbSave&", "void incr(UmbSave&",
+                    "void getn(UmbSave&"):
+            self.assertIn(sig, cpp)
+        self.assertEqual(cpp.count("auto& n = umb_save.n;"), 3)
+        # The dummy ``x`` stays a parameter -- never pulled into the struct.
+        self.assertNotIn("umb_save.x", cpp)
+
 
 @unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
 class EntryRunTests(unittest.TestCase):
@@ -50,6 +93,12 @@ class EntryRunTests(unittest.TestCase):
         nums = [float(t) for t in run(ENTRY_F90).split()]
         # accumulate(a): 0 -> +1 -> +10 = 11 ; add_ten(b): 0 -> +10 = 10
         self.assertEqual(nums, [11.0, 10.0])
+
+    def test_umbrella_shared_save_state_persists(self) -> None:
+        # umb(5)->n=5; incr;incr->n=7; getn->v=7.  A private-per-entry ``n``
+        # would read 0; the shared SAVE struct yields 7.
+        nums = [float(t) for t in run(UMBRELLA_F77).split()]
+        self.assertEqual(nums, [7.0])
 
 
 if __name__ == "__main__":

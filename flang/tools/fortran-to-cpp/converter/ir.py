@@ -941,6 +941,15 @@ class IRSubprogram:
     per alternate entry point).  Populated during lowering and flattened
     into the translation unit's subprogram list by the collector."""
 
+    entry_group: str | None = None
+    """Canonical name of the primary subprogram whose ``ENTRY`` statements
+    this routine belongs to (set on the primary *and* every alternate
+    entry).  Members of one group share a single SAVE state struct so the
+    umbrella-with-ENTRY-points idiom (one block of SAVEd locals manipulated
+    across entries, e.g. SPICE's ``T_STAT``/``KEEPER``) keeps one logical
+    instance instead of a private copy per entry.  None for ordinary
+    routines."""
+
     save_struct: IRStateStruct | None = None
     """The save struct *owned* by this subprogram (None if it has no
     SAVE locals).  Always added as the first state parameter."""

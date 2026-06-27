@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import re
 
+from .errors import ConversionError
 from .ir import (
     IRCall,
     IRDirectRead,
@@ -400,12 +401,15 @@ def _build_common_structs(tu: IRTranslationUnit) -> None:
             name = canon if canon not in used else f"{canon}__p{pos}"
             used.add(name)
             canon_layout.append((name, off, sz, t))
-            fields.append(
-                IRLocal(
-                    name=name,
-                    type=t or IRType(cpp="/* TODO: type */ double", fortran="?"),
+            if t is None:
+                # A COMMON member whose type we couldn't resolve would land
+                # as a silent ``double`` placeholder -- wrong storage size and
+                # layout for the shared block.  Fail loudly instead.
+                raise ConversionError(
+                    "common block member",
+                    note=f"unresolved type for {name!r} in /{block_name}/",
                 )
-            )
+            fields.append(IRLocal(name=name, type=t))
         struct_for_block[block_name] = IRStateStruct(
             cpp_type=_common_struct_name(block_name), fields=fields
         )
@@ -750,25 +754,48 @@ def _hoisted_parameters(
 
 
 def _build_save_structs(tu: IRTranslationUnit) -> None:
+    # Group subprograms that must share one SAVE struct: a primary and all
+    # its ENTRY points (entry_group), so the umbrella idiom keeps one logical
+    # instance of the SAVEd state instead of a private copy per entry.  An
+    # ordinary routine is its own singleton group (key == its own name).
+    groups: dict[str, list[IRSubprogram]] = {}
     for sub in tu.subprograms:
-        save_locals = [loc for loc in sub.locals if loc.is_save]
-        if not save_locals:
+        groups.setdefault(sub.entry_group or sub.name, []).append(sub)
+
+    for key, members in groups.items():
+        # Union of SAVE locals across the group, keyed by name.  For an
+        # entry group every member is a copy of the same unit, so the sets
+        # coincide; the union also tolerates a member that declares fewer.
+        save_by_name: dict[str, "IRLocal"] = {}
+        for m in members:
+            for loc in m.locals:
+                if loc.is_save and loc.name not in save_by_name:
+                    save_by_name[loc.name] = loc
+        if not save_by_name:
             continue
-        hoisted = _hoisted_parameters(save_locals, sub.locals)
-        struct_type = _camelcase(sub.display_name) + "Save"
+        save_locals = list(save_by_name.values())
+        # The struct is named after, and owned by, the group's primary
+        # (the member whose name is the group key, else the first member).
+        primary = next((m for m in members if m.name == key), members[0])
+        all_locals = [loc for m in members for loc in m.locals]
+        hoisted = _hoisted_parameters(save_locals, all_locals)
+        struct_type = _camelcase(primary.display_name) + "Save"
+        param_name = primary.name + "_save"
         # Hoisted PARAMETER members come first so the SAVE field
         # initializers below them can name those constants unqualified.
-        sub.save_struct = IRStateStruct(
+        primary.save_struct = IRStateStruct(
             cpp_type=struct_type, fields=hoisted + save_locals
         )
-        sub.locals = [loc for loc in sub.locals if not loc.is_save]
-        _attach_state(
-            sub,
-            struct_type=struct_type,
-            param_name=sub.name + "_save",
-            owned_by=sub.name,
-            bound_fields=[loc.name for loc in save_locals],
-        )
+        save_names = set(save_by_name)
+        for m in members:
+            m.locals = [loc for loc in m.locals if loc.name not in save_names]
+            _attach_state(
+                m,
+                struct_type=struct_type,
+                param_name=param_name,
+                owned_by=primary.name,
+                bound_fields=[loc.name for loc in save_locals],
+            )
 
 
 # ---------------------------------------------------------------------------

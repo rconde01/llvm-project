@@ -43,6 +43,25 @@ end program
 """
 
 
+# WHERE whose mask and target are array *sections*, not whole arrays
+# (``where (.not. m(0:k)) p(0:k) = 0`` -- the NRLMSIS2 idiom).  Lowered to a
+# single rank-1 position loop with a masked ``if``; both sections index at the
+# same counter so differing lower bounds line up.
+WHERE_SECTION_F90 = """\
+program whs
+  real :: p(0:9)
+  logical :: m(0:9)
+  integer :: i
+  do i = 0, 9
+    p(i) = 1.0
+    m(i) = (mod(i, 2) == 0)
+  end do
+  where (.not. m(0:5)) p(0:5) = 0.0
+  print *, p(0), p(1), p(2), p(5), p(6)
+end program
+"""
+
+
 def _convert(src: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".f90", delete=False, encoding="utf-8"
@@ -69,6 +88,14 @@ class WhereEmitTests(unittest.TestCase):
         cpp = _convert(WHERE_F90)
         self.assertRegex(cpp, r"if \(a\(_i\d\) == 0\.0f\) \{")
         self.assertRegex(cpp, r"b\(_i\d\) = 99\.0f;")
+
+    def test_section_target_is_position_loop(self) -> None:
+        # No whole-array name target -> rank-1 ``_k`` position loop; mask and
+        # target sections both index at the same counter.
+        cpp = _convert(WHERE_SECTION_F90)
+        self.assertRegex(cpp, r"for \(ftn::index_t _k\d = 0;")
+        self.assertRegex(cpp, r"if \(!m\(0 \+ _k\d\)\)")
+        self.assertRegex(cpp, r"p\(0 \+ _k\d\) = 0\.0f;")
 
 
 @unittest.skipUnless(
@@ -102,6 +129,34 @@ class WhereRunTests(unittest.TestCase):
             # a=[-2,-1,0,1,2]; where>0 b=a else -a -> [2,1,0,1,2];
             # where==0 b=99 -> b(3)=99.  print b(1),b(3),b(5).
             self.assertEqual(run.stdout.split(), ["2", "99", "2"])
+
+    def test_section_where_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "in.f90"
+            f.write_text(WHERE_SECTION_F90)
+            cpp = Path(d) / "out.cpp"
+            cpp.write_text(convert_file(f))
+            exe = Path(d) / "out"
+            cxx = (
+                shutil.which("c++")
+                or shutil.which("g++")
+                or shutil.which("clang++")
+            )
+            assert cxx is not None
+            comp = subprocess.run(
+                [cxx, "-std=c++20", "-I", str(RUNTIME_INCLUDE),
+                 str(cpp), "-o", str(exe)],
+                capture_output=True, text=True, check=False,
+            )
+            if comp.returncode != 0:
+                self.fail(f"compile failed:\n{comp.stderr}\n{cpp.read_text()}")
+            run = subprocess.run(
+                [str(exe)], capture_output=True, text=True, check=False
+            )
+            self.assertEqual(run.returncode, 0, msg=run.stderr)
+            # m true at even i; .not.m true at odd -> p(odd<=5)=0.  p(6)
+            # untouched (outside 0:5).  print p(0),p(1),p(2),p(5),p(6).
+            self.assertEqual(run.stdout.split(), ["1", "0", "1", "0", "1"])
 
 
 if __name__ == "__main__":

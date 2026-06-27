@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from flang_ast import Node
 
+from .errors import ConversionError
 from .ir import IRType
 
 
@@ -214,10 +215,10 @@ def _extract_character_length(char_spec: Node) -> int | str | None:
 
 
 def _unknown_type(node: Node) -> IRType:
-    """Fallback when we don't recognize a type — keeps lowering going
-    so the user still gets a (probably broken) translation they can
-    inspect, rather than a hard error."""
+    """Fallback when we don't recognize a type.  Fail loudly with a
+    ConversionError rather than emit a ``/* TODO */ auto`` placeholder: an
+    unresolved type silently becomes the wrong C++ type (or fails to compile
+    confusingly), exactly the compilable-but-wrong outcome the converter is
+    built to avoid (see ``errors.py``)."""
     src = node.source.text if node.source else node.kind
-    safe = repr(src).replace("*/", "* /")  # keep embedded text from closing
-    return IRType(cpp=f"/* TODO: unknown type {safe} */ auto",
-                  fortran=src)
+    raise ConversionError("type", note="unrecognized type", source=src or "")

@@ -127,6 +127,53 @@ public:
     return Pre<BlockDataStmt>(x);
   }
 
+  // A substring's two bounds are each optional, and an omitted bound is
+  // simply absent from the walk -- so a lone present bound is ambiguous
+  // (``s(:hi)`` and ``s(lo:)`` both dump as one anonymous Scalar).  Emit
+  // explicit presence flags so the consumer can place the lone bound on
+  // the correct side without guessing from (unavailable) source columns.
+  bool Pre(const SubstringRange &x) {
+    OpenNode("SubstringRange");
+    EmitOptionalSource(x);
+    out_ << ",\"lowerPresent\":"
+         << (std::get<0>(x.t).has_value() ? "true" : "false")
+         << ",\"upperPresent\":"
+         << (std::get<1>(x.t).has_value() ? "true" : "false");
+    return true;
+  }
+  void Post(const SubstringRange &) { CloseNode(); }
+
+  // Array-section triplet ``lower:upper:stride`` -- the same positional-
+  // optional hazard as SubstringRange, but with three slots: ``a(:n)``,
+  // ``a(n:)``, ``a(::2)`` would otherwise be indistinguishable once the
+  // absent bounds drop out of the walk.  Emit a presence flag per slot.
+  bool Pre(const SubscriptTriplet &x) {
+    OpenNode("SubscriptTriplet");
+    EmitOptionalSource(x);
+    out_ << ",\"lowerPresent\":"
+         << (std::get<0>(x.t).has_value() ? "true" : "false")
+         << ",\"upperPresent\":"
+         << (std::get<1>(x.t).has_value() ? "true" : "false")
+         << ",\"stridePresent\":"
+         << (std::get<2>(x.t).has_value() ? "true" : "false");
+    return true;
+  }
+  void Post(const SubscriptTriplet &) { CloseNode(); }
+
+  // SELECT CASE range ``lo:hi`` -- both bounds optional (``case (:hi)`` /
+  // ``case (lo:)``), the same positional-optional hazard.  Presence flags
+  // let the consumer place a lone bound without parsing source columns.
+  bool Pre(const CaseValueRange::Range &x) {
+    OpenNode("Range");
+    EmitOptionalSource(x);
+    out_ << ",\"lowerPresent\":"
+         << (std::get<0>(x.t).has_value() ? "true" : "false")
+         << ",\"upperPresent\":"
+         << (std::get<1>(x.t).has_value() ? "true" : "false");
+    return true;
+  }
+  void Post(const CaseValueRange::Range &) { CloseNode(); }
+
   // Transparent wrappers: do not produce a JSON node, just propagate.
   bool Pre(const CharBlock &) { return true; }
   void Post(const CharBlock &) {}

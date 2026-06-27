@@ -54,6 +54,25 @@ end program
 """
 
 
+# Omitted-bound / stride-only triplets: ``a(:hi)``, ``a(lo:)``, ``a(::st)``.
+# The empty slots are dropped from the parse tree, so the present bound was
+# previously placed in the wrong slot (``a(::2)`` read its stride as the
+# lower bound).  The dumper's per-slot presence flags fix the placement.
+SEC_OPEN_F90 = """\
+program seco
+  integer :: a(10), b(10)
+  integer :: i
+  do i = 1, 10
+    a(i) = i
+    b(i) = 0
+  end do
+  b(:5)  = a(6:)
+  a(::2) = -1
+  print *, b(1), b(5), a(1), a(2), a(9)
+end program
+"""
+
+
 def _convert(src: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".f90", delete=False, encoding="utf-8"
@@ -130,6 +149,11 @@ class SectionRunTests(unittest.TestCase):
         out = self._run(SEC_EXPR_F90)
         # b(1)=a(1)+a(6)=7; b(5)=a(5)+a(10)=15; sum(a(1:5))=15.
         self.assertEqual(out.split(), ["7", "15", "15"])
+
+    def test_open_and_stride_sections_run(self) -> None:
+        out = self._run(SEC_OPEN_F90)
+        # b(:5)=a(6:): b(1)=6,b(5)=10.  a(::2)=-1: a(1)=-1,a(2)=2,a(9)=-1.
+        self.assertEqual(out.split(), ["6", "10", "-1", "2", "-1"])
 
 
 if __name__ == "__main__":

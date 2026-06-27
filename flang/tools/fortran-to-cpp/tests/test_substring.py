@@ -19,6 +19,7 @@ program p
   print *, s(1:5)
   print *, s(7:11)
   print *, s(7:)
+  print *, s(:5)
 end program
 """
 
@@ -31,6 +32,13 @@ class SubstringEmitTests(unittest.TestCase):
         self.assertIn("s(1, 5)", cpp)
         self.assertIn("s(7, 11)", cpp)
         self.assertIn("s(7, ftn::len(s))", cpp)
+
+    def test_open_lower_bound_defaults_to_one(self) -> None:
+        # s(:5) is s(1:5); the omitted *lower* must default to 1 (it was
+        # previously misread as s(5:) because the empty slot is dropped).
+        cpp = convert(SUBSTRING_F90)
+        self.assertIn("s(1, 5)", cpp)
+        self.assertNotIn("s(5, ftn::len(s))", cpp)
 
 
 SUBSTRING_CMP_F90 = """\
@@ -53,7 +61,8 @@ end program
 class SubstringRunTests(unittest.TestCase):
     def test_substring_slices(self) -> None:
         lines = [l.strip() for l in run(SUBSTRING_F90).splitlines() if l.strip()]
-        self.assertEqual(lines, ["hello", "world", "world"])
+        # s(1:5)="hello", s(7:11)="world", s(7:)="world", s(:5)="hello"
+        self.assertEqual(lines, ["hello", "world", "world", "hello"])
 
     def test_substring_comparison(self) -> None:
         # s(1:5)=="abcde"==s(6:10) -> eq; s(7:11)=="bcde " differs -> ne2.

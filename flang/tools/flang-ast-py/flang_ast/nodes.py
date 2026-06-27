@@ -187,6 +187,22 @@ class Node:
     substitution).  ``None`` when the expression is not a scalar integer
     constant or could not be evaluated."""
 
+    lower_present: bool | None = None
+    """For a ``SubstringRange`` (``s(lo:hi)``), whether the lower bound was
+    written.  Both bounds are optional and an omitted one is absent from the
+    children, so a lone present bound is positionally ambiguous; these flags
+    disambiguate ``s(:hi)`` (lower absent) from ``s(lo:)`` (upper absent).
+    ``None`` for any other node."""
+
+    upper_present: bool | None = None
+    """For a ``SubstringRange`` or ``SubscriptTriplet``, whether the upper
+    bound was written.  See :attr:`lower_present`."""
+
+    stride_present: bool | None = None
+    """For a ``SubscriptTriplet`` (``lo:hi:stride``), whether the stride was
+    written.  Disambiguates which collapsed optional a lone bound is.
+    ``None`` for any other node."""
+
     is_object: bool = False
     """True when a ``Name`` resolves to an object entity (a variable)."""
 
@@ -303,6 +319,15 @@ class Node:
             attrs=_opt_str_tuple(raw.get("attrs")),
             category=_opt_str(raw.get("category")),
             value=_opt_str(raw.get("value")),
+            lower_present=(
+                bool(raw["lowerPresent"]) if "lowerPresent" in raw else None
+            ),
+            upper_present=(
+                bool(raw["upperPresent"]) if "upperPresent" in raw else None
+            ),
+            stride_present=(
+                bool(raw["stridePresent"]) if "stridePresent" in raw else None
+            ),
             shape=_opt_shape(raw.get("shape")),
             common_block=_opt_str(raw.get("common_block")),
             equivalence_class=_opt_int(raw.get("equivalence_class")),

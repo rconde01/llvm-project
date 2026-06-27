@@ -243,9 +243,18 @@ def _drop_external_function_locals(tu: IRTranslationUnit) -> None:
     func_names = {s.name for s in tu.subprograms if s.kind == "function"}
     if not func_names:
         return
+    # Union the called-names across each ENTRY group: an entry that doesn't
+    # itself call the function still declares its result type as a spurious
+    # local, and once the group shares one SAVE struct that local would be
+    # bound for *every* sibling -- shadowing the function for the entries
+    # that do call it.  Dropping it group-wide keeps the call site valid.
+    group_called: dict[str, set[str]] = {}
+    for sub in tu.subprograms:
+        key = sub.entry_group or sub.name
+        group_called.setdefault(key, set()).update(_called_names(sub.body))
     for sub in tu.subprograms:
         param_names = {p.name for p in sub.parameters}
-        called = _called_names(sub.body)
+        called = group_called[sub.entry_group or sub.name]
         sub.locals = [
             loc
             for loc in sub.locals
@@ -1644,6 +1653,12 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     # F77 allows DATA among executable statements, not just declarations.
     data_inits = _lower_data_statements(node, sub.locals)
     sub.body = data_inits + sub.body
+    # A bare ``SAVE`` (no entity list) saves every eligible local.  flang
+    # records this as a subprogram-level fact rather than a per-symbol attr,
+    # so it never reaches ``is_save`` via ``name.attrs``; detect the bare
+    # statement here and mark the locals.  Essential for the umbrella-with-
+    # ENTRY idiom, where the shared state is invariably a bare ``SAVE``.
+    _apply_bare_save(node, sub)
     _resolve_allocations(sub)
     _resolve_pointers(sub)
     _expand_array_assignments(sub)
@@ -1760,6 +1775,43 @@ def _expand_io_label_jumps(body: list[IRStatement]) -> None:
         i += 1
 
 
+def _apply_bare_save(node: Node, sub: IRSubprogram) -> None:
+    """A bare ``SAVE`` statement (no entity list) gives the SAVE attribute
+    to every eligible local of the unit.  flang carries this as a
+    subprogram-level fact, not a per-symbol attr, so ``is_save`` (read from
+    ``name.attrs``) never sees it.  Detect the childless ``SaveStmt`` and
+    mark the locals here.
+
+    Excluded: PARAMETER constants (already ``static constexpr``), COMMON
+    members (persisted via their block's struct), and statement functions
+    (lowered to lambdas, not storage)."""
+    bare = any(
+        not st.children for st in _unit_descendants(node, "SaveStmt")
+    )
+    if not bare:
+        return
+    # Dummy arguments are never SAVEd (a SAVE of a dummy is illegal); a name
+    # that is a dummy of this unit or any of its ENTRY points may still sit
+    # in ``sub.locals`` (an entry's dummy is the primary's local), so exclude
+    # the whole dummy set.  Read the primary's dummies from the parse tree:
+    # parameter separation runs *after* this point, so ``sub.parameters`` is
+    # still empty and the dummies are sitting in ``sub.locals``.
+    dummies = (
+        set(_extract_subroutine_dummy_args(node))
+        | set(_extract_function_dummy_args(node))
+        | _entry_dummy_arg_names(node)
+    )
+    for loc in sub.locals:
+        if (
+            loc.is_parameter
+            or loc.common_block
+            or loc.name in dummies
+            or isinstance(loc.initializer, IRLambda)
+        ):
+            continue
+        loc.is_save = True
+
+
 def _split_entry_points(
     sub: IRSubprogram, node: Node, data_inits: list[IRStatement]
 ) -> None:
@@ -1777,6 +1829,9 @@ def _split_entry_points(
     ]
     if not positions:
         return
+    # The primary and every alternate entry form one group that shares a
+    # single SAVE state struct (see IRSubprogram.entry_group).
+    sub.entry_group = sub.name
     markers = [sub.body[i] for i in positions]
     # In a multi-entry FUNCTION every entry (and the primary) has its own
     # result variable named after it, and they share storage.  Each result
@@ -1830,6 +1885,7 @@ def _split_entry_points(
         if sub.kind == "function":
             add_result_locals(entry, marker.name)
             _lift_function_return(entry, None, node)
+        entry.entry_group = sub.name
         sub.entry_points.append(entry)
     # The primary normally keeps the whole body (entries' code is reachable
     # by fall-through / GOTO into shared code, e.g. FELDG).  But when the
@@ -3764,6 +3820,13 @@ def _where_loop(
                 target_array = asgn.target.name
                 break
     if target_array is None:
+        # No whole-array name target -- the bodies assign to array *sections*
+        # (``where (.not. swg(0:m)) p(0:m) = 0``).  Fall back to the rank-1
+        # section model: one ``_k`` position counter, every section / array
+        # indexed at ``_k`` (mask and RHS included).
+        section_loop = _where_section_loop(where, array_names, counter)
+        if section_loop is not None:
+            return section_loop
         return _unsupported_stmt("WHERE with no whole-array target")
 
     atype = arrays[target_array]
@@ -3819,6 +3882,73 @@ def _where_loop(
             )
         ]
     return loop[0]
+
+
+def _where_section_loop(
+    where: IRWhere,
+    array_names: set[str],
+    counter: list[int],
+) -> IRStatement | None:
+    """Expand a WHERE whose bodies target array *sections* into a single
+    rank-1 ``_k`` position loop with a masked ``if`` (the section analogue of
+    :func:`_where_loop`).  Returns None if no body assignment is a section /
+    whole-array target we can size (then the caller fails loudly).
+
+    ``where (.not. swg(0:m)) p(0:m) = 0`` becomes
+    ``for (_k=0; _k<=(m-0+1)-1; ++_k) if (!swg(0+_k)) p(0+_k) = 0``.
+    The mask, every RHS section, and the target all index at the same ``_k``,
+    so differing section lower bounds line up the way Fortran intends."""
+    # Size the loop from the first section/array target we can measure.
+    count: IRExpr | None = None
+    for asgn in where.where_body:
+        if isinstance(asgn, IRAssignment) and isinstance(
+            asgn.target, (IRSection, IRName)
+        ):
+            counter[0] += 1
+            kname = f"_k{counter[0]}"
+            kvar: IRExpr = IRName(name=kname, fortran=kname)
+            _, count = _section_kth(asgn.target, kvar, array_names)
+            if count is not None:
+                break
+    if count is None:
+        return None
+
+    def index_body(body: list[IRStatement]) -> list[IRStatement]:
+        out: list[IRStatement] = []
+        for asgn in body:
+            if not isinstance(asgn, IRAssignment):
+                continue
+            target_access, _ = _section_kth(asgn.target, kvar, array_names)
+            if target_access is None:
+                continue
+            out.append(
+                IRAssignment(
+                    target=target_access,
+                    value=_section_index_rhs(asgn.value, kvar, array_names),
+                    leading_comments=asgn.leading_comments,
+                    trailing_comments=asgn.trailing_comments,
+                )
+            )
+        return out
+
+    mask_k = _section_index_rhs(where.mask, kvar, array_names)
+    then_body = index_body(where.where_body)
+    else_body = (
+        index_body(where.elsewhere_body)
+        if where.elsewhere_body is not None
+        else None
+    )
+    inner: list[IRStatement] = [
+        IRIf(branches=[(mask_k, then_body)], else_body=else_body)
+    ]
+    return IRDo(
+        var=kname,
+        lower=IRLiteral(cpp_text="0"),
+        upper=IRBinaryOp(op="-", lhs=count, rhs=IRLiteral(cpp_text="1")),
+        step=None,
+        body=inner,
+        declare=True,
+    )
 
 
 def _unsupported_stmt(note: str) -> NoReturn:
@@ -3943,7 +4073,14 @@ def _section_kth(
             count = IRBinaryOp(
                 op="+",
                 lhs=IRBinaryOp(
-                    op="/", lhs=IRBinaryOp(op="-", lhs=upper, rhs=lower), rhs=st
+                    op="/",
+                    # Parenthesize the synthesized numerator: emit isn't
+                    # precedence-aware, so ``upper - lower / st`` would bind
+                    # the division to ``lower`` and overrun the section.
+                    lhs=IRUnaryOp(
+                        op="()", operand=IRBinaryOp(op="-", lhs=upper, rhs=lower)
+                    ),
+                    rhs=st,
                 ),
                 rhs=IRLiteral(cpp_text="1"),
             )
@@ -5276,16 +5413,13 @@ def _lower_case(case_node: Node) -> tuple[IRCaseClause, bool]:
     is_default = False
 
     case_stmt = case_node.first_child("Statement")
-    case_source = ""
-    if case_stmt is not None and case_stmt.source is not None:
-        case_source = case_stmt.source.text or ""
     if case_stmt is not None:
         selector = case_stmt.find_first("CaseSelector")
         if selector is not None:
             if selector.first_child("Default") is not None:
                 is_default = True
             for vr in selector.children_of_kind("CaseValueRange"):
-                _lower_case_value_range(vr, values, ranges, case_source)
+                _lower_case_value_range(vr, values, ranges)
 
     block = case_node.first_child("Block")
     body = _lower_block(block) if block is not None else []
@@ -5296,17 +5430,15 @@ def _lower_case_value_range(
     vr: Node,
     values: list[IRExpr],
     ranges: list[tuple[IRExpr | None, IRExpr | None]],
-    case_source: str = "",
 ) -> None:
     """A CaseValueRange is either a single value or a (lo:hi) range."""
     range_node = vr.first_child("Range") or vr.first_child("CaseValueRange::Range")
     if range_node is not None:
-        # Range form: children may include lower and/or upper bounds.
-        # Parse-tree shape is ``tuple<optional<CaseValue>, optional<CaseValue>>``;
-        # the dumper drops the empty slot so we can't tell lo from hi just by
-        # child order when only one is present.  Compare the lone Expr's
-        # source column to the ``:`` in the enclosing CaseStmt's source text:
-        # an Expr before the colon is the lo; after, the hi.
+        # Range form ``lo:hi`` with either bound optional.  Parse-tree shape
+        # is ``tuple<optional<CaseValue>, optional<CaseValue>>`` and the empty
+        # slot is dropped, so a lone present bound is positionally ambiguous.
+        # The dumper's presence flags settle which side it is (no source-text
+        # guessing); fall back to positional order on an older dumper.
         exprs = list(range_node.find_all("Expr"))
         lo: IRExpr | None = None
         hi: IRExpr | None = None
@@ -5315,19 +5447,10 @@ def _lower_case_value_range(
             hi = _lower_expression(exprs[1])
         elif len(exprs) == 1:
             single = exprs[0]
-            is_lo = True
-            expr_text = (single.source.text or "") if single.source else ""
-            if expr_text and case_source:
-                # Find the Expr's text inside the case statement; the colon
-                # that separates lo and hi sits to one side of it.
-                expr_pos = case_source.find(expr_text)
-                colon_pos = case_source.find(":")
-                if expr_pos >= 0 and colon_pos >= 0:
-                    is_lo = expr_pos < colon_pos
-            if is_lo:
-                lo = _lower_expression(single)            # case (lo:)
-            else:
+            if range_node.lower_present is False or range_node.upper_present is True:
                 hi = _lower_expression(single)            # case (:hi)
+            else:
+                lo = _lower_expression(single)            # case (lo:)
         ranges.append((lo, hi))
         return
     expr = vr.find_first("Expr")
@@ -5400,13 +5523,16 @@ def _lower_substring(node: Node) -> IRExpr:
     hi: IRExpr | None = None
     if rng is not None:
         scalars = [c for c in rng.children if c.kind == "Scalar"]
-        src = (rng.source.text or "").strip() if rng.source else ""
         if len(scalars) >= 2:
             lo = _lower_expression(scalars[0])
             hi = _lower_expression(scalars[1])
         elif len(scalars) == 1:
-            # One bound omitted; the colon's position says which.
-            if src.startswith(":"):
+            # One bound omitted.  The dumper's presence flags say which side
+            # the lone bound belongs to (``s(:hi)`` vs ``s(lo:)``); the
+            # ``SubstringRange`` source text is unavailable, so we must not
+            # guess from it.  Fall back to "lower" only if flags are absent
+            # (older dumper).
+            if rng.lower_present is False or rng.upper_present is True:
                 hi = _lower_expression(scalars[0])
             else:
                 lo = _lower_expression(scalars[0])
@@ -5561,23 +5687,35 @@ def _lower_array_element(node: Node) -> IRExpr:
 
 
 def _lower_subscript_triplet(triplet: Node) -> IRTriplet:
-    """Lower ``lo:hi:stride`` (any part optional)."""
-    # The triplet's direct children are the present bound expressions,
-    # in order: it may have lower, upper, and/or stride.  flang wraps
-    # each in a Scalar/Integer; we lower each present Expr.  Missing
-    # parts default to the array's bounds at emit/expansion time.
-    parts: list[IRExpr | None] = [None, None, None]
-    # Each bound is under a direct child that contains an Expr.
+    """Lower ``lo:hi:stride`` (any part optional).
+
+    ``SubscriptTriplet`` stores ``(lower?, upper?, stride?)`` and an omitted
+    bound is dropped from the children, so position alone can't say whether a
+    lone child is the lower, upper, or stride (``a(:n)`` vs ``a(n:)`` vs
+    ``a(::n)``).  The dumper's per-slot presence flags settle it; the present
+    children are then assigned to the present slots left to right.  Missing
+    parts stay ``None`` and default to the array's bounds at expansion time."""
     bound_children = [
         c for c in triplet.children if c.find_first("Expr") is not None
     ]
-    # SubscriptTriplet stores (lower?, upper?, stride?) — but with
-    # optionals collapsed, we can't always tell which is which by
-    # position alone.  Use the source text to disambiguate the common
-    # forms; default to filling lower, then upper, then stride.
-    for i, c in enumerate(bound_children[:3]):
-        expr = c.find_first("Expr")
-        parts[i] = _lower_expression(expr) if expr is not None else None
+    present = [
+        triplet.lower_present,
+        triplet.upper_present,
+        triplet.stride_present,
+    ]
+    parts: list[IRExpr | None] = [None, None, None]
+    if any(p is not None for p in present):
+        # Flag-driven (current dumper): drop each present child into its slot.
+        it = iter(bound_children)
+        for slot, is_present in enumerate(present):
+            if is_present:
+                c = next(it, None)
+                if c is not None:
+                    parts[slot] = _lower_expression(c.find_first("Expr"))
+    else:
+        # Older dumper without flags: fall back to positional order.
+        for i, c in enumerate(bound_children[:3]):
+            parts[i] = _lower_expression(c.find_first("Expr"))
     return IRTriplet(lower=parts[0], upper=parts[1], stride=parts[2])
 
 
@@ -5994,9 +6132,11 @@ _BINARY_OP_MAP: dict[str, str] = {
     "EQ": "==", "NE": "!=",
     "AND": "&&", "OR": "||",
     "EQV": "==", "NEQV": "!=",
-    "Power": "**",         # placeholder — lowered to std::pow
-    "Concat": "//",        # placeholder — lowered to ftn::concat
-    "DefinedBinary": "?",  # user-defined op — TODO, emit as call
+    "Power": "**",         # special-cased below -> std::pow
+    "Concat": "//",        # special-cased below -> ftn::concat
+    # NB: user-defined operators (``DefinedBinary``/``DefinedUnary``) are
+    # deliberately absent: rather than emit a bogus ``a ? b`` they fall
+    # through to ``_expr_raw`` and raise a clean ConversionError.
 }
 
 _UNARY_OP_MAP: dict[str, str] = {
@@ -6004,7 +6144,6 @@ _UNARY_OP_MAP: dict[str, str] = {
     "UnaryPlus": "+",
     "NOT": "!",
     "Parentheses": "()",   # special-cased in the emitter
-    "DefinedUnary": "?",   # user-defined op — TODO
 }
 
 
