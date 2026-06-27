@@ -62,6 +62,22 @@ end program
 """
 
 
+# WHERE whose target is a *module* array (host-associated, not a local) --
+# the array-expansion pass only sees locals, so the target's shape comes from
+# flang's resolved type instead.  Previously a hard "no whole-array target".
+WHERE_MODULE_F90 = """\
+module m
+  integer, parameter :: n = 4
+  logical :: flag(n) = .true.
+contains
+  subroutine apply(mask)
+    logical, intent(in) :: mask(n)
+    where (mask) flag = .false.
+  end subroutine
+end module
+"""
+
+
 def _convert(src: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".f90", delete=False, encoding="utf-8"
@@ -96,6 +112,14 @@ class WhereEmitTests(unittest.TestCase):
         self.assertRegex(cpp, r"for \(ftn::index_t _k\d = 0;")
         self.assertRegex(cpp, r"if \(!m\(0 \+ _k\d\)\)")
         self.assertRegex(cpp, r"p\(0 \+ _k\d\) = 0\.0f;")
+
+    def test_module_array_target_resolved_from_flang_shape(self) -> None:
+        # ``flag`` is a module array (not a local); its shape comes from the
+        # resolved type so the WHERE still expands instead of erroring.
+        cpp = _convert(WHERE_MODULE_F90)
+        self.assertRegex(cpp, r"for \(ftn::index_t _i\d = flag\.lbound")
+        self.assertRegex(cpp, r"if \(mask\(_i\d\)\)")
+        self.assertRegex(cpp, r"flag\(_i\d\) = false;")
 
 
 @unittest.skipUnless(

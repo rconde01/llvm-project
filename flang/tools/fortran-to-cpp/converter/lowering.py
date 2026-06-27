@@ -1661,7 +1661,7 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     _apply_bare_save(node, sub)
     _resolve_allocations(sub)
     _resolve_pointers(sub)
-    _expand_array_assignments(sub)
+    _expand_array_assignments(sub, array_resolved)
     # ENTRY statements split this unit into several alternate entry points
     # that share its storage.  Carve each one out (statements from the
     # entry onward) as its own subprogram before goto-structuring, which
@@ -3728,7 +3728,9 @@ _ARRAY_RETURNING: frozenset[str] = frozenset(
 )
 
 
-def _expand_array_assignments(sub: IRSubprogram) -> None:
+def _expand_array_assignments(
+    sub: IRSubprogram, resolved_arrays: dict[str, IRType] | None = None
+) -> None:
     """Expand whole-array assignments (``a = b + c``) into explicit
     element loops, indexing the array operands and leaving scalars and
     whole-array (reduction) calls alone.
@@ -3738,14 +3740,24 @@ def _expand_array_assignments(sub: IRSubprogram) -> None:
     here yet.
     """
     arrays = {loc.name: loc.type for loc in sub.locals if loc.type.is_array}
-    if not arrays:
+    # WHERE may target host-associated / module / COMMON arrays that aren't
+    # locals (e.g. NRLMSIS2's module ``specflag``).  Give *only* the WHERE
+    # handlers a view augmented with flang's resolved array shapes, so those
+    # cases stop erroring -- the whole-array / section paths below keep using
+    # the locals-only view, leaving every currently-working translation
+    # byte-for-byte unchanged.
+    where_arrays = {**(resolved_arrays or {}), **arrays}
+    if not arrays and not where_arrays:
         return
     array_names = set(arrays)
+    where_array_names = set(where_arrays)
     counter = [0]
 
     def expand(stmt: IRStatement) -> IRStatement:
         if isinstance(stmt, IRWhere):
-            return _where_loop(stmt, arrays, array_names, counter)
+            return _where_loop(
+                stmt, where_arrays, where_array_names, counter
+            )
         if not isinstance(stmt, IRAssignment):
             return stmt
         tgt = stmt.target
