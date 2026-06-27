@@ -1659,6 +1659,14 @@ def _lower_specification_and_execution(node: Node, sub: IRSubprogram) -> None:
     # statement here and mark the locals.  Essential for the umbrella-with-
     # ENTRY idiom, where the shared state is invariably a bare ``SAVE``.
     _apply_bare_save(node, sub)
+    # A DATA initializer of a SAVEd scalar runs once at load time, not on
+    # every call.  It is lowered as an assignment at the top of the body;
+    # left there it re-initializes the SAVE state on each call -- and once
+    # the routine has ENTRY points, that reset lands in *every* entry (so
+    # e.g. CHKOUT zeroes the trace-stack depth before reading it).  Hoist it
+    # to the local's initializer (which becomes the SAVE-struct field's
+    # once-only initializer) and drop it from the per-call body.
+    _hoist_save_data_inits(sub, data_inits)
     _resolve_allocations(sub)
     _resolve_pointers(sub)
     _expand_array_assignments(sub, array_resolved)
@@ -1810,6 +1818,61 @@ def _apply_bare_save(node: Node, sub: IRSubprogram) -> None:
         ):
             continue
         loc.is_save = True
+
+
+def _hoist_save_data_inits(
+    sub: IRSubprogram, data_inits: list[IRStatement]
+) -> None:
+    """Move a SAVEd *scalar* local's DATA initializer from the body to the
+    local's ``initializer`` (so it becomes the once-only SAVE-struct field
+    initializer) and remove the now-redundant body assignment.
+
+    DATA init of a SAVEd variable is a load-time, run-once initialization;
+    leaving it as a body statement re-runs it on every call, corrupting the
+    persisted state -- and after ENTRY splitting it would be copied into
+    every entry's prologue.  Only plain ``name = <constant>`` inits of
+    non-array SAVE locals are hoisted (the umbrella-state case); array DATA
+    inits are left alone."""
+    save_scalars = {
+        loc.name: loc
+        for loc in sub.locals
+        if loc.is_save and not loc.type.is_array
+    }
+    if not save_scalars:
+        return
+
+    def _is_pure_literal(expr: IRExpr) -> bool:
+        # A struct-scope field initializer can't see function-scope names
+        # (PARAMETER constexprs, other locals).  Hoist only values built
+        # purely from literals/operators so ``DATA STHEAD /NIL/`` (NIL a
+        # PARAMETER) stays a body assignment where NIL is in scope.
+        if isinstance(expr, IRLiteral):
+            return True
+        if isinstance(expr, IRUnaryOp):
+            return _is_pure_literal(expr.operand)
+        if isinstance(expr, IRBinaryOp):
+            return _is_pure_literal(expr.lhs) and _is_pure_literal(expr.rhs)
+        if isinstance(expr, IRCast):
+            return _is_pure_literal(expr.operand)
+        return False
+
+    hoisted_stmts: list[IRStatement] = []
+    for stmt in data_inits:
+        if (
+            isinstance(stmt, IRAssignment)
+            and isinstance(stmt.target, IRName)
+            and stmt.target.name in save_scalars
+            and _is_pure_literal(stmt.value)
+        ):
+            loc = save_scalars[stmt.target.name]
+            if loc.initializer is None:
+                loc.initializer = stmt.value
+                hoisted_stmts.append(stmt)
+    if not hoisted_stmts:
+        return
+    drop = set(map(id, hoisted_stmts))
+    data_inits[:] = [s for s in data_inits if id(s) not in drop]
+    sub.body = [s for s in sub.body if id(s) not in drop]
 
 
 def _split_entry_points(

@@ -100,6 +100,39 @@ class EntryRunTests(unittest.TestCase):
         nums = [float(t) for t in run(UMBRELLA_F77).split()]
         self.assertEqual(nums, [7.0])
 
+    def test_save_data_init_runs_once_not_per_entry(self) -> None:
+        # ``DATA cnt /0/`` on a SAVE var is a load-time init; if it were
+        # re-run in each entry's prologue (the SPICE TRCPKG/CHKOUT bug) the
+        # counter would reset every call.  push;push;pop must see 2, and the
+        # body must not contain a ``cnt = 0`` reset.
+        src = (
+            "      SUBROUTINE TP ( D )\n"
+            "      INTEGER D, CNT\n"
+            "      SAVE\n"
+            "      DATA CNT /0/\n"
+            "      RETURN\n"
+            "      ENTRY PUSH ( )\n"
+            "      CNT = CNT + 1\n"
+            "      RETURN\n"
+            "      ENTRY POP ( D )\n"
+            "      D = CNT\n"
+            "      RETURN\n"
+            "      END\n"
+            "      PROGRAM T\n"
+            "      INTEGER V\n"
+            "      CALL PUSH\n"
+            "      CALL PUSH\n"
+            "      CALL POP ( V )\n"
+            "      PRINT *, V\n"
+            "      END\n"
+        )
+        cpp = convert(src)
+        # DATA init became the SAVE-struct field initializer, run once.
+        self.assertIn("int32_t cnt = 0;", cpp)
+        # ... and is no longer a per-call body assignment.
+        self.assertNotIn("cnt = 0;", cpp.split("struct", 1)[-1].split("};", 1)[-1])
+        self.assertEqual([float(t) for t in run(src).split()], [2.0])
+
 
 if __name__ == "__main__":
     unittest.main()
