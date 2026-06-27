@@ -145,11 +145,11 @@ def convert_files(
     return results
 
 
-def _warn_skip(src: Path, exc: FlangError) -> None:
-    detail = (exc.stderr or str(exc)).strip().splitlines()
+def _warn_skip(src: Path, exc: Exception) -> None:
+    detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()
     first = detail[0] if detail else str(exc)
     print(
-        f"fortran-to-cpp: skipping {src} (flang could not process it): {first}",
+        f"fortran-to-cpp: skipping {src} ({type(exc).__name__}): {first}",
         file=sys.stderr,
     )
 
