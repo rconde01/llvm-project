@@ -64,6 +64,12 @@ flang/tools/fortran-to-cpp/                         ← the converter
 The corpus we test against lives outside the repo at `/tmp/fx`
 (NASA SPICE + a handful of atmospheric models — IRI, MSIS, IGRF, …).
 
+**Re-fetching the corpus** (the container wipes `/tmp` between sessions):
+the canonical source is **https://github.com/rconde01/fortran_examples** —
+clone it into `/tmp/fx` to restore the atmospheric example set (cira86,
+igrf, iri_2001..2020, msis86/90, nrlmsis*, radbelt, …).  SPICE comes from
+the NAIF toolkit tarball separately (see `docs/CORPUS_MEASUREMENT.md`).
+
 ---
 
 ## Quickstart commands
