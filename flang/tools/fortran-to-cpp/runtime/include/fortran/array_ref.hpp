@@ -144,9 +144,12 @@ public:
   /// Sequence association from a higher-rank view: flatten to a 1-D view
   /// over the contiguous storage (extent = total element count).  Rank-1
   /// target only; mirrors the Array<T,Rank> -> ArrayRef<T,1> conversion.
-  template <std::size_t R2>
+  /// Source lower bound is irrelevant to a flatten (the bytes are the same
+  /// either way), so accept any ``SrcLower`` -- a static-lb 2-D dummy
+  /// (``POOL(2, LBPOOL:*)``) still flattens to a rank-1 view.
+  template <std::size_t R2, std::array<index_t, R2> SrcLower>
     requires(Rank == 1 && R2 != 1)
-  ArrayRef(const ArrayRef<T, R2> &other) noexcept
+  ArrayRef(const ArrayRef<T, R2, SrcLower> &other) noexcept
       : ArrayRef(other.data(), extent_array{{other.size()}}) {}
 
   // ---- Indexing -------------------------------------------------------
@@ -692,9 +695,10 @@ public:
   CharArrayRef(FortranString<N> &s) noexcept
       : base_(s.data()), elem_len_(N), lower_(1), count_(1) {}
   /// From a fixed-length character-array *view* (a char array forwarded
-  /// from one dummy to another).
-  template <std::size_t N>
-  CharArrayRef(ArrayRef<FortranString<N>, 1> a) noexcept
+  /// from one dummy to another).  Any source lower bound (a static-lb
+  /// ``ARRAY(*)`` dummy view included).
+  template <std::size_t N, std::array<index_t, 1> SrcLower>
+  CharArrayRef(ArrayRef<FortranString<N>, 1, SrcLower> a) noexcept
       : base_(reinterpret_cast<char *>(a.data())), elem_len_(N),
         lower_(a.lbound(1)), count_(a.size()) {}
   /// From a single character scalar view (scalar/array storage assoc).

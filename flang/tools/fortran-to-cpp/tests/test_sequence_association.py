@@ -81,5 +81,77 @@ class WholeArrayToScalarRunTests(unittest.TestCase):
         )
 
 
+# A 0-based actual passed to an assumed-size ``ARRAY(*)`` dummy: the dummy
+# is 1-based (its *own* declared lb wins), so ``ARRAY(1)`` must reach the
+# actual's first element, not be indexed at the actual's lb 0.  The dummy's
+# static lower bound makes the rebase happen.
+ASSUMED_SIZE_REBASE_F = """\
+      subroutine fill(array, n)
+      integer n
+      double precision array(*)
+      integer i
+      do i = 1, n
+         array(i) = i * 10
+      end do
+      end
+
+      program p
+      double precision q(0:3)
+      call fill(q, 4)
+      print *, q(0), q(3)
+      end
+"""
+
+
+# An explicit non-1 lower bound on an assumed-size dummy (the SPICE LNKINI
+# ``POOL(2, LBPOOL:*)`` idiom) must be preserved, so ``POOL(_,0)`` is valid.
+EXPLICIT_LOWER_ASSUMED_F = """\
+      subroutine setp(pool, k)
+      integer k
+      integer lbpool
+      parameter (lbpool = -5)
+      integer pool(2, lbpool:*)
+      pool(1, -2) = k
+      pool(2,  0) = k + 1
+      end
+
+      program p
+      integer store(2, -5:10)
+      call setp(store, 100)
+      print *, store(1,-2), store(2,0)
+      end
+"""
+
+
+@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
+class AssumedSizeLowerBoundTests(unittest.TestCase):
+    def test_assumed_size_dummy_is_one_based(self) -> None:
+        cpp = convert_project(ASSUMED_SIZE_REBASE_F, suffix=".f")
+        # The dummy carries a static lower bound of 1.
+        self.assertIn(
+            "ftn::ArrayRef<double, 1, std::array<ftn::index_t, 1>{1}> array",
+            cpp,
+        )
+
+    def test_assumed_size_rebase_runs(self) -> None:
+        # array(1..4)=10..40 maps onto q(0..3); q(0)=10, q(3)=40.
+        self.assertEqual(
+            run_project(ASSUMED_SIZE_REBASE_F, suffix=".f").split(),
+            ["10", "40"],
+        )
+
+    def test_explicit_lower_assumed_size_preserved(self) -> None:
+        cpp = convert_project(EXPLICIT_LOWER_ASSUMED_F, suffix=".f")
+        self.assertIn(
+            "std::array<ftn::index_t, 2>{1,-5}", cpp
+        )
+
+    def test_explicit_lower_assumed_size_runs(self) -> None:
+        self.assertEqual(
+            run_project(EXPLICIT_LOWER_ASSUMED_F, suffix=".f").split(),
+            ["100", "101"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

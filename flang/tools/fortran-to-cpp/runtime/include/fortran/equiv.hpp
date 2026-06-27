@@ -208,6 +208,16 @@ public:
   }
   operator ArrayRef<T, 1>() noexcept { return ref(); }
 
+  /// Same view, but to a dummy declared with a *static* lower bound
+  /// (``ARRAY(*)`` -> ``ArrayRef<T, 1, {1}>``).  The buffer is contiguous
+  /// and 1-based; the static-lb view rebases to the dummy's declared lb
+  /// (the (data, extents) ctor uses ``DstLower`` when it is static).
+  template <std::array<index_t, 1> DstLower>
+  operator ArrayRef<T, 1, DstLower>() noexcept {
+    return ArrayRef<T, 1, DstLower>(reinterpret_cast<T *>(base_),
+                                    {static_cast<index_t>(N)});
+  }
+
 private:
   std::byte *base_;
 };

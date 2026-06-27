@@ -3329,6 +3329,27 @@ def _lower_type_declaration(decl: Node) -> list[IRLocal]:
     return out
 
 
+def _assumed_dim_lower(dim_spec: Node) -> str:
+    """The lower bound of one assumed-size dimension as a literal string.
+
+    ``ExplicitShapeSpec`` (a leading explicit dim like the ``2`` in
+    ``POOL(2, LBPOOL:*)``) -> its lower (default ``"1"``).
+    ``AssumedImpliedSpec`` (``*`` or ``lo:*``) -> the ``lo`` bound, folded
+    to a literal (``LBPOOL`` -> ``"-5"``) so static-lb extraction accepts
+    it, or ``"1"`` for a bare ``*``.  A non-constant bound falls back to
+    ``"1"`` (the view then resolves it at runtime via the actual)."""
+    if dim_spec.kind == "ExplicitShapeSpec":
+        lo, _ = _lower_explicit_shape(dim_spec)
+        return lo if lo is not None else "1"
+    # AssumedImpliedSpec: a present SpecificationExpr is the lower bound.
+    se = dim_spec.first_child("SpecificationExpr")
+    if se is not None:
+        v = _const_int(se)
+        if v is not None:
+            return str(v)
+    return "1"
+
+
 def _make_array_type(
     element_type: IRType, array_spec: Node, *, is_pointer: bool = False
 ) -> IRType:
@@ -3378,21 +3399,23 @@ def _make_array_type(
                 is_character=element_type.is_character,
             )
         elif shape.kind == "AssumedSizeSpec":
-            # ``a(m, n, *)`` — an assumed-size spec that *wraps* the leading
-            # explicit dimensions plus the trailing assumed one, so its rank
-            # is the number of those dimension children (not one).  Caller
-            # sized -> unknown extents.
-            ndims = max(
-                1,
-                sum(
-                    1
-                    for c in shape.children
-                    if c.kind in ("ExplicitShapeSpec", "AssumedImpliedSpec")
-                ),
-            )
-            for _ in range(ndims):
+            # ``a(m, n, *)`` / ``a(2, LBPOOL:*)`` — an assumed-size spec that
+            # wraps the leading explicit dimensions plus the trailing assumed
+            # one.  Extents are caller-sized (unknown), but each lower bound
+            # *is* known from the declaration (default 1, or an explicit /
+            # named-constant bound like ``LBPOOL``).  Capture them so the
+            # dummy is a static-lower view -- a Fortran dummy indexes from its
+            # *own* declared lb, not the actual's; without this the runtime
+            # view inherits the actual's lb and ``POOL(_,0)`` overruns.
+            dims = [
+                c
+                for c in shape.children
+                if c.kind in ("ExplicitShapeSpec", "AssumedImpliedSpec")
+            ]
+            for c in dims or [shape]:
                 extents.append("/* assumed-size */ 0")
-                lowers.append("1")
+                lowers.append(_assumed_dim_lower(c))
+            has_explicit_lower = True
             all_static = False
         elif shape.kind == "AssumedShapeSpec":
             # One ``:`` of an assumed-shape dummy (``a(:,:)`` -> one spec
@@ -3403,13 +3426,14 @@ def _make_array_type(
         elif shape.kind == "ImpliedShapeSpec":
             # The classic F77 assumed-size dummy ``a(*)`` (or ``a(lo:*)``,
             # ``a(m,*)``) parses as an implied-shape spec — one dimension
-            # per ``AssumedImpliedSpec``.  The extent is unknown (caller
-            # sized), so as a dummy it lowers to an ``ArrayRef`` of the
-            # right rank; only the rank matters here.
-            ndims = max(1, sum(1 for _ in shape.find_all("AssumedImpliedSpec")))
-            for _ in range(ndims):
+            # per ``AssumedImpliedSpec``.  Extent is caller-sized; the lower
+            # bound is known (default 1 or an explicit ``lo``) and captured
+            # as a static lb (see AssumedSizeSpec above).
+            specs = list(shape.find_all("AssumedImpliedSpec"))
+            for c in specs or [shape]:
                 extents.append("/* assumed-size */ 0")
-                lowers.append("1")
+                lowers.append(_assumed_dim_lower(c))
+            has_explicit_lower = True
             all_static = False
     rank = len(extents)
     return IRType(
