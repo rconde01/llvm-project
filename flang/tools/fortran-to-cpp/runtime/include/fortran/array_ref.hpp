@@ -35,6 +35,7 @@
 #include "array.hpp"
 #include "string.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstddef>
@@ -251,6 +252,22 @@ public:
     }
     return *this;
   }
+  /// Bulk-fill the viewed elements from a flat C-array of compile-time
+  /// length, in Fortran column-major order -- the ArrayRef counterpart of
+  /// ``Array::assign_data``.  Used when a ``DATA``-initialized array is an
+  /// EQUIVALENCE/COMMON view rather than an owning ``Array`` (e.g. MSIS's
+  /// ``pt1`` aliasing a slice of the ``parm`` block).  ``const`` because it
+  /// writes through the view, not to the view itself.  Copies
+  /// ``min(N, size())`` elements and returns ``*this`` so it can chain.
+  template <typename U, std::size_t N>
+  const ArrayRef &assign_data(const U (&src)[N]) const {
+    const index_t n = std::min<index_t>(size(), static_cast<index_t>(N));
+    for (index_t i = 0; i < n; ++i) {
+      linear_at(i) = static_cast<T>(src[i]);
+    }
+    return *this;
+  }
+
   /// Rebind this view's metadata (pointer, bounds, strides) to ``src``'s
   /// storage -- the Fortran POINTER associate ``p => target(...)``.
   /// Element-wise ``=`` copies data; rebind shares it.

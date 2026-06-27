@@ -58,6 +58,26 @@ end program
 """
 
 
+# A DATA-initialized array that aliases part of a COMMON block (the same
+# block is laid out as one big array elsewhere) lowers to a *sub-view*
+# (`ArrayRef`), not an owning `Array`.  The extracted table must still bulk
+# fill through the view -- i.e. `ArrayRef` needs its own `assign_data`.
+# This is the MSIS `PARM7` pattern (PT(150) here vs PT1(50),PT2(50),...).
+COMMON_VIEW_F77 = """\
+      program p
+      common /blk/ x(60)
+      call b
+      print *, x(15)
+      end
+      subroutine b
+      common /blk/ y1(20),y2(20),y3(20)
+      data y1 /0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,
+     &         1.1,1.2,1.3,1.4,1.5,1.6,1.7,1.8,1.9,2.0/
+      return
+      end
+"""
+
+
 def _convert(src: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".f90", delete=False, encoding="utf-8"
@@ -104,6 +124,14 @@ class ConstantTableEmitTests(unittest.TestCase):
             cpp,
         )
 
+    def test_data_table_on_common_view_uses_arrayref_assign_data(self) -> None:
+        # y1 aliases the first 20 elements of /blk/ -> an ArrayRef sub-view;
+        # the DATA table must bulk-fill through the view, not a copy.
+        cpp = _convert(COMMON_VIEW_F77)
+        self.assertIn("static constexpr float y1_data[] = {", cpp)
+        self.assertIn("y1.assign_data(y1_data);", cpp)
+        self.assertIn("ftn::ArrayRef<float, 1>(blk_common.x.data()", cpp)
+
 
 @unittest.skipUnless(
     _have_flang() and _have_cxx(), "need flang and a C++20 compiler"
@@ -141,6 +169,10 @@ class ConstantTableRunTests(unittest.TestCase):
     def test_lb_table_runs(self) -> None:
         # dc(0)=0.1, dc(9)=1.0
         self.assertEqual(self._run(LB_F90), ["0.1", "1"])
+
+    def test_common_view_table_runs(self) -> None:
+        # y1(15) writes through the COMMON view, so x(15) == 1.5 in `p`.
+        self.assertEqual(self._run(COMMON_VIEW_F77), ["1.5"])
 
 
 if __name__ == "__main__":
