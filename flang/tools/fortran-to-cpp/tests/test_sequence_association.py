@@ -194,6 +194,58 @@ class ElementToAssumedSizeTests(unittest.TestCase):
         )
 
 
+# An array *element* whose array shadows a same-named global subprogram.
+# SPICE has an ``INTEGER FUNCTION POS`` *and* routines (SPKGPS) with a dummy
+# array ``POS(3)`` passed element-wise: ``CALL MXV(ROT, POS(1), STEMP)``.
+# The sequence-association reshape must recognise ``pos(1)`` as an array
+# element (the local array shadows the global function) and wrap it in
+# ``elem_tail_n``; otherwise the bare element decayed to a single-cell
+# ``{1}`` view via ``ArrayRef(T&)`` and the callee's ``VIN(2)`` overran it.
+ELEM_SHADOWS_FUNCTION_F = """\
+      integer function pos(str, sub)
+      character*(*) str, sub
+      pos = index(str, sub)
+      end
+
+      subroutine mxv3(vin, vout)
+      double precision vin(3), vout(3)
+      integer i
+      do i = 1, 3
+         vout(i) = vin(i) * 2
+      end do
+      end
+
+      subroutine outer(pos, res)
+      double precision pos(3), res(3)
+      call mxv3(pos(1), res)
+      end
+
+      program p
+      double precision a(3), r(3)
+      a(1) = 1
+      a(2) = 2
+      a(3) = 3
+      call outer(a, r)
+      print *, r(1), r(2), r(3)
+      end
+"""
+
+
+@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
+class ElementShadowingFunctionTests(unittest.TestCase):
+    def test_local_array_shadows_global_function(self) -> None:
+        cpp = convert_project(ELEM_SHADOWS_FUNCTION_F, suffix=".f")
+        # pos(1) recognised as an array element despite the global pos()
+        # function -> reshaped to a 3-element view, not a bare element.
+        self.assertIn("mxv3(ftn::elem_tail_n(pos, 3, 1), res)", cpp)
+
+    def test_runs(self) -> None:
+        self.assertEqual(
+            run_project(ELEM_SHADOWS_FUNCTION_F, suffix=".f").split(),
+            ["2", "4", "6"],
+        )
+
+
 # A multi-dimensional array *element* passed to a higher-rank explicit-shape
 # dummy: ``CALL MXM(REF(1,1,K), ...)`` where REF is (3,3,5) and the dummy is
 # M(3,3) -- the K-th 3x3 slice.  Without this the element became a (1,1) view

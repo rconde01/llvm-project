@@ -462,17 +462,24 @@ def _expr_rank(expr: IRExpr) -> int | None:
     return None
 
 
-def _is_array_element(expr: IRExpr, subprograms: dict) -> bool:
+def _is_array_element(
+    expr: IRExpr, subprograms: dict, local_arrays: "set[str] | None" = None
+) -> bool:
     """True if ``expr`` indexes an array (``a(i)``, ``v%c(i)``) rather than
     calls a function.  An array access lowers to a call-shaped node whose
     callee is an access path, not a known subprogram or a ``ftn::`` /
-    ``std::`` intrinsic."""
-    return (
-        isinstance(expr, IRFunctionCall)
-        and "::" not in expr.callee
-        and expr.callee not in subprograms
-        and len(expr.args) >= 1
-    )
+    ``std::`` intrinsic.
+
+    A local or dummy array *shadows* a same-named global subprogram (SPICE
+    has both a ``POS`` function and routines with a dummy array ``POS(3)``);
+    when ``local_arrays`` names such an array, the access wins over the
+    global subprogram so the sequence-association reshape still fires."""
+    if not (isinstance(expr, IRFunctionCall) and "::" not in expr.callee
+            and len(expr.args) >= 1):
+        return False
+    if local_arrays is not None and expr.callee in local_arrays:
+        return True
+    return expr.callee not in subprograms
 
 
 def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
@@ -596,7 +603,7 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
             elif (
                 p.type.array_rank >= 2
                 and p.type.array_extent_exprs
-                and _is_array_element(actual, params_by_name)
+                and _is_array_element(actual, params_by_name, set(caller_arrays))
             ):
                 # ``call mxm(.., ref(1,1,i))`` -- a multi-dimensional array
                 # *element* to a higher-rank explicit-shape dummy.  View the
@@ -638,7 +645,9 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
                             *actual.args,
                         ),
                     )
-            elif p.type.array_rank == 1 and _is_array_element(actual, params_by_name):
+            elif p.type.array_rank == 1 and _is_array_element(
+                actual, params_by_name, set(caller_arrays)
+            ):
                 # ``call s(a(i,j))`` with an array dummy: the dummy views
                 # the storage from that element onward (sequence assoc).
                 # When the dummy has an explicit extent (``DIMENSION X(7)``)
