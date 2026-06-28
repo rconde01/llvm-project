@@ -620,6 +620,24 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
                             *actual.args,
                         ),
                     )
+                else:
+                    # Assumed-size dummy (``PLATES(3, *)``): the leading
+                    # extents are real, the trailing ``*`` spans the rest of
+                    # the actual's storage from this element -- computed at
+                    # runtime.  Pass the leading extents with a 0 placeholder
+                    # for the trailing dim, which ``seq_assoc_at_rest`` fills.
+                    rest_extents = [
+                        "0" if "assumed" in e else e for e in extents
+                    ]
+                    out[i] = IRFunctionCall(
+                        callee=f"ftn::seq_assoc_at_rest<{rank}>",
+                        args=(
+                            IRName(name=actual.callee, fortran=actual.callee),
+                            IRRaw("{" + ", ".join(lowers) + "}"),
+                            IRRaw("{" + ", ".join(rest_extents) + "}"),
+                            *actual.args,
+                        ),
+                    )
             elif p.type.array_rank == 1 and _is_array_element(actual, params_by_name):
                 # ``call s(a(i,j))`` with an array dummy: the dummy views
                 # the storage from that element onward (sequence assoc).

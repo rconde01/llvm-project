@@ -665,6 +665,30 @@ auto seq_assoc_at(A &a, const std::array<index_t, R> &lower,
   return ArrayRef<T, R>(&a(static_cast<index_t>(idx)...), lower, extents);
 }
 
+/// Same as :func:`seq_assoc_at` but for an *assumed-size* higher-rank dummy
+/// (``A(M, *)`` -- the SPICE ``ZZELLPLT``/``ZZCAPPLT(.., PLATES(1,PIX))``
+/// idiom).  The leading extents are fixed by the dummy; the trailing
+/// (assumed) extent is unknown, so it spans the rest of the actual's
+/// storage from the element: ``(remaining elements) / (product of the
+/// leading extents)``.  The caller passes the leading extents with a
+/// placeholder (any value) in the last slot, which we overwrite.  Without
+/// this the element decayed through ``ArrayRef(T&)`` to a single-cell
+/// ``{1,1,...}`` view and the callee's first non-trivial index overran it.
+template <std::size_t R, typename A, typename... Idx>
+auto seq_assoc_at_rest(A &a, const std::array<index_t, R> &lower,
+                       std::array<index_t, R> extents, Idx... idx)
+    -> ArrayRef<std::remove_reference_t<decltype(a(static_cast<index_t>(
+                    idx)...))>,
+                R> {
+  using T = std::remove_reference_t<decltype(a(static_cast<index_t>(idx)...))>;
+  T *base = &a(static_cast<index_t>(idx)...);
+  index_t rest = a.size() - static_cast<index_t>(base - a.data());
+  index_t prod = 1;
+  for (std::size_t i = 0; i + 1 < R; ++i) prod *= extents[i];
+  extents[R - 1] = prod > 0 ? rest / prod : 0;
+  return ArrayRef<T, R>(base, lower, extents);
+}
+
 /// Fortran sequence association of a whole-array actual to a *scalar*
 /// dummy: the dummy is storage-associated with the array's first element.
 /// Returns a reference to that element (column-major origin = ``data()``),

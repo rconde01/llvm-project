@@ -286,5 +286,56 @@ class MultiDimElementToDummyTests(unittest.TestCase):
         )
 
 
+# A multi-dimensional array *element* passed to a higher-rank *assumed-size*
+# dummy (``PLATES(3, *)`` -- the SPICE ``ZZELLPLT``/``ZZCAPPLT(.., PLATES(1,
+# PIX))`` idiom).  The dummy's leading extent (3) is real but its trailing
+# ``*`` is caller-sized, so the view must span the rest of the actual's
+# storage from the element.  Without this the element decayed through the
+# ``ArrayRef(T&)`` scalar constructor to a single-cell ``{1,1}`` view and the
+# callee's ``PLATES(2,_)`` overran it ("index 2 out of range [1, 1]") --
+# the dominant tspice CRASH signature.
+MULTID_ELEM_ASSUMED_F = """\
+      subroutine cap(plates, n)
+      integer plates(3, *), n, i
+      do i = 1, n
+         plates(1, i) = 10 + i
+         plates(2, i) = 20 + i
+         plates(3, i) = 30 + i
+      end do
+      end
+
+      program p
+      integer plt(3, 10), pix, i, j
+      do i = 1, 3
+         do j = 1, 10
+            plt(i, j) = 0
+         end do
+      end do
+      pix = 4
+      call cap(plt(1, pix), 2)
+      print *, plt(2,4), plt(3,5), plt(1,6)
+      end
+"""
+
+
+@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
+class MultiDimElementToAssumedSizeTests(unittest.TestCase):
+    def test_uses_seq_assoc_at_rest(self) -> None:
+        cpp = convert_project(MULTID_ELEM_ASSUMED_F, suffix=".f")
+        # Leading extent 3 kept; trailing assumed dim -> 0 placeholder that
+        # the runtime fills from the remaining storage.
+        self.assertIn(
+            "ftn::seq_assoc_at_rest<2>(plt, {1, 1}, {3, 0}, 1, pix)", cpp
+        )
+
+    def test_runs(self) -> None:
+        # cap writes plates(1..3, 1..2) starting at plt(1,4):
+        # plt(2,4)=21, plt(3,5)=32; plt(1,6) untouched = 0.
+        self.assertEqual(
+            run_project(MULTID_ELEM_ASSUMED_F, suffix=".f").split(),
+            ["21", "32", "0"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
