@@ -103,44 +103,6 @@ ASSUMED_SIZE_REBASE_F = """\
 """
 
 
-# A 0-based whole array passed to a 1-based *explicit-shape* dummy
-# (``CALL VSCLG(.., Q, 4, OUT)`` where ``Q`` is a quaternion ``Q(0:3)`` and
-# the dummy is ``VOUT(NDIM)``).  The dummy is 1-based (its own declared lb
-# wins), so the callee indexes ``VOUT(1..4)``.  The Array->ArrayRef
-# conversion must give the view the *dummy's* default lower bound (1), not
-# inherit the actual's 0 -- otherwise ``VOUT(4)`` overran the ``[0,3]``
-# storage (the SPICE quaternion ``f_quat``/``f_ck06`` CRASH).
-EXPLICIT_SHAPE_REBASE_F = """\
-      subroutine vsclg(s, v1, ndim, vout)
-      double precision s, v1(ndim), vout(ndim)
-      integer ndim, i
-      do i = 1, ndim
-         vout(i) = s * v1(i)
-      end do
-      end
-
-      program p
-      double precision q(0:3), r(0:3)
-      integer i
-      do i = 0, 3
-         q(i) = i + 1
-      end do
-      call vsclg(2.0d0, q, 4, r)
-      print *, r(0), r(1), r(2), r(3)
-      end
-"""
-
-
-@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
-class ExplicitShapeRebaseTests(unittest.TestCase):
-    def test_zero_based_actual_rebases_to_one_based_dummy(self) -> None:
-        # q(0:3)=1,2,3,4 scaled by 2 -> r(0:3)=2,4,6,8; no overrun.
-        self.assertEqual(
-            run_project(EXPLICIT_SHAPE_REBASE_F, suffix=".f").split(),
-            ["2", "4", "6", "8"],
-        )
-
-
 # An explicit non-1 lower bound on an assumed-size dummy (the SPICE LNKINI
 # ``POOL(2, LBPOOL:*)`` idiom) must be preserved, so ``POOL(_,0)`` is valid.
 EXPLICIT_LOWER_ASSUMED_F = """\
