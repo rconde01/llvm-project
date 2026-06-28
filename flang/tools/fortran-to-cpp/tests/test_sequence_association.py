@@ -225,6 +225,53 @@ MULTID_ELEM_F = """\
 """
 
 
+# A rank-1 actual passed to a 2-D *assumed-size* dummy whose leading dim is
+# another dummy (``A(M, *)`` -- the SPICE ``SPKW01``/``DLINES(DLSIZE,*)``
+# idiom).  The leading extent ``M`` must be kept (collapsing it to the
+# assumed placeholder lost the real row count), and the trailing ``*`` dim
+# must span the rest of the actual's storage (``actual.size() / M``), not be
+# left as the placeholder 0 (which made an empty column and any callee write
+# to column 2+ overran the view).
+RANK1_TO_ASSUMED_SIZE_2D_F = """\
+      subroutine fill(m, a)
+      integer m
+      double precision a(m, *)
+      a(1,1) = 1.0
+      a(2,1) = 2.0
+      a(1,2) = 3.0
+      a(2,2) = 4.0
+      end
+
+      program p
+      double precision q(8)
+      integer i
+      do i = 1, 8
+         q(i) = 0
+      end do
+      call fill(2, q)
+      print *, q(1), q(2), q(3), q(4)
+      end
+"""
+
+
+@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
+class Rank1ToAssumedSize2DTests(unittest.TestCase):
+    def test_leading_extent_kept_trailing_from_size(self) -> None:
+        cpp = convert_project(RANK1_TO_ASSUMED_SIZE_2D_F, suffix=".f")
+        # Leading dim M -> (2); trailing assumed dim -> actual.size() / M.
+        self.assertIn(
+            "ftn::seq_assoc<2>(q, {1, 1}, {(2), (q.size()) / (((2)))})", cpp
+        )
+
+    def test_runs(self) -> None:
+        # column-major (2,*) view of q: a(1,1)=q(1), a(2,1)=q(2),
+        # a(1,2)=q(3), a(2,2)=q(4).
+        self.assertEqual(
+            run_project(RANK1_TO_ASSUMED_SIZE_2D_F, suffix=".f").split(),
+            ["1", "2", "3", "4"],
+        )
+
+
 @unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
 class MultiDimElementToDummyTests(unittest.TestCase):
     def test_uses_seq_assoc_at(self) -> None:

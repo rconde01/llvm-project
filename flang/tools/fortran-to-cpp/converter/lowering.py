@@ -573,6 +573,18 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
                 # ``{...}`` extent list is valid in the caller's scope.
                 lowers = _subst_dummy_bounds(lowers, params, out, callee)
                 extents = _subst_dummy_bounds(extents, params, out, callee)
+                # An assumed-size dummy (``A(M, *)``) has a placeholder for
+                # the trailing ``*`` extent; for a sequence-associated 1-D
+                # actual, that dim spans the rest of the actual's storage:
+                # ``actual.size() / (product of the leading extents)``.
+                if extents and "assumed" in extents[-1]:
+                    leading = extents[:-1]
+                    prod = (
+                        " * ".join(f"({e})" for e in leading) if leading else "1"
+                    )
+                    extents[-1] = (
+                        f"({_render_expr_inline(actual)}.size()) / ({prod})"
+                    )
                 out[i] = IRFunctionCall(
                     callee=f"ftn::seq_assoc<{rank}>",
                     args=(
@@ -3394,6 +3406,17 @@ def _assumed_dim_lower(dim_spec: Node) -> str:
     return "1"
 
 
+def _assumed_dim_extent(dim_spec: Node) -> str:
+    """The extent of one assumed-size dimension.  An explicit leading dim
+    (``DLINES(DLSIZE, *)`` -> the ``DLSIZE``) has a real extent that must be
+    kept -- losing it collapses sequence-association reshapes; only the
+    trailing assumed (``*``) dimension is caller-sized (placeholder)."""
+    if dim_spec.kind == "ExplicitShapeSpec":
+        _, hi = _lower_explicit_shape(dim_spec)
+        return hi
+    return "/* assumed-size */ 0"
+
+
 def _make_array_type(
     element_type: IRType, array_spec: Node, *, is_pointer: bool = False
 ) -> IRType:
@@ -3457,7 +3480,7 @@ def _make_array_type(
                 if c.kind in ("ExplicitShapeSpec", "AssumedImpliedSpec")
             ]
             for c in dims or [shape]:
-                extents.append("/* assumed-size */ 0")
+                extents.append(_assumed_dim_extent(c))
                 lowers.append(_assumed_dim_lower(c))
             has_explicit_lower = True
             all_static = False
@@ -3475,7 +3498,7 @@ def _make_array_type(
             # as a static lb (see AssumedSizeSpec above).
             specs = list(shape.find_all("AssumedImpliedSpec"))
             for c in specs or [shape]:
-                extents.append("/* assumed-size */ 0")
+                extents.append(_assumed_dim_extent(c))
                 lowers.append(_assumed_dim_lower(c))
             has_explicit_lower = True
             all_static = False
