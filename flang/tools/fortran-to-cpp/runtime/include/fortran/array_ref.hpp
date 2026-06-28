@@ -378,7 +378,7 @@ public:
     return strides_ == expected;
   }
 
-private:
+public:
   static lower_array lower_array_filled(index_t v) noexcept {
     lower_array out{};
     out.fill(v);
@@ -388,7 +388,9 @@ private:
   /// Default per-dimension lower bounds: ``Lower`` when static, all-1s
   /// when the runtime sentinel is in effect.  Used by the
   /// ``(data, extents)`` ctor so a static-``Lower`` view's stored
-  /// ``lower_`` mirrors the template parameter.
+  /// ``lower_`` mirrors the template parameter, and by the Array->ArrayRef
+  /// conversion so a dummy view takes its *own* declared lower bound rather
+  /// than inheriting the actual's.
   static lower_array default_lower_bounds() noexcept {
     if constexpr (kStaticLower) {
       return Lower;
@@ -397,6 +399,7 @@ private:
     }
   }
 
+private:
   extent_array upper() const noexcept {
     extent_array u{};
     for (std::size_t i = 0; i < Rank; ++i) {
@@ -422,17 +425,28 @@ private:
 // dummy declared with a different lb -- Fortran's "dummy's declared
 // lb wins" rule, in C++ form.
 
+// A Fortran dummy indexes from its *own* declared lower bound, never the
+// actual's: ``CALL VSCLG(.., Q, 4, OUT)`` where ``Q`` is a 0-based
+// quaternion ``Q(0:3)`` and the dummy is ``VOUT(NDIM)`` (1-based) makes the
+// callee index ``VOUT(1..4)``.  Give the view the *dummy's* default lower
+// bound (``default_lower_bounds()``: the static ``DstLower`` when present,
+// else 1) rather than inheriting the actual's ``lower_`` -- otherwise the
+// 0-based actual made ``VOUT(4)`` overrun the ``[0,3]`` storage.
 template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
 template <std::array<index_t, Rank> DstLower>
 Array<T, Rank, Lower>::operator ArrayRef<T, Rank, DstLower>() noexcept {
-  return ArrayRef<T, Rank, DstLower>(data(), lower_, extents_, strides_);
+  return ArrayRef<T, Rank, DstLower>(
+      data(), ArrayRef<T, Rank, DstLower>::default_lower_bounds(), extents_,
+      strides_);
 }
 
 template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
 template <std::array<index_t, Rank> DstLower>
 Array<T, Rank, Lower>::operator ArrayRef<const T, Rank, DstLower>()
     const noexcept {
-  return ArrayRef<const T, Rank, DstLower>(data(), lower_, extents_, strides_);
+  return ArrayRef<const T, Rank, DstLower>(
+      data(), ArrayRef<const T, Rank, DstLower>::default_lower_bounds(),
+      extents_, strides_);
 }
 
 // Sequence association: flatten a higher-rank array to a rank-1 view over
