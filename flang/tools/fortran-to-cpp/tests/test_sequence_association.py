@@ -194,5 +194,50 @@ class ElementToAssumedSizeTests(unittest.TestCase):
         )
 
 
+# A multi-dimensional array *element* passed to a higher-rank explicit-shape
+# dummy: ``CALL MXM(REF(1,1,K), ...)`` where REF is (3,3,5) and the dummy is
+# M(3,3) -- the K-th 3x3 slice.  Without this the element became a (1,1) view
+# and the callee's M(2,_) overran it (the SPICE MXM/MTXM matrix idiom).
+MULTID_ELEM_F = """\
+      subroutine cp(a, b)
+      double precision a(3,3), b(3,3)
+      integer i, j
+      do i = 1, 3
+         do j = 1, 3
+            b(i,j) = a(i,j)
+         end do
+      end do
+      end
+
+      program p
+      double precision ref(3,3,5), t(3,3)
+      integer i, j, k
+      do k = 1, 5
+         do i = 1, 3
+            do j = 1, 3
+               ref(i,j,k) = i + 3*(j-1) + 9*(k-1)
+            end do
+         end do
+      end do
+      call cp(ref(1,1,3), t)
+      print *, t(1,1), t(3,3)
+      end
+"""
+
+
+@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
+class MultiDimElementToDummyTests(unittest.TestCase):
+    def test_uses_seq_assoc_at(self) -> None:
+        cpp = convert_project(MULTID_ELEM_F, suffix=".f")
+        self.assertIn("ftn::seq_assoc_at<2>(ref, {1, 1}, {3, 3}, 1, 1, 3)", cpp)
+
+    def test_runs(self) -> None:
+        # slice k=3: ref(i,j,3)=i+3(j-1)+18; t(1,1)=19, t(3,3)=27.
+        self.assertEqual(
+            run_project(MULTID_ELEM_F, suffix=".f").split(),
+            ["19", "27"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

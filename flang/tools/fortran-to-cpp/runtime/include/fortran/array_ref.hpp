@@ -649,6 +649,22 @@ ArrayRef<T, R> seq_assoc(Array<T, 1, SrcLower> &a,
   return ArrayRef<T, R>(a.data(), lower, extents);
 }
 
+/// Sequence association from a multi-dimensional array *element*: pass
+/// ``ARR(i,j,k)`` to a higher-rank explicit-shape dummy -- the SPICE
+/// ``CALL MXM(.., REF(1,1,I), ..)`` idiom where ``REF`` is ``(3,3,20)`` and
+/// the dummy is ``M(3,3)``.  The element's address is the column-major
+/// origin; the dummy's bounds reinterpret the storage from there.  Generic
+/// over the actual (``Array`` or ``ArrayRef``) and its element type.
+template <std::size_t R, typename A, typename... Idx>
+auto seq_assoc_at(A &a, const std::array<index_t, R> &lower,
+                  const std::array<index_t, R> &extents, Idx... idx)
+    -> ArrayRef<std::remove_reference_t<decltype(a(static_cast<index_t>(
+                    idx)...))>,
+                R> {
+  using T = std::remove_reference_t<decltype(a(static_cast<index_t>(idx)...))>;
+  return ArrayRef<T, R>(&a(static_cast<index_t>(idx)...), lower, extents);
+}
+
 /// Fortran sequence association of a whole-array actual to a *scalar*
 /// dummy: the dummy is storage-associated with the array's first element.
 /// Returns a reference to that element (column-major origin = ``data()``),

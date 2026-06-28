@@ -581,6 +581,33 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
                         IRRaw("{" + ", ".join(extents) + "}"),
                     ),
                 )
+            elif (
+                p.type.array_rank >= 2
+                and p.type.array_extent_exprs
+                and _is_array_element(actual, params_by_name)
+            ):
+                # ``call mxm(.., ref(1,1,i))`` -- a multi-dimensional array
+                # *element* to a higher-rank explicit-shape dummy.  View the
+                # storage from that element with the dummy's bounds (the
+                # rank>=2 analogue of the elem_tail element-to-1D case).
+                rank = p.type.array_rank
+                lowers = _subst_dummy_bounds(
+                    list(p.type.array_lower_bound_exprs or ["1"] * rank),
+                    params, out, callee,
+                )
+                extents = _subst_dummy_bounds(
+                    list(p.type.array_extent_exprs), params, out, callee
+                )
+                if not any("assumed" in e for e in extents):
+                    out[i] = IRFunctionCall(
+                        callee=f"ftn::seq_assoc_at<{rank}>",
+                        args=(
+                            IRName(name=actual.callee, fortran=actual.callee),
+                            IRRaw("{" + ", ".join(lowers) + "}"),
+                            IRRaw("{" + ", ".join(extents) + "}"),
+                            *actual.args,
+                        ),
+                    )
             elif p.type.array_rank == 1 and _is_array_element(actual, params_by_name):
                 # ``call s(a(i,j))`` with an array dummy: the dummy views
                 # the storage from that element onward (sequence assoc).
