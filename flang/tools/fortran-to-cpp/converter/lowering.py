@@ -1892,17 +1892,23 @@ def _guard_save_array_data_inits(
     it re-initializes the persisted array on each call -- clobbering any
     state a first-call (``IF (FIRST)``) block established (the SPICE NPARSD
     CLASS/VALUES tables).  A synthetic SAVEd flag makes the block run once."""
-    save_arrays = {
-        loc.name for loc in sub.locals if loc.is_save and loc.type.is_array
-    }
-    if not save_arrays:
+    # Every SAVE local whose DATA init is *still* in the body: the pure-
+    # literal scalars were already folded into struct-field initializers by
+    # _hoist_save_data_inits, so what remains is SAVE arrays plus SAVE
+    # scalars whose value references a PARAMETER (``DATA SAVACT / IDEFLT /``)
+    # -- those can't be struct-field initializers (the constant isn't in
+    # struct scope), but they must still run once, or every call resets the
+    # persisted state (GETACT kept returning the default error action, so
+    # ERRACT('SET','RETURN') never stuck and every SPICE error aborted).
+    save_targets = {loc.name for loc in sub.locals if loc.is_save}
+    if not save_targets:
         return
     guarded = [
         s
         for s in data_inits
         if isinstance(s, IRAssignment)
         and isinstance(s.target, IRName)
-        and s.target.name in save_arrays
+        and s.target.name in save_targets
     ]
     if not guarded:
         return
@@ -4742,7 +4748,15 @@ def _extract_io_status_specs(
                     pass
         iost = spec.first_child("IoStat") or spec.first_child("StatVariable")
         if iost is not None:
-            iv = iost.first_child("Variable") or iost.first_child("Expr")
+            # The variable is nested (StatVariable -> Scalar -> Integer ->
+            # Variable -> Designator), so search rather than taking a direct
+            # child -- otherwise IOSTAT= is silently dropped and the status
+            # variable is never assigned (every EOF-checking read loops).
+            iv = (
+                iost.find_first("Variable")
+                or iost.find_first("Designator")
+                or iost.first_child("Expr")
+            )
             if iv is not None:
                 iostat_target = _lower_expression(iv)
     return end_label, err_label, iostat_target

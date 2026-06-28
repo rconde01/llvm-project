@@ -100,6 +100,36 @@ class EntryRunTests(unittest.TestCase):
         nums = [float(t) for t in run(UMBRELLA_F77).split()]
         self.assertEqual(nums, [7.0])
 
+    def test_save_data_init_with_named_constant_runs_once(self) -> None:
+        # ``DATA sava / idef /`` (value is a PARAMETER, not a literal) can't
+        # become a struct-field initializer, but must still run once -- else
+        # GETX re-runs ``sava = idef`` each call and never returns what PUTX
+        # stored (the SPICE GETACT/ERRACT error-action bug).
+        src = (
+            "      SUBROUTINE PUTX ( A )\n"
+            "      INTEGER A, SAVA\n"
+            "      INTEGER IDEF\n"
+            "      PARAMETER ( IDEF = 9 )\n"
+            "      SAVE SAVA\n"
+            "      DATA SAVA / IDEF /\n"
+            "      SAVA = A\n"
+            "      RETURN\n"
+            "      ENTRY GETX ( A )\n"
+            "      A = SAVA\n"
+            "      RETURN\n"
+            "      END\n"
+            "      PROGRAM P\n"
+            "      INTEGER V\n"
+            "      CALL PUTX ( 3 )\n"
+            "      CALL GETX ( V )\n"
+            "      PRINT *, V\n"
+            "      END\n"
+        )
+        cpp = convert(src)
+        # The DATA init is wrapped in a once-only guard, not a bare reset.
+        self.assertIn("if (!_save_data_init)", cpp)
+        self.assertEqual([float(t) for t in run(src).split()], [3.0])
+
     def test_save_data_init_runs_once_not_per_entry(self) -> None:
         # ``DATA cnt /0/`` on a SAVE var is a load-time init; if it were
         # re-run in each entry's prologue (the SPICE TRCPKG/CHKOUT bug) the

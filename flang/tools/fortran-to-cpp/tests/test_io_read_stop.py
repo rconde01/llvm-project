@@ -65,6 +65,24 @@ class ReadStopEmitTests(unittest.TestCase):
         cpp = _convert(READ_STOP_F90)
         self.assertIn("std::exit(0);", cpp)
 
+    def test_read_iostat_assigns_status_variable(self) -> None:
+        # ``READ(u, '(A)', IOSTAT=ios) line`` must assign ``ios`` from the
+        # stream state -- the IOSTAT variable is nested under the spec, so a
+        # direct-child lookup missed it and ``ios`` was never set (every
+        # EOF-checking read loop then spun forever).
+        src = (
+            "subroutine r(u, line, eof)\n"
+            "  integer :: u, ios\n"
+            "  character(len=*) :: line\n"
+            "  logical :: eof\n"
+            "  read (u, fmt='(a)', iostat=ios) line\n"
+            "  eof = (ios < 0)\n"
+            "end subroutine\n"
+        )
+        cpp = _convert(src)
+        # ios gets the stream status: <0 on EOF, >0 on error, 0 otherwise.
+        self.assertRegex(cpp, r"ios = \(.*\.fail\(\) \? \(.*\.eof\(\) \? -1 : 1\) : 0\)")
+
     def test_stop_with_code(self) -> None:
         cpp = _convert(READ_STOP_F90)
         self.assertIn("std::exit(1);", cpp)
