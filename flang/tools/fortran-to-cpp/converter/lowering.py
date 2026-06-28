@@ -593,7 +593,18 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
                 extent_exprs = _subst_dummy_bounds(
                     list(p.type.array_extent_exprs or ()), params, out, callee
                 )
-                if extent_exprs and len(extent_exprs) == 1:
+                # An assumed-size ``ARRAY(*)`` dummy has no real extent -- its
+                # placeholder is ``/* assumed-size */ 0``; using it as the
+                # view size makes an empty view, so any callee index overruns
+                # (the SPICE MOVED/MOVEI(.., SUM(N+1)) crashes).  Only use a
+                # *concrete* dummy extent; otherwise view the remaining
+                # storage with ``elem_tail``.
+                concrete_extent = (
+                    extent_exprs
+                    and len(extent_exprs) == 1
+                    and "assumed" not in extent_exprs[0]
+                )
+                if concrete_extent:
                     out[i] = IRFunctionCall(
                         callee="ftn::elem_tail_n",
                         args=(

@@ -153,5 +153,46 @@ class AssumedSizeLowerBoundTests(unittest.TestCase):
         )
 
 
+# Passing an array *element* to an assumed-size dummy (``CALL MOVEIT(A, 4,
+# B(3))`` -> the SPICE MOVED/MOVEI/VSCLG idiom): the dummy views ``B`` from
+# that element to the end.  The dummy's extent is unknown (``DST(*)``), so
+# the view must use the remaining storage -- using the assumed-size
+# placeholder made an empty view and any callee index overran it.
+ELEM_TO_ASSUMED_F = """\
+      subroutine moveit(src, n, dst)
+      integer n, src(*), dst(*), i
+      do i = 1, n
+         dst(i) = src(i)
+      end do
+      end
+
+      program p
+      integer a(10), b(10), i
+      do i = 1, 10
+         a(i) = i
+         b(i) = 0
+      end do
+      call moveit(a, 4, b(3))
+      print *, b(3), b(6), b(7)
+      end
+"""
+
+
+@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
+class ElementToAssumedSizeTests(unittest.TestCase):
+    def test_uses_elem_tail_not_empty_view(self) -> None:
+        cpp = convert_project(ELEM_TO_ASSUMED_F, suffix=".f")
+        # Remaining-storage view, not elem_tail_n with an empty extent.
+        self.assertIn("ftn::elem_tail(b, 3)", cpp)
+        self.assertNotIn("elem_tail_n(b", cpp)
+
+    def test_runs(self) -> None:
+        # a(1..4)=1,2,3,4 -> b(3..6); b(7) stays 0.
+        self.assertEqual(
+            run_project(ELEM_TO_ASSUMED_F, suffix=".f").split(),
+            ["1", "4", "0"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
