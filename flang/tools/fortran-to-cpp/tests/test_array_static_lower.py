@@ -172,13 +172,20 @@ class ParamDeclStaticLowerTests(unittest.TestCase):
             intent=intent,
         )
 
-    def test_default_lb_uses_runtime_arrayref(self) -> None:
+    def test_default_lb_pins_to_static_one(self) -> None:
+        # A Fortran array dummy indexes from its own declared lower bound,
+        # which defaults to 1 -- so a dummy with no explicit lower pins to a
+        # static ``{1}`` (not the runtime sentinel that would inherit the
+        # actual's lb and let a non-1-based actual overrun the view).
         p = self._array_param(
             name="a", rank=1, lower_exprs=(), extent_exprs=("10",),
             intent="inout",
         )
         decl = p.cpp_param_decl(with_default=False)
-        self.assertEqual(decl, "ftn::ArrayRef<float, 1> a")
+        self.assertEqual(
+            decl,
+            "ftn::ArrayRef<float, 1, std::array<ftn::index_t, 1>{1}> a",
+        )
 
     def test_literal_lb_uses_static_arrayref(self) -> None:
         p = self._array_param(

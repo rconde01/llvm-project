@@ -803,10 +803,22 @@ class IRParameter:
             # callee constant-folds.  Callers' arrays (any source Lower)
             # bind via the templated Array->ArrayRef conversion operator
             # and the ArrayRef Lower-rebind constructor.
+            #
+            # A Fortran array dummy indexes from its *own* declared lower
+            # bound, which defaults to 1 -- never the actual's.  When no
+            # explicit bound was recorded, pin it statically to 1 (rather
+            # than the runtime sentinel that *inherits the actual's* lb):
+            # otherwise a non-1-based actual (a quaternion ``Q(0:3)`` passed
+            # to ``VSCLG``'s ``V1(N)``) made the view 0-based and the
+            # callee's ``V1(N)`` overran the ``[0,N-1]`` storage.  A POINTER
+            # dummy is a genuine view whose bounds come from the target, so
+            # it keeps the runtime form.
+            lower_exprs = self.type.array_lower_bound_exprs
+            if not lower_exprs and not self.type.is_pointer:
+                lower_exprs = ("1",) * self.type.array_rank
             from .static_lower import static_lower_cpp_type
             static_ref = static_lower_cpp_type(
-                runtime_ref, self.type.array_rank,
-                self.type.array_lower_bound_exprs,
+                runtime_ref, self.type.array_rank, lower_exprs,
             )
             ref_type = static_ref if static_ref is not None else runtime_ref
             decl = f"{ref_type} {self.name}"

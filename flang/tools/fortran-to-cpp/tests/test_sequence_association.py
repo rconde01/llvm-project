@@ -123,6 +123,53 @@ EXPLICIT_LOWER_ASSUMED_F = """\
 """
 
 
+# A 0-based whole array passed to a 1-based *explicit-shape* dummy
+# (``CALL VSCLG(.., Q, 4, OUT)`` where ``Q`` is a quaternion ``Q(0:3)`` and
+# the dummy is ``V1(NDIM)``).  A Fortran dummy indexes from its own declared
+# lower bound (1 by default), so the dummy must be a *static* 1-based view
+# -- otherwise it inherited the actual's lb 0 and the callee's ``V1(4)``
+# overran the ``[0,3]`` storage (the SPICE f_quat / f_ck06 / vsclg / vminug
+# CRASH).  No call-site rewrite: the fix is purely in the dummy's type.
+EXPLICIT_SHAPE_REBASE_F = """\
+      subroutine vsclg(s, v1, ndim, vout)
+      double precision s, v1(ndim), vout(ndim)
+      integer ndim, i
+      do i = 1, ndim
+         vout(i) = s * v1(i)
+      end do
+      end
+
+      program p
+      double precision q(0:3), r(0:3)
+      integer i
+      do i = 0, 3
+         q(i) = i + 1
+      end do
+      call vsclg(2.0d0, q, 4, r)
+      print *, r(0), r(1), r(2), r(3)
+      end
+"""
+
+
+@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
+class ExplicitShapeDummyOneBasedTests(unittest.TestCase):
+    def test_dummy_is_static_one_based(self) -> None:
+        cpp = convert_project(EXPLICIT_SHAPE_REBASE_F, suffix=".f")
+        # The explicit-shape dummy carries a static 1-based lower bound...
+        self.assertIn(
+            "ftn::ArrayRef<double, 1, std::array<ftn::index_t, 1>{1}> v1", cpp
+        )
+        # ...and the call site is unchanged (no lb1/seq_assoc wrapper).
+        self.assertIn("vsclg(2.0e0, q, 4, r)", cpp)
+
+    def test_runs(self) -> None:
+        # q(0:3)=1,2,3,4 scaled by 2 -> r(0:3)=2,4,6,8; no overrun.
+        self.assertEqual(
+            run_project(EXPLICIT_SHAPE_REBASE_F, suffix=".f").split(),
+            ["2", "4", "6", "8"],
+        )
+
+
 @unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
 class AssumedSizeLowerBoundTests(unittest.TestCase):
     def test_assumed_size_dummy_is_one_based(self) -> None:
