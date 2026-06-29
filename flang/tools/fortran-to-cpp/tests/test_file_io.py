@@ -201,10 +201,61 @@ class FileIoEmitTests(unittest.TestCase):
         self.assertNotIn("_units.in(13) >> ny", cpp)
 
 
+# A brand-new file opened with the default STATUS='UNKNOWN' must be created
+# and written.  The runtime opened ``in|out`` (no truncate) for UNKNOWN,
+# which fails on a non-existent file, and the create-fallback only fired for
+# a pure ``in`` open -- so writes to a new UNKNOWN file silently vanished
+# (an empty file).  This is how kernel/text files get written before being
+# read back, so it gated a large swath of file-reading behavior.
+UNKNOWN_STATUS_WRITE_F = """\
+      program p
+      integer ios, cnt
+      character*32 line
+      open(20, file='fc_unknown.txt', status='unknown')
+      write(20, '(A)') 'AAA'
+      write(20, '(A)') 'BBB'
+      write(20, '(A)') 'CCC'
+      close(20)
+      open(21, file='fc_unknown.txt', status='old')
+      cnt = 0
+ 10   read(21, '(A)', iostat=ios) line
+      if (ios .ne. 0) goto 20
+      cnt = cnt + 1
+      goto 10
+ 20   continue
+      close(21)
+      print *, cnt
+      end
+"""
+
+
 @unittest.skipUnless(
     _have_flang() and _have_cxx(), "need flang and a C++20 compiler"
 )
 class FileIoRunTests(unittest.TestCase):
+    def test_unknown_status_new_file_is_written(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            cpp = Path(d) / "out.cpp"
+            cpp.write_text(_convert(UNKNOWN_STATUS_WRITE_F))
+            exe = Path(d) / "out"
+            cxx = (
+                shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+            )
+            assert cxx is not None
+            comp = subprocess.run(
+                [cxx, "-std=c++20", "-I", str(RUNTIME_INCLUDE),
+                 str(cpp), "-o", str(exe)],
+                capture_output=True, text=True, check=False,
+            )
+            if comp.returncode != 0:
+                self.fail(f"compile failed:\n{comp.stderr}\n{cpp.read_text()}")
+            run = subprocess.run(
+                [str(exe)], capture_output=True, text=True, check=False, cwd=d
+            )
+            self.assertEqual(run.returncode, 0, msg=run.stderr)
+            # All three written lines must be read back.
+            self.assertEqual(run.stdout.split(), ["3"])
+
     def test_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             cpp = Path(d) / "out.cpp"

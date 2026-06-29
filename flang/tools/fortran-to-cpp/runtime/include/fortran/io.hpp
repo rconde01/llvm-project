@@ -222,8 +222,15 @@ public:
     // OPEN(FILE=...) trims trailing blanks before resolving the path.
     std::string path{trim_trailing_blanks(file)};
     auto fs{std::make_unique<std::fstream>(path, mode)};
-    if (!fs->is_open() && (mode & std::ios::in) && !(mode & std::ios::out)) {
-      // Fall back to creating the file for read/write.
+    if (!fs->is_open() && !(mode & std::ios::trunc)) {
+      // The file does not exist yet.  An ``in``/``in|out`` open requires an
+      // existing file, so it failed; create it for read+write.  This covers
+      // STATUS='OLD' on a missing file (lenient) and -- crucially --
+      // STATUS='UNKNOWN'/'SCRATCH' (the default, ``in|out`` with no trunc),
+      // where the previous ``in && !out`` guard never fired, so a brand-new
+      // file was never created and every WRITE silently vanished.  A
+      // NEW/REPLACE open already carries ``trunc`` (it creates), so a failure
+      // there is a real error and is not retried.
       auto fallback = std::ios::in | std::ios::out | std::ios::trunc;
       if (unformatted) {
         fallback |= std::ios::binary;
