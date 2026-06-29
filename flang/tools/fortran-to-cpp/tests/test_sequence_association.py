@@ -123,6 +123,50 @@ EXPLICIT_LOWER_ASSUMED_F = """\
 """
 
 
+# A 0-based whole array passed to a 1-based *explicit-shape* dummy
+# (``CALL VSCLG(.., Q, 4, OUT)`` where ``Q`` is a quaternion ``Q(0:3)`` and
+# the dummy is ``V1(NDIM)``).  The dummy is 1-based, so the view must be
+# rebased to 1 (``ftn::lb1``) -- otherwise ``V1(4)`` overran the ``[0,3]``
+# storage (the SPICE f_quat / f_ck06 / vsclg / vminug CRASH).  Only the
+# non-1-based actual is wrapped; a 1-based array is passed as-is.
+EXPLICIT_SHAPE_LB1_F = """\
+      subroutine vsclg(s, v1, ndim, vout)
+      double precision s, v1(ndim), vout(ndim)
+      integer ndim, i
+      do i = 1, ndim
+         vout(i) = s * v1(i)
+      end do
+      end
+
+      program p
+      double precision q(0:3), r(0:3), w(4)
+      integer i
+      do i = 0, 3
+         q(i) = i + 1
+      end do
+      call vsclg(2.0d0, q, 4, r)
+      call vsclg(1.0d0, w, 4, w)
+      print *, r(0), r(1), r(2), r(3)
+      end
+"""
+
+
+@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
+class ExplicitShapeLowerBoundRebaseTests(unittest.TestCase):
+    def test_non_unit_lower_wrapped_unit_lower_not(self) -> None:
+        cpp = convert_project(EXPLICIT_SHAPE_LB1_F, suffix=".f")
+        # q/r are 0-based -> wrapped; w is 1-based -> passed as-is.
+        self.assertIn("ftn::lb1(q)", cpp)
+        self.assertIn("ftn::lb1(r)", cpp)
+        self.assertNotIn("ftn::lb1(w)", cpp)
+
+    def test_runs(self) -> None:
+        self.assertEqual(
+            run_project(EXPLICIT_SHAPE_LB1_F, suffix=".f").split(),
+            ["2", "4", "6", "8"],
+        )
+
+
 @unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
 class AssumedSizeLowerBoundTests(unittest.TestCase):
     def test_assumed_size_dummy_is_one_based(self) -> None:

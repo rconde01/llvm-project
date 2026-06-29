@@ -689,6 +689,33 @@ auto seq_assoc_at_rest(A &a, const std::array<index_t, R> &lower,
   return ArrayRef<T, R>(base, lower, extents);
 }
 
+namespace detail {
+template <std::size_t R> constexpr std::array<index_t, R> ones_lower() noexcept {
+  std::array<index_t, R> a{};
+  a.fill(1);
+  return a;
+}
+}  // namespace detail
+
+/// View a whole array with a 1-based lower bound, regardless of the array's
+/// own declared lower.  A Fortran dummy indexes from its *own* declared
+/// bound (1 by default), never the actual's; passing a non-1-based actual
+/// (a quaternion ``Q(0:3)``) to a 1-based dummy (``VSCLG``'s ``V1(N)``)
+/// must rebase to 1, or the callee's ``V1(N)`` overruns the ``[0,N-1]``
+/// storage.  Emitted at call sites only for a non-1-based whole-array
+/// actual, so 1-based actuals (the common case) are untouched.  A
+/// static-lower dummy ignores this runtime lower (it indexes via its own
+/// template bound), so wrapping is always safe.
+template <typename T, std::size_t R, std::array<index_t, R> L>
+ArrayRef<T, R, detail::ones_lower<R>()> lb1(Array<T, R, L> &a) noexcept {
+  return ArrayRef<T, R, detail::ones_lower<R>()>(a.data(), a.extents());
+}
+template <typename T, std::size_t R, std::array<index_t, R> L>
+ArrayRef<const T, R, detail::ones_lower<R>()> lb1(
+    const Array<T, R, L> &a) noexcept {
+  return ArrayRef<const T, R, detail::ones_lower<R>()>(a.data(), a.extents());
+}
+
 /// Fortran sequence association of a whole-array actual to a *scalar*
 /// dummy: the dummy is storage-associated with the array's first element.
 /// Returns a reference to that element (column-major origin = ``data()``),
