@@ -541,10 +541,7 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
         ]
 
     def reshape(
-        callee: str,
-        args: list[IRExpr],
-        caller_arrays: dict[str, int],
-        caller_lowers: dict[str, tuple[str, ...]],
+        callee: str, args: list[IRExpr], caller_arrays: dict[str, int]
     ) -> list[IRExpr]:
         params = params_by_name.get(callee)
         if not params:
@@ -690,21 +687,6 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
                             *actual.args,
                         ),
                     )
-            elif (
-                isinstance(actual, IRName)
-                and actual.name in caller_arrays
-                and any(
-                    lo not in ("", "1")
-                    for lo in caller_lowers.get(actual.name, ())
-                )
-            ):
-                # A whole non-1-based array (a quaternion ``Q(0:3)``) passed
-                # to an array dummy: the dummy is 1-based (its own declared
-                # bound wins), so rebase the view to 1 -- otherwise the
-                # callee's ``V(N)`` overruns the actual's ``[lb, lb+N-1]``
-                # storage.  ``lb1`` is a no-op for a static-lb dummy (it uses
-                # its own template bound), so this is always safe.
-                out[i] = IRFunctionCall(callee="ftn::lb1", args=(actual,))
         return out
 
     for sub in tu.subprograms:
@@ -714,28 +696,12 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
         caller_arrays.update(
             {p.name: p.type.array_rank for p in sub.parameters if p.type.is_array}
         )
-        # Declared lower bounds of each caller *local* (owning) array, so a
-        # non-1-based whole array passed to a 1-based dummy can be rebased
-        # (see reshape).  Only owning numeric-array locals -- a dummy
-        # parameter is already an ``ArrayRef`` view whose lower bound lives
-        # in its type (and ``ftn::lb1`` is an ``Array`` overload), a pointer/
-        # allocatable local is likewise an ``ArrayRef``, and a CHARACTER
-        # array is a ``CharArrayRef`` with no ``lb1`` overload.
-        caller_lowers = {
-            loc.name: tuple(loc.type.array_lower_bound_exprs or ())
-            for loc in sub.locals
-            if loc.type.is_array
-            and not loc.type.is_pointer
-            and not loc.type.is_character
-        }
 
         def fix_stmt(stmt: IRStatement) -> IRStatement:
             if isinstance(stmt, IRCall):
                 return IRCall(
                     callee=stmt.callee,
-                    args=reshape(
-                        stmt.callee, list(stmt.args), caller_arrays, caller_lowers
-                    ),
+                    args=reshape(stmt.callee, list(stmt.args), caller_arrays),
                     leading_comments=stmt.leading_comments,
                     trailing_comments=stmt.trailing_comments,
                 )
@@ -745,11 +711,7 @@ def _reshape_sequence_associated_args(tu: IRTranslationUnit) -> None:
             if isinstance(expr, IRFunctionCall):
                 return IRFunctionCall(
                     callee=expr.callee,
-                    args=tuple(
-                        reshape(
-                            expr.callee, list(expr.args), caller_arrays, caller_lowers
-                        )
-                    ),
+                    args=tuple(reshape(expr.callee, list(expr.args), caller_arrays)),
                 )
             return expr
 
