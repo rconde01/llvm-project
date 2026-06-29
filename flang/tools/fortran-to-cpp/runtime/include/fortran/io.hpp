@@ -1006,6 +1006,14 @@ inline std::string fmt_A(std::string_view s, int w) {
 }
 
 inline std::string fmt_A_default(std::string_view s) {
+  // A null view -- an uninitialized / unassociated CHARACTER value reaching
+  // output (e.g. a default-constructed CharArrayRef element) -- would make
+  // ``std::string(s)`` throw "construction from null".  Fortran prints such
+  // storage as blanks, so emit blanks of the view's width instead of
+  // crashing.  Strictly additive: a non-null view is unaffected.
+  if (s.data() == nullptr) {
+    return std::string(s.size(), ' ');
+  }
   return std::string(s);
 }
 
