@@ -71,6 +71,26 @@ PUN_ARRAY_F = """\
 """
 
 
+# Element-to-element copy *within* a type-punned EquivArray view:
+# ``IBUF(1) = IBUF(3)``.  Both sides are ``EquivArray::Cell`` proxies; the
+# assignment must copy the cell's *value*, not the proxy's byte pointer.
+# (The implicit copy-assignment rebinds the pointer -- a silent no-op, the
+# same proxy-shadowing bug fixed in ArrayRef / CharRef / Substring.)
+PUN_CELL_COPY_F = """\
+      program p
+      integer i(4)
+      real    r(4)
+      equivalence (i, r)
+      i(1) = 100
+      i(2) = 200
+      i(3) = 300
+      i(4) = 400
+      i(1) = i(3)
+      print *, i(1), i(2), i(3), i(4)
+      end
+"""
+
+
 # Passing an equivalenced (type-punned) array to a subroutine with an
 # array dummy -- the SPICE DAF pattern (ZZDAFGSR passes DPBUF to ZZXLATED).
 # The EquivArray must view as an ArrayRef so the callee writes T directly
@@ -230,6 +250,14 @@ class EquivalenceRunTests(unittest.TestCase):
         self.assertEqual(
             self._build_and_run(SAME_TYPE_F),
             ["7.5", "9.5", "7.5", "9.5"],
+        )
+
+    def test_pun_cell_to_cell_copy_runs(self) -> None:
+        # i(1) = i(3): both EquivArray::Cell proxies; i(1) must become 300,
+        # not stay 100 (the implicit copy-assign would no-op the value copy).
+        self.assertEqual(
+            self._build_and_run(PUN_CELL_COPY_F),
+            ["300", "200", "300", "400"],
         )
 
     def test_pun_array_runs(self) -> None:

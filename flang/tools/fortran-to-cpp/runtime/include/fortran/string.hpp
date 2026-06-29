@@ -235,6 +235,21 @@ public:
     constexpr Substring &operator=(const char *s) noexcept {
       return *this = std::string_view{s};
     }
+    // A Substring RHS (``s(a:a) = s(b:b)``) would otherwise bind the
+    // implicitly-declared copy assignment, which copies the proxy's
+    // ``base_``/``size_`` fields rather than the characters -- a silent
+    // no-op on the underlying string.  Force Fortran character-copy
+    // semantics for any Fortran char view (Substring / ConstSubstring /
+    // CharRef) or FortranString RHS by routing through ``view()``.
+    constexpr Substring &operator=(const Substring &s) noexcept {
+      return *this = std::string_view{s.base_, s.size_};
+    }
+    template <typename S>
+      requires(requires(const S &x) { typename S::fortran_char_view_proxy; } &&
+               !std::is_same_v<std::remove_cvref_t<S>, Substring>)
+    constexpr Substring &operator=(const S &s) noexcept {
+      return *this = s.view();
+    }
 
     constexpr operator std::string_view() const noexcept {
       return std::string_view{base_, size_};

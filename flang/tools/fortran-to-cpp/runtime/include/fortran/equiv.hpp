@@ -155,6 +155,14 @@ public:
       std::memcpy(p_, &v, sizeof(T));
       return *this;
     }
+    // A Cell RHS (``x(i) = x(j)`` between two cells of the same equivalence
+    // view) would otherwise bind the implicitly-declared copy assignment,
+    // which copies the proxy's byte *pointer* rather than the value -- a
+    // silent no-op on the underlying storage.  Force a value copy.
+    Cell &operator=(const Cell &o) noexcept {
+      std::memcpy(p_, o.p_, sizeof(T));
+      return *this;
+    }
     template <typename U, typename = std::enable_if_t<
                               std::is_arithmetic_v<T> &&
                               std::is_convertible_v<U, T>>>

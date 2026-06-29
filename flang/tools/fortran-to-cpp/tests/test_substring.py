@@ -57,6 +57,35 @@ end program
 """
 
 
+# In-place substring-to-substring assignment: compact a string by copying
+# each kept character down (``s(put:put) = s(i:i)``), the SPICE ZZTIME
+# tokenizer's ZZREMT idiom.  A Substring RHS must copy *characters*, not the
+# proxy's pointer -- otherwise the implicit copy-assignment made it a silent
+# no-op and the compaction left the string unchanged.
+SUBSTRING_SELFCOPY_F90 = """\
+program p
+  character(len=11) :: s
+  integer :: i, put
+  s = "a.b.c.d.e.f"
+  put = 0
+  do i = 1, 11
+     if (s(i:i) /= ".") then
+        put = put + 1
+        s(put:put) = s(i:i)
+     end if
+  end do
+  print *, s(1:put)
+end program
+"""
+
+
+@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
+class SubstringSelfCopyRunTests(unittest.TestCase):
+    def test_in_place_compaction(self) -> None:
+        # Removing the '.' separators compacts "a.b.c.d.e.f" to "abcdef".
+        self.assertEqual(run(SUBSTRING_SELFCOPY_F90).strip(), "abcdef")
+
+
 @unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
 class SubstringRunTests(unittest.TestCase):
     def test_substring_slices(self) -> None:
