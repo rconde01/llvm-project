@@ -3459,6 +3459,16 @@ def _make_array_type(
         if shape.kind == "ExplicitShapeSpec":
             lo, hi = _lower_explicit_shape(shape)
             if lo is not None:
+                # Fold a named-constant lower (``LBCELL`` -> ``-5``) so a cell
+                # dummy gets a static ``Lower`` NTTP instead of the runtime
+                # sentinel (see ``_fold_explicit_lower``).  Skip CHARACTER
+                # arrays: a static-lower owning ``Array<FortranString,...>``
+                # has no ``CharArrayRef`` conversion, so leave them in the
+                # runtime form.
+                if not element_type.is_character:
+                    folded = _fold_explicit_lower(shape)
+                    if folded is not None:
+                        lo = folded
                 lowers.append(lo)
                 has_explicit_lower = True
             else:
@@ -3588,6 +3598,29 @@ def _lower_explicit_shape(shape: Node) -> tuple[str | None, str]:
     upper = _render_spec_expr(exprs[1])
     extent = f"({upper}) - ({lower}) + 1"
     return lower, extent
+
+
+def _fold_explicit_lower(shape: Node) -> str | None:
+    """Fold an ExplicitShapeSpec's lower bound to its integer literal when it
+    is a *named* compile-time constant (the SPICE ``LBCELL = -5`` cell lower
+    bound: ``WORK(LBCELL:MW, NW)``).  Such a name otherwise renders as itself,
+    which can't appear in a dummy's type ``Lower`` NTTP (the constant isn't in
+    scope at the signature) -- so the view fell back to the runtime sentinel,
+    lost the -5, and ``WORK(-5,I)`` (the cell's control element) overran the
+    ``[1,..]`` storage.  Returns the literal string, or ``None`` when the
+    bound is absent, already a literal, or not constant-foldable.  (A bare
+    ``-5`` already renders correctly and is left alone -- ``_const_int`` would
+    drop its sign.)"""
+    exprs = list(shape.find_all("SpecificationExpr"))
+    if len(exprs) < 2:
+        return None
+    from .static_lower import try_static_lower_literals
+
+    rendered = _render_spec_expr(exprs[0])
+    if try_static_lower_literals((rendered,)) is not None:
+        return None
+    v = _const_int(exprs[0])
+    return str(v) if v is not None else None
 
 
 def _render_spec_expr(node: Node) -> str:

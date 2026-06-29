@@ -170,6 +170,65 @@ class ExplicitShapeDummyOneBasedTests(unittest.TestCase):
         )
 
 
+# A dummy array whose lower bound is a *named PARAMETER* (the SPICE
+# ``LBCELL = -5`` cell lower bound: ``WORK(LBCELL:MW, NW)``).  The named
+# constant must be folded to its literal so the dummy gets a static
+# ``{-5, ...}`` ``Lower`` -- the name itself can't appear in the signature's
+# type, so it fell back to the runtime sentinel, lost the -5, and the cell's
+# control element ``WORK(LBCELL,I)`` overran the [1,..] storage (the SPICE
+# f_zzgflng / f_zzgfcslv elem_tail index-(-5) CRASH).  A CHARACTER cell is
+# left in the runtime form (no static-lower CharArrayRef conversion).
+NAMED_LBCELL_F = """\
+      subroutine ssz(n, cell)
+      integer n, lbcell
+      parameter (lbcell=-5)
+      double precision cell(lbcell:n)
+      cell(lbcell) = n
+      cell(1) = 1.0
+      end
+
+      subroutine usecell(work, mw, nw)
+      integer mw, nw, i, lbcell
+      parameter (lbcell=-5)
+      double precision work(lbcell:mw, nw)
+      do i = 1, nw
+         call ssz(mw, work(lbcell, i))
+      end do
+      end
+
+      program p
+      integer lbcell, i, j
+      parameter (lbcell=-5)
+      double precision w(lbcell:10, 3)
+      do j = 1, 3
+         do i = lbcell, 10
+            w(i,j) = 0
+         end do
+      end do
+      call usecell(w, 10, 3)
+      print *, w(lbcell,1), w(lbcell,3)
+      end
+"""
+
+
+@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
+class NamedConstantLowerBoundTests(unittest.TestCase):
+    def test_named_param_lower_folds_to_static(self) -> None:
+        cpp = convert_project(NAMED_LBCELL_F, suffix=".f")
+        # LBCELL (=-5) folded into the dummy's static Lower NTTP.
+        self.assertIn(
+            "ftn::ArrayRef<double, 2, std::array<ftn::index_t, 2>{-5,1}> work",
+            cpp,
+        )
+
+    def test_runs(self) -> None:
+        # ssz writes work(LBCELL,i)=MW=10 for each column; w(-5,1)=w(-5,3)=10.
+        self.assertEqual(
+            run_project(NAMED_LBCELL_F, suffix=".f").split(),
+            ["10", "10"],
+        )
+
+
 @unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
 class AssumedSizeLowerBoundTests(unittest.TestCase):
     def test_assumed_size_dummy_is_one_based(self) -> None:
