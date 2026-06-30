@@ -142,6 +142,20 @@ The worst instance was the test-utility `BEGDAT()`, which returns the
 the `fortran_char_view_proxy` marker so it still binds to `FortranString`
 slots and `CharRef` dummies (`184aaa906`).
 
+**`array_of` of character views built blank tables (this session).** A
+Fortran character array constructor whose elements are `CHARACTER`
+PARAMETER constants — `[RECSYS, LATSYS, ...]` — lowered to
+`ftn::array_of(recsys, ...)`.  `array_of` deduced its element type as the
+common type of its args; for character *views* (`CharRef`) that's the view
+itself, so it built an `Array<CharRef>` of null views and assigned
+`r(i) = elem`, which (per CharRef's character-copying `operator=`) wrote
+characters *through* the null view — a no-op.  The table came back blank.
+SPICE's ZZGFCOIN builds its coordinate-name tables this way and looks them
+up with ISRCHC; blank tables made every coordinate system read as "not
+supported", failing the whole geometry-finder (GF) cluster.  *Fix:* when
+the element type is a character view, `array_of` builds an owning
+`Array<DynString>` instead — recovered ~35 families (`c2ec9b2bc`).
+
 **CHARACTER↔INTEGER pun, A-descriptor null views.** Bit-reinterpret a
 `FortranString<N>` as an integer of matching width for the classic COMMON
 type pun; guard list-directed `A` output against a null character view so a
@@ -282,16 +296,20 @@ instructive, because each fix uncovered the next layer:
    CRASH from 35 to 2 and PASS toward ~276.
 4. **The SPK/CK FAIL cluster** then traced to the DAF read-modify-write
    record-loss bug (§4) — one ``clear()`` recovered ~40 families.
+5. **The geometry-finder (GF) FAIL cluster** traced to `array_of` of
+   character views building blank coordinate tables (§3) — recovered ~35.
 
-Net this session: **PASS 200 → 316, CRASH 12 → 2, TIMEOUT 24 → 2, 0
-regressions**, with the SPICE corpus held at 1625 files / 0 errors and the
-converter suite green (408 tests) throughout.
+Net this session: **PASS 200 → 351, FAIL 127 → 7, CRASH 12 → 1, TIMEOUT
+24 → 6, HARD 2 → 0, 0 regressions**, with the SPICE corpus held at 1625
+files / 0 errors and the converter suite green (408 tests) throughout.
 
-The recurring shape across all four runtime bugs: a **silent failure** — an
-empty return, a lost write, an over-strict bounds check — that stayed
-hidden until an earlier fix let execution reach it. Each fix uncovered the
-next, so the PASS count moved in large steps (200 → ~257 → ~276 → 316)
-rather than one at a time.
+The recurring shape across all these runtime bugs: a **silent failure** —
+an empty return, a lost write, an over-strict bounds check, a blank table —
+that stayed hidden until an earlier fix let execution reach it. Each fix
+uncovered the next, so the PASS count moved in large steps
+(200 → ~257 → ~276 → 316 → 351) rather than one at a time. The remaining
+handful are individual issues (an EK crash, a few borderline-slow surface/GF
+families near the run harness's timeout), not shared clusters.
 
 **Method that worked repeatedly:** when a family failed, instrument the
 suspected routine with `fprintf` probes (recompile that one file + relink),
