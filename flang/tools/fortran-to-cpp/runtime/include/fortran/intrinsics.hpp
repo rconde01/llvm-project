@@ -24,6 +24,7 @@
 
 #include "array.hpp"
 #include "array_ops.hpp" // detail::ArrayLike, elem_t, rank_of
+#include "string.hpp"    // DynString for array_of of character views
 
 #include <cmath>
 #include <cstddef>
@@ -207,11 +208,27 @@ template <typename T> int digits(const T &) noexcept {
 /// of failing to deduce a homogeneous list.
 template <typename... Args>
 auto array_of(const Args &...elems) {
-  using T = std::common_type_t<Args...>;
-  Array<T, 1> r({static_cast<index_t>(sizeof...(Args))});
-  index_t i = 1;
-  ((r(i++) = static_cast<T>(elems)), ...);
-  return r;
+  using C = std::common_type_t<Args...>;
+  if constexpr (requires {
+                  typename std::remove_cvref_t<C>::fortran_char_view_proxy;
+                }) {
+    // A character *view* element (CharRef or a substring proxy) owns no
+    // storage: ``Array<CharRef>`` holds null views, and ``view = elem``
+    // copies characters *through* the (null) view -- a silent no-op, so
+    // the array would come back blank (e.g. a DATA-initialized table of
+    // coordinate-system names).  Store an owning ``DynString`` per element
+    // instead; it binds to a ``FortranString`` slot on the subsequent
+    // whole-array copy like any other character value.
+    Array<DynString, 1> r({static_cast<index_t>(sizeof...(Args))});
+    index_t i = 1;
+    ((r(i++) = DynString(elems)), ...);
+    return r;
+  } else {
+    Array<C, 1> r({static_cast<index_t>(sizeof...(Args))});
+    index_t i = 1;
+    ((r(i++) = static_cast<C>(elems)), ...);
+    return r;
+  }
 }
 
 // ---- Generic scalar intrinsics that differ for integer vs real ------------

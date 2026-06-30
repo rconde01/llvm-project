@@ -36,6 +36,26 @@ end program
 """
 
 
+# A CHARACTER array constructor whose elements are character PARAMETER
+# constants lowers to ``array_of`` over non-owning character views.  Those
+# views own no storage, so a naive ``Array<CharRef>`` would come back blank;
+# the constructor must materialize owning strings.  (This is the SPICE
+# ZZGFCOIN coordinate-name table pattern.)
+CHAR_AC_F90 = """\
+program cac
+  character(len=*), parameter :: recsys = 'RECTANGULAR'
+  character(len=*), parameter :: latsys = 'LATITUDINAL'
+  character(len=32) :: names(2)
+  names = [recsys, latsys]
+  if (names(1) == recsys .and. names(2) == latsys) then
+    print *, 'MATCH ', trim(names(1)), ' ', trim(names(2))
+  else
+    print *, 'BLANK [', trim(names(1)), ']'
+  end if
+end program
+"""
+
+
 def _convert(src: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".f90", delete=False, encoding="utf-8"
@@ -96,6 +116,37 @@ class ArrayConstructorRunTests(unittest.TestCase):
             self.assertEqual(parts[1], "30")
             self.assertEqual(parts[2], "10")  # sum 1..4
             self.assertEqual(parts[3], "2.5")
+
+    def test_character_view_constructor_materializes(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "in.f90"
+            f.write_text(CHAR_AC_F90)
+            cpp = Path(d) / "out.cpp"
+            cpp.write_text(convert_file(f))
+            exe = Path(d) / "out"
+            cxx = (
+                shutil.which("c++")
+                or shutil.which("g++")
+                or shutil.which("clang++")
+            )
+            assert cxx is not None
+            comp = subprocess.run(
+                [cxx, "-std=c++20", "-I", str(RUNTIME_INCLUDE),
+                 str(cpp), "-o", str(exe)],
+                capture_output=True, text=True, check=False,
+            )
+            if comp.returncode != 0:
+                self.fail(f"compile failed:\n{comp.stderr}\n{cpp.read_text()}")
+            run = subprocess.run(
+                [str(exe)], capture_output=True, text=True, check=False
+            )
+            self.assertEqual(run.returncode, 0, msg=run.stderr)
+            # The view-element constructor must yield the real strings, not
+            # a blank array (list-directed print pads between items).
+            self.assertEqual(
+                run.stdout.split(),
+                ["MATCH", "RECTANGULAR", "LATITUDINAL"],
+            )
 
 
 if __name__ == "__main__":
