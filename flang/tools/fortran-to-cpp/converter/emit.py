@@ -929,6 +929,31 @@ def _emit_statement(out: StringIO, stmt: IRStatement, *, indent: int) -> None:
         if stmt.fields is not None and stmt.unit_text is not None:
             _emit_formatted_sequential_read(out, stmt, indent=indent)
             return
+        if stmt.whole_line:
+            # ``READ(unit,'(A)') line`` -- read one whole record per
+            # character item (Fortran format reversion), blank-pad /
+            # truncate into the variable.  ``getline`` consumes the
+            # trailing newline, so no separate record skip is needed.
+            _emit_comment_block(out, stmt.leading_comments, indent=indent)
+            # Read the record verbatim via the *unfiltered* stream -- the
+            # list-directed filter behind ``in()`` rewrites comma/tab and
+            # ``D``/``d`` and would corrupt character data.
+            raw_stream = (
+                f"_units.in_raw({stmt.unit_text})"
+                if stmt.unit_text is not None
+                else stmt.stream
+            )
+            for k, item in enumerate(stmt.items):
+                tmp = f"_ln{k}" if len(stmt.items) > 1 else "_ln"
+                if k:
+                    out.write("\n")
+                out.write(
+                    f"{pad}{{ std::string {tmp}; "
+                    f"std::getline({raw_stream}, {tmp}); "
+                    f"{_render_expr(item)} = {tmp}; }}"
+                )
+            _emit_trailing(out, stmt.trailing_comments)
+            return
         if any(isinstance(it, IRImpliedDo) for it in stmt.items):
             _emit_io_with_implied_do(out, stmt, write=False, indent=indent)
             return

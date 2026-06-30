@@ -165,6 +165,16 @@ class FileIoEmitTests(unittest.TestCase):
         self.assertIn('_units.open(10, "fc_test.dat"sv, "replace"sv);', cpp)
         self.assertIn("_units.close(10);", cpp)
 
+    def test_whole_line_a_read_uses_getline(self) -> None:
+        # ``READ(unit,'(A)') line`` must be a whole-record getline through
+        # the *unfiltered* stream (``in_raw``) -- not a list-directed
+        # ``read_list_item`` (which stops at the first blank), and not the
+        # filtered ``in()`` (which rewrites comma/tab and ``D``/``d``, so it
+        # would corrupt character data like ``\\begindata``).
+        cpp = _convert(WHOLE_LINE_READ_F)
+        self.assertIn("std::getline(_units.in_raw(30)", cpp)
+        self.assertNotIn("read_list_item", cpp)
+
     def test_unit_io_uses_units_table(self) -> None:
         cpp = _convert(ROUNDTRIP_F)
         self.assertIn("_units.out(10)", cpp)
@@ -255,6 +265,21 @@ SCRATCH_ROUNDTRIP_F = """\
 """
 
 
+# A whole-line ``(A)`` read must capture the ENTIRE record, including
+# embedded blanks -- not stop at the first token like a list-directed read.
+WHOLE_LINE_READ_F = """\
+      program p
+      character*40 line
+      open(30, status='scratch', form='formatted')
+      write(30, '(A)') 'hello there world'
+      rewind(30)
+      read(30, '(A)') line
+      close(30)
+      print *, '[', line, ']'
+      end
+"""
+
+
 @unittest.skipUnless(
     _have_flang() and _have_cxx(), "need flang and a C++20 compiler"
 )
@@ -280,6 +305,29 @@ class FileIoRunTests(unittest.TestCase):
             )
             self.assertEqual(run.returncode, 0, msg=run.stderr)
             self.assertEqual(run.stdout.split(), ["3"])
+
+    def test_whole_line_a_read_captures_blanks(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            cpp = Path(d) / "out.cpp"
+            cpp.write_text(_convert(WHOLE_LINE_READ_F))
+            exe = Path(d) / "out"
+            cxx = (
+                shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+            )
+            assert cxx is not None
+            comp = subprocess.run(
+                [cxx, "-std=c++20", "-I", str(RUNTIME_INCLUDE),
+                 str(cpp), "-o", str(exe)],
+                capture_output=True, text=True, check=False,
+            )
+            if comp.returncode != 0:
+                self.fail(f"compile failed:\n{comp.stderr}\n{cpp.read_text()}")
+            run = subprocess.run(
+                [str(exe)], capture_output=True, text=True, check=False, cwd=d
+            )
+            self.assertEqual(run.returncode, 0, msg=run.stderr)
+            # The whole record -- with its embedded blanks -- round-trips.
+            self.assertIn("hello there world", run.stdout)
 
     def test_unknown_status_new_file_is_written(self) -> None:
         with tempfile.TemporaryDirectory() as d:

@@ -1813,11 +1813,14 @@ def _expand_io_label_jumps(body: list[IRStatement]) -> None:
             or stmt.err_label is not None
             or stmt.iostat_target is not None
         ):
-            stream = (
-                _render_expr_inline(stmt.internal_unit)
-                if stmt.internal_unit is not None
-                else stmt.stream
-            )
+            if stmt.internal_unit is not None:
+                stream = _render_expr_inline(stmt.internal_unit)
+            elif stmt.whole_line and stmt.unit_text is not None:
+                # A whole-line read consumes from the *unfiltered* stream, so
+                # its EOF / error / IOSTAT state lives there, not on ``in()``.
+                stream = f"_units.in_raw({stmt.unit_text})"
+            else:
+                stream = stmt.stream
             # Replace the IRRead with one that no longer carries the
             # status spec (so emit doesn't try to handle it).  Preserve
             # every other field so a labeled read still picks the
@@ -1828,6 +1831,7 @@ def _expand_io_label_jumps(body: list[IRStatement]) -> None:
                 internal_unit=stmt.internal_unit,
                 unit_text=stmt.unit_text,
                 fields=stmt.fields,
+                whole_line=stmt.whole_line,
                 leading_comments=stmt.leading_comments,
                 trailing_comments=stmt.trailing_comments,
             )
@@ -4829,6 +4833,7 @@ def _lower_read(
     fmt_kind, fmt_payload = _classify_format(node)
     fields = None
     unit_text = None
+    whole_line = False
     if (
         fmt_kind == "const"
         and isinstance(fmt_payload, str)
@@ -4838,20 +4843,49 @@ def _lower_read(
         # Only file units route through ``_units.in(<n>)``; stdin (``*``,
         # ``5``) stays a plain ``>>`` chain (interactive / piped tests).
         if ut is not None and ut not in ("5", "*"):
-            built = _build_direct_read_fields(node, fmt_payload)
-            if built:
-                fields = built
+            if _is_whole_line_a_format(fmt_payload):
+                # ``READ(unit,'(A)') line`` reads the whole record into the
+                # character item -- a getline, not a token read.
+                whole_line = True
                 unit_text = ut
+            else:
+                built = _build_direct_read_fields(node, fmt_payload)
+                if built:
+                    fields = built
+                    unit_text = ut
     return IRRead(
         items=items,
         stream=stream,
         internal_unit=internal,
         unit_text=unit_text,
         fields=fields,
+        whole_line=whole_line,
         end_label=end_label,
         err_label=err_label,
         iostat_target=iostat_target,
     )
+
+
+def _is_whole_line_a_format(fmt_str: str) -> bool:
+    """True when a FORMAT's only data descriptor(s) are ``A`` (no width) --
+    i.e. ``(A)``, ``(1X,A)`` -- so each character item reads a whole record
+    (blank-padded / truncated to its length).  A widthless ``A`` consumes
+    the remainder of the record; mixing ``A`` with numeric descriptors is
+    left to the field-slicing / list-directed paths and returns False."""
+    from .format import parse_format, FormatParseError
+
+    try:
+        actions = parse_format(fmt_str)
+    except FormatParseError:
+        return False
+    data = [a for a in actions if a.kind == "data"]
+    if not data:
+        return False
+    for a in data:
+        # Only bare ``A`` (no explicit width) means "whole remaining record".
+        if a.letter.upper() != "A" or a.width:
+            return False
+    return True
 
 
 def _extract_io_status_specs(

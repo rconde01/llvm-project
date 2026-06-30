@@ -489,6 +489,21 @@ public:
     return ensure(unit);
   }
 
+  // Raw (unfiltered) input stream for a formatted whole-line ``A``-edit
+  // read.  ``in()`` routes through ``FortranListDirectedBuf``, which
+  // rewrites comma/tab -> space and ``D``/``d`` -> ``E``/``e`` so the
+  // ``>>`` list-directed reader tokenizes Fortran numeric input correctly.
+  // Those substitutions corrupt character data (``\begindata`` would read
+  // back as ``\begineata``), so a ``READ(unit,'(A)') line`` must read the
+  // record verbatim.  The filter never reads ahead, so the underlying file
+  // position stays consistent when a unit mixes ``>>`` and ``'(A)'`` reads.
+  std::istream &in_raw(int unit) {
+    if (unit == 5) {
+      return std::cin;
+    }
+    return ensure(unit).raw_in();
+  }
+
 private:
   // Return the FortranFile for ``unit``, opening ``fort.<unit>`` lazily
   // the first time the unit is touched if it wasn't explicitly OPENed.

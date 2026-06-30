@@ -243,6 +243,7 @@ def _map_statement_children(
                 if stmt.fields is not None
                 else None
             ),
+            whole_line=stmt.whole_line,
             end_label=stmt.end_label,
             err_label=stmt.err_label,
             iostat_target=(

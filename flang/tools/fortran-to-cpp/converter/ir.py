@@ -333,6 +333,12 @@ class IRRead:
     # Fortran ``IOSTAT=var`` -- target to receive the read's status: 0 on
     # success, -1 on EOF, positive on error.  Assigned after the read.
     iostat_target: "IRExpr | None" = None
+    # Whole-line ``A``-descriptor read: ``READ(unit,'(A)') line`` reads one
+    # whole record into each character item (blank-pad / truncate to the
+    # variable's length) -- NOT a list-directed ``>>`` token read, which
+    # would stop at the first blank.  The emitter does a ``getline`` per
+    # character item (format reversion: one record per item).
+    whole_line: bool = False
     leading_comments: list[Comment] = field(default_factory=list)
     trailing_comments: list[Comment] = field(default_factory=list)
 
