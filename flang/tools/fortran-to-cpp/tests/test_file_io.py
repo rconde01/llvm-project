@@ -229,10 +229,58 @@ UNKNOWN_STATUS_WRITE_F = """\
 """
 
 
+# A SCRATCH file written, rewound, and read back -- the SPICE LMPOOL idiom
+# (build a kernel buffer in a scratch file, then RDKER reads it).  The
+# scratch file had no path (the converter passes ""), so it opened nothing
+# and writes vanished; and REWIND didn't flush the write buffer, so a read
+# after writing saw only part of the data.
+SCRATCH_ROUNDTRIP_F = """\
+      program p
+      integer ios, cnt
+      character*32 line
+      open(30, status='scratch', form='formatted')
+      write(30, '(A)') 'AAA'
+      write(30, '(A)') 'BBB'
+      write(30, '(A)') 'CCC'
+      rewind(30)
+      cnt = 0
+ 10   read(30, '(A)', iostat=ios) line
+      if (ios .ne. 0) goto 20
+      cnt = cnt + 1
+      goto 10
+ 20   continue
+      close(30)
+      print *, cnt
+      end
+"""
+
+
 @unittest.skipUnless(
     _have_flang() and _have_cxx(), "need flang and a C++20 compiler"
 )
 class FileIoRunTests(unittest.TestCase):
+    def test_scratch_write_rewind_read(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            cpp = Path(d) / "out.cpp"
+            cpp.write_text(_convert(SCRATCH_ROUNDTRIP_F))
+            exe = Path(d) / "out"
+            cxx = (
+                shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+            )
+            assert cxx is not None
+            comp = subprocess.run(
+                [cxx, "-std=c++20", "-I", str(RUNTIME_INCLUDE),
+                 str(cpp), "-o", str(exe)],
+                capture_output=True, text=True, check=False,
+            )
+            if comp.returncode != 0:
+                self.fail(f"compile failed:\n{comp.stderr}\n{cpp.read_text()}")
+            run = subprocess.run(
+                [str(exe)], capture_output=True, text=True, check=False, cwd=d
+            )
+            self.assertEqual(run.returncode, 0, msg=run.stderr)
+            self.assertEqual(run.stdout.split(), ["3"])
+
     def test_unknown_status_new_file_is_written(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             cpp = Path(d) / "out.cpp"

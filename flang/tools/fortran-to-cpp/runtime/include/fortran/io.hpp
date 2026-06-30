@@ -40,7 +40,9 @@
 #include <cstdint>
 #include <cstring>      // memcpy for unformatted byte pack/unpack
 #include <algorithm>
+#include <atomic>       // unique scratch-file counter
 #include <cstdlib>
+#include <filesystem>   // temp_directory_path for SCRATCH files
 #include <format>
 #include <fstream>
 #include <iostream>
@@ -221,6 +223,23 @@ public:
     // Fortran CHARACTER variables are blank-padded to their declared length;
     // OPEN(FILE=...) trims trailing blanks before resolving the path.
     std::string path{trim_trailing_blanks(file)};
+    // A SCRATCH file (or a nameless open) has no user path.  Give it a
+    // private temporary backing file opened fresh for read+write -- the
+    // empty path previously opened nothing, so SCRATCH writes (e.g. the
+    // SPICE LMPOOL kernel buffer, written then rewound and read back)
+    // silently vanished.  A unique counter keeps successive scratch files
+    // distinct within a run.
+    if (iequals(status, "scratch") || path.empty()) {
+      static std::atomic<unsigned long> scratch_ctr{0};
+      std::error_code ec;
+      std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
+      path = (dir / ("ftn_scratch_" + std::to_string(unit) + "_" +
+                     std::to_string(scratch_ctr.fetch_add(1)))).string();
+      mode = std::ios::in | std::ios::out | std::ios::trunc;
+      if (unformatted) {
+        mode |= std::ios::binary;
+      }
+    }
     auto fs{std::make_unique<std::fstream>(path, mode)};
     if (!fs->is_open() && !(mode & std::ios::trunc)) {
       // The file does not exist yet.  An ``in``/``in|out`` open requires an
@@ -443,6 +462,10 @@ public:
   // byte 0).  Clears any failbit so the next read starts fresh.
   void rewind(int unit) {
     auto &file = ensure(unit);
+    // Flush any pending writes to the backing file first: on a single
+    // read+write ``fstream`` the put-area buffer must reach the file before
+    // a read can see it (the SCRATCH "write, REWIND, read it back" idiom).
+    file.out().flush();
     file.raw_in().clear();
     file.raw_in().seekg(0);
     file.out().clear();
