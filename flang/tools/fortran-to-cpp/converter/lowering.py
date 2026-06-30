@@ -1628,6 +1628,19 @@ def _lift_function_return(
         return_type = _resolved_types(node).get(sub.name) or _implicit_scalar_type(
             sub.display_name
         )
+
+    # An assumed-length ``CHARACTER*(*)`` result is typed as a non-owning
+    # ``std::string_view`` (the same spelling as an assumed-length dummy).
+    # As a *function result* that view has no backing storage, so the
+    # function would return an empty / dangling string.  Promote it to an
+    # owning ``ftn::DynString`` returned by value: the callee carries its
+    # own storage and the caller assigns the value into its own slot.
+    if (
+        return_type is not None
+        and return_type.is_character
+        and return_type.cpp == "std::string_view"
+    ):
+        return_type = dataclasses.replace(return_type, cpp="ftn::DynString")
     sub.return_type = return_type
 
     result_name = sub.name + "_result"

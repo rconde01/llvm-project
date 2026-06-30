@@ -48,6 +48,25 @@ end program
 """
 
 
+# An assumed-length CHARACTER*(*) function (the BEGDAT pattern): the result
+# length is set by the caller, so the callee must own its storage.
+ASSUMED_LEN_FN_F90 = """\
+      character*(*) function mark()
+      integer bslash
+      parameter (bslash=92)
+      mark = char(bslash) // 'begindata'
+      end
+
+      program p
+      character*12 m
+      character*12 mark
+      external mark
+      m = mark()
+      print *, '[', trim(m), ']'
+      end
+"""
+
+
 def _convert(src: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".f90", delete=False, encoding="utf-8"
@@ -114,6 +133,16 @@ class CharacterEmitTests(unittest.TestCase):
         self.assertIn('ftn::scan("hello"sv, "l"sv)', cpp)
         self.assertIn('ftn::verify("hello"sv, "helo"sv)', cpp)
 
+    def test_assumed_length_function_result_is_owning(self) -> None:
+        # A CHARACTER*(*) function result has no caller-provided backing in
+        # the C++ model, so it must be an owning ``ftn::DynString`` returned
+        # by value -- not a non-owning ``std::string_view`` / ``CharRef``,
+        # which would return an empty / dangling string.
+        cpp = _convert(ASSUMED_LEN_FN_F90)
+        self.assertIn("ftn::DynString mark()", cpp)
+        self.assertIn("ftn::DynString mark_result{}", cpp)
+        self.assertNotIn("std::string_view mark()", cpp)
+
 
 @unittest.skipUnless(
     _have_flang() and _have_cxx(), "need flang and a C++20 compiler"
@@ -152,6 +181,12 @@ class CharacterRunTests(unittest.TestCase):
         out = _compile_and_run(REPEAT_SCAN_F90)
         # repeat('ab',3)="ababab"; scan('hello','l')=3; verify ok -> 0.
         self.assertEqual(out.split(), ["ababab", "3", "0"])
+
+    def test_assumed_length_function_result_runs(self) -> None:
+        # The assumed-length result must carry its value back to the caller:
+        # char(92)//'begindata' = "\\begindata".
+        out = _compile_and_run(ASSUMED_LEN_FN_F90)
+        self.assertIn("[ \\begindata ]", out)
 
 
 if __name__ == "__main__":

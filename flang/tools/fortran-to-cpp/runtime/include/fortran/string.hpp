@@ -70,7 +70,8 @@ constexpr int compare_padded(std::string_view a,
 
 } // namespace detail
 
-class CharRef;  // a substring proxy converts to this (defined below)
+class CharRef;    // a substring proxy converts to this (defined below)
+class DynString;  // owning dynamic-length result value (defined below)
 
 template <std::size_t N> class FortranString {
   static_assert(N >= 1, "FortranString length must be >= 1");
@@ -464,6 +465,11 @@ public:
   /// Bare string literal actual (``foo("ABC")``).
   CharRef(const char *s) noexcept
       : data_(const_cast<char *>(s)), size_(std::char_traits<char>::length(s)) {}
+  /// An owning ``DynString`` actual (an assumed-length function result used
+  /// directly as an argument: ``foo(mark())``).  Defined out-of-line once
+  /// ``DynString`` is complete.  C++ won't chain DynString -> string_view ->
+  /// CharRef, so this single-user-conversion overload keeps it viable.
+  CharRef(const DynString &s) noexcept;
 
   // Assignment writes characters through to the viewed storage (pad /
   // truncate), so ``out = rhs`` behaves like Fortran character assignment
@@ -563,6 +569,103 @@ template <std::size_t N>
 inline FortranString<N>::ConstSubstring::operator CharRef() const noexcept {
   return CharRef(const_cast<char *>(base_), size_);
 }
+
+
+/// Owning, dynamic-length character value.  Used as the result type of an
+/// assumed-length ``CHARACTER*(*)`` function: in Fortran the result's length
+/// is fixed by the *caller*, but the generated callee returns by value, so it
+/// cannot be a non-owning view (a ``CharRef`` would dangle / stay empty).
+/// ``DynString`` carries its own storage, is assigned with whole-value
+/// semantics, supports 1-based indexing / substring write-through, and binds
+/// to a ``CharRef`` dummy or a ``FortranString`` slot like any other
+/// character value.
+class DynString {
+public:
+  /// Marker so FortranString / CharRef accept a DynString as a char view.
+  using fortran_char_view_proxy = void;
+
+  DynString() = default;
+  DynString(const DynString &) = default;
+  DynString(DynString &&) = default;
+  DynString(std::string_view s) : data_(s) {}
+  DynString(const char *s) : data_(s) {}
+  DynString(const std::string &s) : data_(s) {}
+  template <typename C>
+    requires requires { typename std::remove_cvref_t<C>::fortran_char_view_proxy; }
+  DynString(const C &r) : data_(r.view()) {}
+
+  DynString &operator=(const DynString &) = default;
+  DynString &operator=(DynString &&) = default;
+  DynString &operator=(std::string_view s) {
+    data_.assign(s.data(), s.size());
+    return *this;
+  }
+  // A concatenation (``a // b``) yields a ``std::string`` rvalue; an
+  // explicit overload disambiguates it from the string_view path (both of
+  // which are single user-conversions otherwise).
+  DynString &operator=(std::string s) {
+    data_ = std::move(s);
+    return *this;
+  }
+  DynString &operator=(const char *s) {
+    data_.assign(s);
+    return *this;
+  }
+  template <typename C>
+    requires requires { typename std::remove_cvref_t<C>::fortran_char_view_proxy; }
+  DynString &operator=(const C &r) {
+    std::string_view v = r.view();
+    data_.assign(v.data(), v.size());
+    return *this;
+  }
+
+  operator std::string_view() const noexcept { return data_; }
+  std::string_view view() const noexcept { return data_; }
+  std::string_view trimmed() const noexcept {
+    return detail::rstrip_blanks(data_);
+  }
+  std::size_t size() const noexcept { return data_.size(); }
+  std::size_t len_trim() const noexcept { return trimmed().size(); }
+  char *data() noexcept { return data_.data(); }
+  const char *data() const noexcept { return data_.data(); }
+
+  /// 1-based element access.
+  char &operator[](std::size_t one_based) noexcept {
+    return data_[one_based - 1];
+  }
+  char operator[](std::size_t one_based) const noexcept {
+    return data_[one_based - 1];
+  }
+  /// 1-based inclusive substring; the non-const form is a writable view.
+  CharRef operator()(std::size_t lo, std::size_t hi) noexcept {
+    return CharRef(data_.data() + (lo - 1), hi - lo + 1);
+  }
+  std::string_view operator()(std::size_t lo, std::size_t hi) const noexcept {
+    return std::string_view{data_}.substr(lo - 1, hi - lo + 1);
+  }
+
+  friend std::ostream &operator<<(std::ostream &os, const DynString &s) {
+    return os << s.data_;
+  }
+  friend bool operator==(const DynString &a, const DynString &b) noexcept {
+    return detail::compare_padded(a.view(), b.view()) == 0;
+  }
+  template <typename S>
+    requires(std::is_convertible_v<const S &, std::string_view> &&
+             !std::is_same_v<std::remove_cvref_t<S>, DynString>)
+  friend bool operator==(const DynString &a, const S &b) noexcept {
+    return detail::compare_padded(a.view(), std::string_view(b)) == 0;
+  }
+  friend bool operator<(const DynString &a, const DynString &b) noexcept {
+    return detail::compare_padded(a.view(), b.view()) < 0;
+  }
+
+private:
+  std::string data_;
+};
+
+inline CharRef::CharRef(const DynString &s) noexcept
+    : data_(const_cast<char *>(s.data())), size_(s.size()) {}
 
 
 // ---- Character <-> integer intrinsics -------------------------------------
