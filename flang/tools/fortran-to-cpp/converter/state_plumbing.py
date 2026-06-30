@@ -1012,17 +1012,36 @@ def _storage_pun(
     def _is_arith(t: IRType) -> bool:
         return (t.is_integer or t.is_real) and t.cpp not in ("std::string_view",)
 
-    # Scalar pun: only a non-const reference dummy (intent out/inout) fails
-    # to bind a different arithmetic type; a const-ref/value dummy converts.
+    def _scalar_size(cpp: str) -> int | None:
+        return {
+            "int8_t": 1, "int16_t": 2, "int32_t": 4, "int": 4, "int64_t": 8,
+            "long": 8, "float": 4, "double": 8,
+            "std::complex<float>": 8, "std::complex<double>": 16,
+        }.get(cpp)
+
+    # Scalar pun across a different arithmetic type (F77 storage
+    # association under an implicit interface).
     if (
         not pty.is_array
         and not actual_ty.is_array
-        and param.intent != "in"
         and _is_arith(pty)
         and _is_arith(actual_ty)
         and pty.cpp != actual_ty.cpp
     ):
-        return IRRaw(text=f"ftn::storage_ref<{pty.cpp}>({arg.name})")
+        # A non-const reference dummy (intent out/inout) cannot bind a
+        # different type at all, so it always needs the pun.
+        if param.intent != "in":
+            return IRRaw(text=f"ftn::storage_ref<{pty.cpp}>({arg.name})")
+        # An intent(in) dummy *would* bind via an implicit value conversion
+        # -- but that converts the number, not the bytes, which is wrong for
+        # storage association (a DOUBLE PRECISION actual holding an INTEGER
+        # bit pattern from a prior call -- the GETFVN/GETFOV INSTID idiom --
+        # would read back as ~0).  Reinterpret instead, but only when the
+        # dummy's type fits within the actual's storage so the callee reads
+        # valid bytes (a 4-byte INTEGER dummy over an 8-byte DOUBLE actual).
+        psz, asz = _scalar_size(pty.cpp), _scalar_size(actual_ty.cpp)
+        if psz is not None and asz is not None and psz <= asz:
+            return IRRaw(text=f"ftn::storage_ref<{pty.cpp}>({arg.name})")
 
     # Array pun: a rank-1 element-type mismatch has no converting ctor (the
     # ArrayRef converting ctor only adds ``const``), so it can't bind.
