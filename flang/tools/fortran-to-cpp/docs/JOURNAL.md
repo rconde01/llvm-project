@@ -92,8 +92,9 @@ second element — crashing 35 tspice families once kernels loaded.
 *Fix:* a scalar bound to an array dummy gets an **assumed-size extent**
 (`kAssumedExtent`), so the callee indexes into the caller's real storage;
 genuine out-of-bounds on a true array still throws (`fd163d92f`). The
-sentinel had to be excluded from `total_size`, or `do i=1,size(dummy)`
-loops ran ~10^12 times (regressed `f_gfpa` to a hang) (`813ed126e`).
+sentinel must be excluded from `total_size`, or a `do i=1,size(dummy)`
+loop over such a view would iterate ~10^12 times — a defensive follow-up so
+the huge extent can never leak into a loop bound (`813ed126e`).
 
 **Storage association across mismatched types.** An implicit interface lets
 a `DOUBLE PRECISION` array bind an integer-copy routine, or a `double` be
