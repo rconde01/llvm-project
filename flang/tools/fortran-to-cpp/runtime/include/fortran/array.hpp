@@ -141,7 +141,12 @@ constexpr index_t
 total_size(const std::array<index_t, Rank> &extents) noexcept {
   index_t n = 1;
   for (std::size_t i = 0; i < Rank; ++i) {
-    n *= extents[i];
+    // An assumed-size dimension (a scalar sequence-associated with an array
+    // dummy) has no known extent; its huge sentinel must not blow up
+    // ``size()`` into a runaway loop bound.  Count it as 1 -- the same
+    // ``size() == 1`` a scalar-base view reported before assumed-size
+    // bounds leniency.  A real array never carries this extent.
+    n *= (extents[i] == kAssumedExtent) ? index_t{1} : extents[i];
   }
   return n;
 }
