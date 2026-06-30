@@ -55,6 +55,7 @@ flang/tools/fortran-to-cpp/                         ← the converter
   tests/               unittest suite (one file per construct family)
   docs/
     CONSTRUCTS.md      every Fortran construct + the C++ it maps to + the trade-offs
+    JOURNAL.md         problems encountered building the converter + how each was fixed
     NONSTANDARD_SOURCE.md  source patches for files flang refuses to parse
   corpus_fixes/        standard-conforming patches mirroring the corpus tree
   README.md            design contract: Rules R1-R8 + resolved design questions D1-D8
