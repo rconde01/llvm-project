@@ -302,6 +302,11 @@ public:
     auto &file = ensure(unit);
     int recl{file.recl()};
     auto &os = file.out();
+    // The output and input sides share one fstream; a preceding read of a
+    // not-yet-written record (DAF/DAS read-modify-write) leaves eofbit/
+    // failbit set, which would make ``seekp``/``write`` silent no-ops.
+    // Clear first, exactly as read_record clears before reading.
+    os.clear();
     if (recl <= 0) {
       // Not a direct-access unit; degrade to a plain line write.
       os << content << '\n';
@@ -343,6 +348,11 @@ public:
     auto &file = ensure(unit);
     int recl{file.recl()};
     auto &os = file.out();
+    // Shared in/out fstream: a preceding read past EOF (DAF/DAS read-
+    // modify-write of a brand-new record) leaves the stream in a fail
+    // state, which silently turns the seekp/write below into no-ops -- the
+    // record would never reach disk (lost SPK/CK/DAS data).  Clear first.
+    os.clear();
     if (recl <= 0) {
       os.write(reinterpret_cast<const char *>(content.data()),
                static_cast<std::streamsize>(content.size()));
