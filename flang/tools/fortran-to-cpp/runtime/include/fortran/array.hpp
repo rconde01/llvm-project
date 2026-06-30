@@ -128,6 +128,14 @@ column_major_strides(const std::array<index_t, Rank> &extents) noexcept {
   return strides;
 }
 
+/// Extent used for an assumed-size view that has no known upper bound --
+/// a scalar actual sequence-associated with an array dummy (the callee
+/// supplies the real size via its own indexing).  Large enough that a
+/// debug bounds check never rejects a realistic Fortran index, yet far
+/// from ``index_t`` overflow so ``lower + extent - 1`` and offset math
+/// stay well-defined.
+inline constexpr index_t kAssumedExtent = index_t{1} << 40;
+
 template <std::size_t Rank>
 constexpr index_t
 total_size(const std::array<index_t, Rank> &extents) noexcept {

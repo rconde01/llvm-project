@@ -52,6 +52,30 @@ SEQ_ASSOC_DUMMY_BOUNDS_F = """\
 """
 
 
+# A scalar dummy that is the base of a caller's array, forwarded to an array
+# dummy whose callee indexes past element 1 (the SPICE pool-counter idiom:
+# scty01 -> zzscup01(scalar POLCTR) -> zzpctrck -> zzctrchk reads CTR(2)).
+SCALAR_BASE_OF_ARRAY_F = """\
+      subroutine readsecond(ctr, s)
+      integer ctr(2), s
+      s = ctr(1) + ctr(2)
+      end
+
+      subroutine mid(polctr, s)
+      integer polctr, s
+      call readsecond(polctr, s)
+      end
+
+      program p
+      integer a(2), s
+      a(1) = 10
+      a(2) = 20
+      call mid(a(1), s)
+      print *, s
+      end
+"""
+
+
 @unittest.skipUnless(have_flang(), "flang binary not available")
 class WholeArrayToScalarEmitTests(unittest.TestCase):
     def test_actual_passed_as_first_element(self) -> None:
@@ -78,6 +102,16 @@ class WholeArrayToScalarRunTests(unittest.TestCase):
         self.assertEqual(
             run_project(SEQ_ASSOC_DUMMY_BOUNDS_F, suffix=".f").split(),
             ["1.5", "9.5"],
+        )
+
+    def test_scalar_base_of_array_runs(self) -> None:
+        # A scalar dummy (CTR) forwarded to an array dummy (V(2)) whose callee
+        # reads V(2): the scalar is the base of the caller's 2-element array,
+        # so the read must reach the adjacent element (the SPICE
+        # zzscup01/zzpctrck/zzctrchk counter idiom) -- not trip a bounds check.
+        self.assertEqual(
+            run_project(SCALAR_BASE_OF_ARRAY_F, suffix=".f").split(),
+            ["30"],
         )
 
 

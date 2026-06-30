@@ -126,11 +126,16 @@ public:
         lower_(kStaticLower ? Lower : other.lower_bounds()),
         extents_(other.extents()), strides_(other.strides()) {}
 
-  /// Fortran storage association: a scalar actual passed to an
-  /// (assumed-size) array dummy is that dummy's sole element — a view of
-  /// one element, every extent 1.
+  /// Fortran storage (sequence) association: a scalar actual passed to an
+  /// array dummy is the *base* of that dummy.  The callee indexes the dummy
+  /// per its own declared size (e.g. ``CTR(CTRSIZ)`` reads ``CTR(2)``),
+  /// relying on the actual's storage extending that far -- a classic F77
+  /// idiom (a counter array's first element, or an element passed for a
+  /// whole row).  The scalar alone gives no extent, so the view is treated
+  /// as assumed-size: an effectively unbounded extent, so debug bounds
+  /// checks don't reject the (valid, caller-provided) adjacent storage.
   ArrayRef(T &scalar) noexcept
-      : ArrayRef(&scalar, lower_array_filled(1)) {}
+      : ArrayRef(&scalar, lower_array_filled(detail::kAssumedExtent)) {}
 
   /// Same, for a ``const`` or rvalue scalar actual (an intent(in) value,
   /// a literal, or an expression) — read in the callee, valid for the
@@ -139,7 +144,8 @@ public:
   template <typename U = T>
     requires(!std::is_const_v<U>)
   ArrayRef(const T &scalar) noexcept
-      : ArrayRef(const_cast<T *>(&scalar), lower_array_filled(1)) {}
+      : ArrayRef(const_cast<T *>(&scalar),
+                 lower_array_filled(detail::kAssumedExtent)) {}
 
   /// Sequence association from a higher-rank view: flatten to a 1-D view
   /// over the contiguous storage (extent = total element count).  Rank-1
