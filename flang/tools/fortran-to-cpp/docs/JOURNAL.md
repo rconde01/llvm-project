@@ -193,6 +193,19 @@ creates a new file instead of dropping writes (`72e3579c4`); `STATUS=
 'SCRATCH'` gets a real temp backing file and REWIND flushes before seeking
 (`db6003c23`).
 
+**DAF/DAS read-modify-write losing records (this session).** A
+``FortranFile``'s input and output sides are one shared ``std::fstream``.
+The DAF/DAS layer reads a record (even a brand-new one, past EOF), updates
+it, and writes it back.  Reading past EOF sets eofbit/failbit on the shared
+stream; the record writers then ran ``seekp``/``write`` *without clearing*
+that state, so on a failed stream both were silent no-ops — every record
+written after such a read was lost.  A freshly built SPK/CK/DAS/EK file
+ended up missing its data records (a type-2 SPK segment's data at record 5
+of a 4-record file), so reads returned zeros and the address bookkeeping
+later tripped ``SPICE(DAFBEGGTEND)``.  *Fix:* ``clear()`` before the
+seek/write, exactly as the reader already did — recovered ~40 families in
+one change.
+
 ---
 
 ## 5. State, control flow, and higher-order routines
@@ -266,10 +279,19 @@ instructive, because each fix uncovered the next layer:
 3. **A new 35-family CRASH cluster** appeared *because* kernels now loaded
    and routines ran further — all one bug: the scalar→array counter
    sequence association (§2). Fixing it (and the `size()` follow-up) took
-   CRASH from 35 to 2 and PASS toward ~269.
+   CRASH from 35 to 2 and PASS toward ~276.
+4. **The SPK/CK FAIL cluster** then traced to the DAF read-modify-write
+   record-loss bug (§4) — one ``clear()`` recovered ~40 families.
 
-Net so far this session: **PASS 200 → ~269, CRASH 12 → 2**, with the SPICE
-corpus held at 1625 files / 0 errors throughout.
+Net this session: **PASS 200 → 316, CRASH 12 → 2, TIMEOUT 24 → 2, 0
+regressions**, with the SPICE corpus held at 1625 files / 0 errors and the
+converter suite green (408 tests) throughout.
+
+The recurring shape across all four runtime bugs: a **silent failure** — an
+empty return, a lost write, an over-strict bounds check — that stayed
+hidden until an earlier fix let execution reach it. Each fix uncovered the
+next, so the PASS count moved in large steps (200 → ~257 → ~276 → 316)
+rather than one at a time.
 
 **Method that worked repeatedly:** when a family failed, instrument the
 suspected routine with `fprintf` probes (recompile that one file + relink),
