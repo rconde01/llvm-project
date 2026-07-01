@@ -334,6 +334,52 @@ class ElementToAssumedSizeTests(unittest.TestCase):
         )
 
 
+# The SPICE EK write-path collapse (f_ek02): a *scalar* dummy that is
+# storage-associated with a caller's array (``zzekue04``'s ``INTEGER IVALS``)
+# is forwarded to an assumed-size ``(*)`` dummy (``zzekad04``'s ``IVALS(*)``),
+# which passes one of its *elements* to a deeper ``(*)`` dummy (``dasudi`` ->
+# ``dasuri``) that writes two words.  The scalar->array view is assumed-size
+# (sentinel extent, size()==1); ``elem_tail`` on it must stay assumed-size,
+# not compute ``size()-offset`` (which collapses to 1 and makes the deep
+# ``d(2)`` write trip the bounds check).
+SCALAR_TO_ASSUMED_ELEM_F = """\
+      subroutine writetwo(d)
+      integer d(*)
+      d(1) = 111
+      d(2) = 222
+      end
+
+      subroutine mid(vals)
+      integer vals(*)
+      call writetwo(vals(1))
+      end
+
+      subroutine top(v)
+      integer v
+      call mid(v)
+      end
+
+      program p
+      integer a(2)
+      a(1) = 0
+      a(2) = 0
+      call top(a(1))
+      print *, a(1), a(2)
+      end
+"""
+
+
+@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
+class ScalarToAssumedSizeElementTests(unittest.TestCase):
+    def test_deep_write_reaches_second_element(self) -> None:
+        # top(a(1)) -> scalar v -> mid's vals(*) (assumed-size) -> element
+        # vals(1) -> writetwo's d(*); d(2) must reach a(2).
+        self.assertEqual(
+            run_project(SCALAR_TO_ASSUMED_ELEM_F, suffix=".f").split(),
+            ["111", "222"],
+        )
+
+
 # An array *element* whose array shadows a same-named global subprogram.
 # SPICE has an ``INTEGER FUNCTION POS`` *and* routines (SPKGPS) with a dummy
 # array ``POS(3)`` passed element-wise: ``CALL MXV(ROT, POS(1), STEMP)``.

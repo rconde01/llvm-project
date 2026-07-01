@@ -605,6 +605,19 @@ template <typename T, std::size_t R, std::array<index_t, R> SrcLower,
           typename... Idx>
 ArrayRef<T, 1> elem_tail(const ArrayRef<T, R, SrcLower> &a, Idx... idx) {
   T *base = &a(static_cast<index_t>(idx)...);
+  // If ``a`` is itself an assumed-size view (a scalar sequence-associated
+  // with an array dummy, or the tail of one), its real extent is unknown --
+  // ``size()`` reports the sentinel-as-1 (see ``total_size``).  Computing
+  // ``size() - offset`` would collapse the element tail to a bogus count
+  // (SPICE's EK write path: ``zzekue04``'s scalar ``IVALS`` -> ``zzekad04``
+  // assumed-size ``IVALS(*)`` -> ``dasudi`` -> ``dasuri``, which then reads
+  // ``DATA(2)`` from a size-1 view).  Keep the tail assumed-size so the
+  // callee indexes into the caller's real storage.
+  for (index_t e : a.extents()) {
+    if (e == detail::kAssumedExtent) {
+      return ArrayRef<T, 1>(base, {detail::kAssumedExtent});
+    }
+  }
   return ArrayRef<T, 1>(base, {a.size() - static_cast<index_t>(base - a.data())});
 }
 
@@ -688,6 +701,15 @@ auto seq_assoc_at_rest(A &a, const std::array<index_t, R> &lower,
                 R> {
   using T = std::remove_reference_t<decltype(a(static_cast<index_t>(idx)...))>;
   T *base = &a(static_cast<index_t>(idx)...);
+  // If ``a`` is itself assumed-size, its ``size()`` is the sentinel-as-1;
+  // computing ``rest`` from it would collapse the trailing extent.  Keep
+  // the tail assumed-size (mirrors the rank-1 ``elem_tail`` guard).
+  for (index_t e : a.extents()) {
+    if (e == detail::kAssumedExtent) {
+      extents[R - 1] = detail::kAssumedExtent;
+      return ArrayRef<T, R>(base, lower, extents);
+    }
+  }
   index_t rest = a.size() - static_cast<index_t>(base - a.data());
   index_t prod = 1;
   for (std::size_t i = 0; i + 1 < R; ++i) prod *= extents[i];
