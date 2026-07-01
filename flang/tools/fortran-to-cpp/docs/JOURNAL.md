@@ -347,19 +347,22 @@ uncovered the next, so the PASS count moved in large steps
   f_gftfov exceeds 340 s).  A translation-speed gap vs Fortran, not a
   correctness bug.  `f_subpnt` only times out under measurement-load
   contention (13 s alone).
-- `f_ek02` (CRASH) — a debug-build bounds trip in the EK type-04/05 / DAS
-  write path, from an `ArrayRef` extent collapsing down a chain of
-  assumed-size `(*)` dummies.  The scalar→array counter fix (assumed-size
-  view for a scalar actual passed to an array dummy) advanced it one layer:
-  the trip moved from `index 2 of [1,1]` to `index 3 of [1,2]`, now in
-  `MOVED(DATAD, LAST-FIRST+1, ...)` at `dasrwr.for:3146` (`DASURD`), where
-  `DATAD` is a `DOUBLE PRECISION DATAD(*)` assumed-size dummy reached via
-  `ekuced → zzekue05 → zzekad05 → dasudd → dasurd`.  The remaining fix —
-  an assumed-size `(*)` dummy's last dimension should be an *unbounded*
-  (`kAssumedExtent`) view rather than inheriting the actual's concrete
-  extent, matching Fortran's absence of an upper-bound check on `(*)` — is
-  broad (touches every assumed-size dummy) and needs a full corpus +
-  tspice re-validation.  Left for supervised work.
+- `f_ek02` (was CRASH, now **PASS**) — a debug-build bounds trip in the EK
+  type-04/05 / DAS write path, from an `ArrayRef` extent collapsing down a
+  chain of assumed-size `(*)` dummies (`ekuced → zzekue05 → zzekad05 →
+  dasudd → dasurd → MOVED/MOVEI`).  `MOVEI`'s dummies are `ARRFRM(*)` /
+  `ARRTO(*)`, so `MOVEI(.., N, ..)` indexes to `N` while the received view
+  tracked fewer elements → trip at `index 3 of [1,2]`.
+  **Fix (the broad assumed-size fix):** an assumed-size `(*)` / `(M,*)`
+  dummy has no Fortran upper-bound check on its last dimension, so at callee
+  entry the emitter now widens the received view's last extent to the
+  unbounded `kAssumedExtent` in place — `ftn::assume_size(p);` (a statement,
+  because `ArrayRef::operator=` is Fortran element assignment, not a rebind;
+  the widening is a new in-place `ArrayRef::set_assumed_last_extent`).  This
+  only *removes* upper-bound checks (matching Fortran), so it cannot turn a
+  passing run into a crash.  Validated: corpus 1625/0, 411 converter tests,
+  and tspice CRASH count 1→0 with no new FAIL (the heavy geometry families'
+  TIMEOUT count varies only with measurement load — each passes run alone).
 
 **Reproducible builds & clean-load measurement (session).**  Two build
 hazards were fixed so the tspice tally is trustworthy: (a) state-parameter
