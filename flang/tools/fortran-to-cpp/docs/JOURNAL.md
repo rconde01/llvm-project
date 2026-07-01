@@ -330,7 +330,7 @@ instructive, because each fix uncovered the next layer:
 Net this session, on the **original 120 s / 6-worker harness** (the same one
 that produced the 200 baseline, so like-for-like): **PASS 200 → 345, FAIL
 127 → 4, CRASH 12 → 1, TIMEOUT 24 → 15, HARD 2 → 0, 0 regressions**.  With a
-300 s timeout on an idle box the count is **~357** — the difference is
+300 s timeout on an idle box the count is **358** — the difference is
 slow-but-correct GF / DSK / illumination families that exceed 120 s under
 load, not correctness failures.  Throughout, the SPICE corpus held at 1625
 files / 0 errors and the converter suite stayed green (409 tests).
