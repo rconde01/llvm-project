@@ -263,7 +263,49 @@ class NamedConstantLowerBoundTests(unittest.TestCase):
         )
 
 
-@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")
+# An assumed-size ``(*)`` dummy forwarded down a chain of ``(*)`` dummies:
+# Fortran puts no upper-bound check on the last dimension, so the callee may
+# index as far as the actual's real storage.  Each ``(*)`` dummy is
+# normalized at entry to an unbounded last extent so a legitimate index past
+# the received view's tracked extent does not trip a debug bounds check (the
+# SPICE DAS ``MOVED(DATAD, N, ...)`` / f_ek02 collapse).
+ASSUMED_SIZE_CHAIN_F = """\
+      subroutine inner(x)
+      double precision x(*)
+      x(3) = 33.0d0
+      end
+
+      subroutine outer(x)
+      double precision x(*)
+      call inner(x)
+      end
+
+      program p
+      double precision buf(3)
+      buf(1) = 1.0d0
+      buf(2) = 2.0d0
+      call outer(buf)
+      print *, buf(1), buf(2), buf(3)
+      end
+"""
+
+
+@unittest.skipUnless(have_flang(), "flang binary not available")
+class AssumedSizeChainNormalizeTests(unittest.TestCase):
+    def test_dummy_normalized_at_entry(self) -> None:
+        cpp = convert_project(ASSUMED_SIZE_CHAIN_F, suffix=".f")
+        # Both (*) dummies reset their view to unbounded at entry.
+        self.assertIn("x = ftn::assume_size(x);", cpp)
+
+    @unittest.skipUnless(have_cxx(), "need a C++20 compiler")
+    def test_runs(self) -> None:
+        self.assertEqual(
+            run_project(ASSUMED_SIZE_CHAIN_F, suffix=".f").split(),
+            ["1", "2", "33"],
+        )
+
+
+@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")  # noqa: E501
 class AssumedSizeLowerBoundTests(unittest.TestCase):
     def test_assumed_size_dummy_is_one_based(self) -> None:
         cpp = convert_project(ASSUMED_SIZE_REBASE_F, suffix=".f")

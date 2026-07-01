@@ -644,6 +644,23 @@ ArrayRef<T, 1> elem_tail_n(const ArrayRef<T, R, SrcLower> &a, index_t n,
   return ArrayRef<T, 1>(base, {n});
 }
 
+/// Normalize an assumed-size (``A(*)`` / ``A(M,*)``) dummy at callee entry.
+/// Fortran places no upper-bound check on an assumed-size array's last
+/// dimension -- the callee may index as far as the actual's real storage
+/// extends, which is the caller's responsibility.  The received view,
+/// however, carries whatever concrete extent the actual happened to have,
+/// which can be smaller than the callee legitimately accesses (e.g. a value
+/// buffer forwarded down a chain of ``(*)`` dummies).  Give the last
+/// dimension an unbounded (``kAssumedExtent``) extent so a valid index does
+/// not trip a debug bounds check.  Leading extents and strides are
+/// unchanged, so column-major offsets stay correct.
+template <typename T, std::size_t R, std::array<index_t, R> Lower>
+ArrayRef<T, R, Lower> assume_size(const ArrayRef<T, R, Lower> &a) {
+  std::array<index_t, R> extents = a.extents();
+  extents[R - 1] = detail::kAssumedExtent;
+  return ArrayRef<T, R, Lower>(a.data(), a.lower_bounds(), extents, a.strides());
+}
+
 /// Fortran sequence association: view a contiguous rank-1 actual as a
 /// higher-rank, explicit-shape dummy.  Fortran lets a contiguous array
 /// (or array section) be passed to a dummy of a different rank; the

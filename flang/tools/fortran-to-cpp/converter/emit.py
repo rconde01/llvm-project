@@ -403,6 +403,23 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
     out.write(_signature(sub, with_defaults=False))
     out.write(" {\n")
 
+    # Assumed-size (``A(*)`` / ``A(M,*)``) array dummies have no Fortran
+    # upper-bound check on their last dimension; the callee may index past
+    # the actual's tracked extent (valid storage the caller owns).  Reset
+    # the received view's last extent to unbounded so a legitimate access
+    # doesn't trip a debug bounds check.  By-value ArrayRef params can be
+    # reassigned; POINTER and character-array dummies are left alone.
+    for p in sub.parameters:
+        t = p.type
+        if (
+            t.is_array
+            and not t.is_pointer
+            and t.array_extent_exprs
+            and "assumed" in t.array_extent_exprs[-1]
+            and t.element_type_cpp != "std::string_view"
+        ):
+            out.write(f"  {p.name} = ftn::assume_size({p.name});\n")
+
     # Emission order: state-*instance* locals (the ``Mod mod{}`` objects
     # the bindings refer to) first, then the bindings, then ordinary
     # locals.  This lets an ordinary local that captures a bound name —
