@@ -146,6 +146,27 @@ READ_END_LABEL_F = """\
 """
 
 
+# OPEN(..., IOSTAT=v) must report Fortran's pre-open existence rules so
+# error-path code (SPICE ZZDDHOPN / ZZASCII checking IOSTAT then signalling
+# SPICE(FILEOPENFAIL)) works: STATUS='NEW' fails if the file exists,
+# STATUS='OLD' fails if it does not.
+OPEN_IOSTAT_F = """\
+      program p
+      integer ios
+      open(unit=10, file='iostat_test.dat', status='new', iostat=ios)
+      write(*,*) 'newok', ios
+      close(10)
+      open(unit=11, file='iostat_test.dat', status='new', iostat=ios)
+      write(*,*) 'newexists', ios
+      open(unit=12, file='iostat_test.dat', status='old', iostat=ios)
+      write(*,*) 'oldok', ios
+      close(12)
+      open(unit=13, file='no_such_file.dat', status='old', iostat=ios)
+      write(*,*) 'oldmissing', ios
+      end
+"""
+
+
 def _convert(src: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".f", delete=False, encoding="utf-8"
@@ -160,6 +181,11 @@ def _convert(src: str) -> str:
 
 @unittest.skipUnless(_have_flang(), "flang binary not available")
 class FileIoEmitTests(unittest.TestCase):
+    def test_open_iostat_is_captured(self) -> None:
+        cpp = _convert(OPEN_IOSTAT_F)
+        # IOSTAT=ios routes the open's return value into the variable.
+        self.assertIn("ios = _units.open(10,", cpp)
+
     def test_open_close_map_to_units(self) -> None:
         cpp = _convert(ROUNDTRIP_F)
         self.assertIn('_units.open(10, "fc_test.dat"sv, "replace"sv);', cpp)
@@ -328,6 +354,37 @@ class FileIoRunTests(unittest.TestCase):
             self.assertEqual(run.returncode, 0, msg=run.stderr)
             # The whole record -- with its embedded blanks -- round-trips.
             self.assertIn("hello there world", run.stdout)
+
+    def test_open_iostat_new_and_old_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            cpp = Path(d) / "out.cpp"
+            cpp.write_text(_convert(OPEN_IOSTAT_F))
+            exe = Path(d) / "out"
+            cxx = (
+                shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+            )
+            assert cxx is not None
+            comp = subprocess.run(
+                [cxx, "-std=c++20", "-I", str(RUNTIME_INCLUDE),
+                 str(cpp), "-o", str(exe)],
+                capture_output=True, text=True, check=False,
+            )
+            if comp.returncode != 0:
+                self.fail(f"compile failed:\n{comp.stderr}\n{cpp.read_text()}")
+            run = subprocess.run(
+                [str(exe)], capture_output=True, text=True, check=False, cwd=d
+            )
+            self.assertEqual(run.returncode, 0, msg=run.stderr)
+            toks = run.stdout.split()
+            # newok=0 (created), newexists!=0, oldok=0, oldmissing!=0.
+            self.assertEqual(toks[0], "newok")
+            self.assertEqual(toks[1], "0")
+            self.assertEqual(toks[2], "newexists")
+            self.assertNotEqual(toks[3], "0")
+            self.assertEqual(toks[4], "oldok")
+            self.assertEqual(toks[5], "0")
+            self.assertEqual(toks[6], "oldmissing")
+            self.assertNotEqual(toks[7], "0")
 
     def test_unknown_status_new_file_is_written(self) -> None:
         with tempfile.TemporaryDirectory() as d:

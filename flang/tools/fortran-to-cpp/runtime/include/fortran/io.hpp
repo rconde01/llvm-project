@@ -193,10 +193,13 @@ public:
     }
   }
 
-  void open(int unit, std::string_view file,
-            std::string_view status = "unknown",
-            std::string_view access = "sequential", int recl = 0,
-            std::string_view form = "formatted") {
+  // Returns the Fortran IOSTAT: 0 on success, nonzero on a failed open.
+  // A caller that binds ``OPEN(..., IOSTAT=v)`` captures this; a bare
+  // ``_units.open(...)`` statement ignores it.
+  int open(int unit, std::string_view file,
+           std::string_view status = "unknown",
+           std::string_view access = "sequential", int recl = 0,
+           std::string_view form = "formatted") {
     std::ios_base::openmode mode{};
     // STATUS: OLD -> read an existing file; NEW/REPLACE -> truncate;
     // otherwise read+write, creating if needed.
@@ -223,13 +226,16 @@ public:
     // Fortran CHARACTER variables are blank-padded to their declared length;
     // OPEN(FILE=...) trims trailing blanks before resolving the path.
     std::string path{trim_trailing_blanks(file)};
+    const bool is_scratch = iequals(status, "scratch") || path.empty();
+    const bool is_new = iequals(status, "new");
+    const bool is_old = iequals(status, "old");
     // A SCRATCH file (or a nameless open) has no user path.  Give it a
     // private temporary backing file opened fresh for read+write -- the
     // empty path previously opened nothing, so SCRATCH writes (e.g. the
     // SPICE LMPOOL kernel buffer, written then rewound and read back)
     // silently vanished.  A unique counter keeps successive scratch files
     // distinct within a run.
-    if (iequals(status, "scratch") || path.empty()) {
+    if (is_scratch) {
       static std::atomic<unsigned long> scratch_ctr{0};
       std::error_code ec;
       std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
@@ -239,22 +245,37 @@ public:
       if (unformatted) {
         mode |= std::ios::binary;
       }
+    } else {
+      // Fortran STATUS pre-open existence rules, so OPEN(..., IOSTAT=v)
+      // reports the failures SPICE checks for:
+      //   * STATUS='NEW'  requires the file NOT already exist.
+      //   * STATUS='OLD'  requires the file to exist.
+      std::error_code ec;
+      const bool exists = std::filesystem::exists(path, ec);
+      if (is_new && exists) {
+        return 17;  // "file exists" (EEXIST-like)
+      }
+      if (is_old && !exists) {
+        return 2;   // "no such file" (ENOENT-like)
+      }
     }
     auto fs{std::make_unique<std::fstream>(path, mode)};
-    if (!fs->is_open() && !(mode & std::ios::trunc)) {
-      // The file does not exist yet.  An ``in``/``in|out`` open requires an
+    if (!fs->is_open() && !is_old && !(mode & std::ios::trunc)) {
+      // The file does not exist yet.  An ``in|out`` open requires an
       // existing file, so it failed; create it for read+write.  This covers
-      // STATUS='OLD' on a missing file (lenient) and -- crucially --
-      // STATUS='UNKNOWN'/'SCRATCH' (the default, ``in|out`` with no trunc),
-      // where the previous ``in && !out`` guard never fired, so a brand-new
-      // file was never created and every WRITE silently vanished.  A
-      // NEW/REPLACE open already carries ``trunc`` (it creates), so a failure
-      // there is a real error and is not retried.
+      // STATUS='UNKNOWN' (the default, ``in|out`` with no trunc), where the
+      // previous ``in && !out`` guard never fired, so a brand-new file was
+      // never created and every WRITE silently vanished.  STATUS='OLD' is
+      // *not* retried -- a missing OLD file is a genuine error (returned
+      // above); NEW/REPLACE already carry ``trunc`` (they create).
       auto fallback = std::ios::in | std::ios::out | std::ios::trunc;
       if (unformatted) {
         fallback |= std::ios::binary;
       }
       fs = std::make_unique<std::fstream>(path, fallback);
+    }
+    if (!fs->is_open()) {
+      return 1;  // open genuinely failed
     }
     auto file_obj{std::make_unique<FortranFile>(std::move(fs))};
     if (iequals(access, "direct")) {
@@ -263,6 +284,7 @@ public:
     file_obj->set_unformatted(unformatted);
     file_obj->set_path(path);
     files_[unit] = std::move(file_obj);
+    return 0;
   }
 
   // ACCESS='DIRECT' record read.  Returns the bytes of record ``rec``

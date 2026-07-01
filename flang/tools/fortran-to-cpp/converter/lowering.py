@@ -5100,11 +5100,25 @@ def _lower_open(node: Node) -> IRStatement:
     access: IRExpr | None = None
     recl: IRExpr | None = None
     form: IRExpr | None = None
+    iostat_target: IRExpr | None = None
     for cs in node.children_of_kind("ConnectSpec"):
         if cs.first_child("FileUnitNumber") is not None:
             e = cs.find_first("Expr")
             if e is not None:
                 unit = _lower_expression(e)
+        elif cs.first_child("StatVariable") is not None:
+            # IOSTAT=var: the OPEN's status code target.  ``_units.open``
+            # returns the iostat (0 on success, nonzero on a failed open --
+            # e.g. STATUS='NEW' on an existing file, STATUS='OLD' on a
+            # missing one), so route it into this variable.
+            iost = cs.first_child("StatVariable")
+            iv = (
+                iost.find_first("Variable")
+                or iost.find_first("Designator")
+                or iost.first_child("Expr")
+            )
+            if iv is not None:
+                iostat_target = _lower_expression(iv)
         elif cs.first_child("StatusExpr") is not None:
             e = cs.find_first("Expr")
             if e is not None:
@@ -5147,6 +5161,14 @@ def _lower_open(node: Node) -> IRStatement:
         args.append(recl if recl is not None else IRRaw("0"))
     if form is not None:
         args.append(form)
+    if iostat_target is not None:
+        # ``iostat = _units.open(...)`` -- capture the open's status.  A tail
+        # arg may be needed so the (unit, file, status, ...) positions line
+        # up; the runtime supplies defaults for any omitted trailing arg.
+        return IRAssignment(
+            target=iostat_target,
+            value=IRFunctionCall(callee="_units.open", args=tuple(args)),
+        )
     return IRCall(callee="_units.open", args=args)
 
 
