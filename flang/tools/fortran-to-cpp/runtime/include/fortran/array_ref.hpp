@@ -199,6 +199,13 @@ public:
   index_t size() const noexcept { return detail::total_size(extents_); }
   bool empty() const noexcept { return data_ == nullptr || size() == 0; }
 
+  /// Widen the last dimension to an unbounded (assumed-size) extent, in
+  /// place.  Used at callee entry for an ``A(*)`` / ``A(M,*)`` dummy, whose
+  /// last dimension has no Fortran upper-bound check.  See ::ftn::assume_size.
+  void set_assumed_last_extent() noexcept {
+    extents_[Rank - 1] = detail::kAssumedExtent;
+  }
+
   /// For an OPTIONAL array dummy, ``PRESENT(a)`` lowers to
   /// ``a.has_value()``: an absent optional array is passed as a null
   /// (default-constructed) view.
@@ -650,15 +657,18 @@ ArrayRef<T, 1> elem_tail_n(const ArrayRef<T, R, SrcLower> &a, index_t n,
 /// extends, which is the caller's responsibility.  The received view,
 /// however, carries whatever concrete extent the actual happened to have,
 /// which can be smaller than the callee legitimately accesses (e.g. a value
-/// buffer forwarded down a chain of ``(*)`` dummies).  Give the last
-/// dimension an unbounded (``kAssumedExtent``) extent so a valid index does
-/// not trip a debug bounds check.  Leading extents and strides are
-/// unchanged, so column-major offsets stay correct.
+/// buffer forwarded down a chain of ``(*)`` dummies).  Widen the last
+/// dimension in place to an unbounded (``kAssumedExtent``) extent so a valid
+/// index does not trip a debug bounds check.  Leading extents and strides
+/// are unchanged, so column-major offsets stay correct.
+///
+/// Modifies the view *in place* (by reference): ``ArrayRef::operator=`` is
+/// Fortran element-wise assignment, not a view rebind, so ``a = assume_size(a)``
+/// would broadcast rather than change the extent.  The emitter calls this as
+/// a statement -- ``ftn::assume_size(a);`` -- on the by-value dummy.
 template <typename T, std::size_t R, std::array<index_t, R> Lower>
-ArrayRef<T, R, Lower> assume_size(const ArrayRef<T, R, Lower> &a) {
-  std::array<index_t, R> extents = a.extents();
-  extents[R - 1] = detail::kAssumedExtent;
-  return ArrayRef<T, R, Lower>(a.data(), a.lower_bounds(), extents, a.strides());
+void assume_size(ArrayRef<T, R, Lower> &a) noexcept {
+  a.set_assumed_last_extent();
 }
 
 /// Fortran sequence association: view a contiguous rank-1 actual as a

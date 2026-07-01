@@ -418,7 +418,7 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
             and "assumed" in t.array_extent_exprs[-1]
             and t.element_type_cpp != "std::string_view"
         ):
-            out.write(f"  {p.name} = ftn::assume_size({p.name});\n")
+            out.write(f"  ftn::assume_size({p.name});\n")
 
     # Emission order: state-*instance* locals (the ``Mod mod{}`` objects
     # the bindings refer to) first, then the bindings, then ordinary

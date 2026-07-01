@@ -295,7 +295,7 @@ class AssumedSizeChainNormalizeTests(unittest.TestCase):
     def test_dummy_normalized_at_entry(self) -> None:
         cpp = convert_project(ASSUMED_SIZE_CHAIN_F, suffix=".f")
         # Both (*) dummies reset their view to unbounded at entry.
-        self.assertIn("x = ftn::assume_size(x);", cpp)
+        self.assertIn("ftn::assume_size(x);", cpp)
 
     @unittest.skipUnless(have_cxx(), "need a C++20 compiler")
     def test_runs(self) -> None:
