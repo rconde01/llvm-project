@@ -5150,10 +5150,26 @@ def _lower_open(node: Node) -> IRStatement:
 
 
 def _lower_close(node: Node) -> IRStatement:
-    """``close(u)`` -> ``_units.close(u)``."""
-    fun = node.find_first("FileUnitNumber")
-    e = fun.find_first("Expr") if fun is not None else None
-    unit = _lower_expression(e) if e is not None else IRRaw("0")
+    """``close(u)`` -> ``_units.close(u)``.
+
+    ``CLOSE(u, STATUS='DELETE')`` must *remove* the file, not merely
+    disconnect it (the DDH file-kill path relies on this).  When a STATUS=
+    specifier is present, pass it through so the runtime can honor DELETE;
+    the string is evaluated at run time, so a variable status works too.
+    """
+    unit: IRExpr = IRRaw("0")
+    status: IRExpr | None = None
+    for cs in node.children_of_kind("CloseSpec"):
+        if cs.first_child("FileUnitNumber") is not None:
+            e = cs.find_first("Expr")
+            if e is not None:
+                unit = _lower_expression(e)
+        elif cs.first_child("StatusExpr") is not None:
+            e = cs.find_first("Expr")
+            if e is not None:
+                status = _lower_expression(e)
+    if status is not None:
+        return IRCall(callee="_units.close", args=[unit, status])
     return IRCall(callee="_units.close", args=[unit])
 
 

@@ -370,6 +370,25 @@ public:
 
   void close(int unit) { files_.erase(unit); }
 
+  // ``CLOSE(unit, STATUS='DELETE')`` -- disconnect the unit *and* remove the
+  // backing file from disk (the DDH file-kill path, KILFIL, and scratch
+  // teardown depend on this).  Any other status disconnects only.
+  void close(int unit, std::string_view status) {
+    if (iequals(status, "delete")) {
+      auto it = files_.find(unit);
+      if (it != files_.end() && it->second) {
+        std::string path{it->second->path()};
+        files_.erase(it);  // release the fstream before unlinking
+        if (!path.empty()) {
+          std::error_code ec;
+          std::filesystem::remove(path, ec);
+        }
+        return;
+      }
+    }
+    files_.erase(unit);
+  }
+
   // INQUIRE results.  Each member maps to one Fortran specifier
   // (``EXIST``, ``OPENED``, ``IOSTAT``, ``NUMBER``, ``NAME``, ``ACCESS``,
   // ``FORM``, ``RECL``); unset fields keep their defaults.  The lowering
