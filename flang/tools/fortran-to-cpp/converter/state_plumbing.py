@@ -965,7 +965,14 @@ def _propagate_state_parameters(tu: IRTranslationUnit) -> None:
             needed = set(
                 _callee_names(caller.body, _shadowed_names(caller))
             ) | _procedure_actuals(caller, by_name)
-            for callee_name in needed:
+            # Iterate in a deterministic (sorted) order: the append order
+            # below fixes each routine's state-parameter order, which is
+            # part of its emitted signature.  Iterating the ``set`` directly
+            # makes that order depend on Python's per-process hash seed, so
+            # two converter runs could emit mutually incompatible signatures
+            # (a caller built in one run linking a callee built in another,
+            # or a stale generated driver against fresh objects).
+            for callee_name in sorted(needed):
                 callee = by_name.get(callee_name)
                 if callee is None:
                     continue
