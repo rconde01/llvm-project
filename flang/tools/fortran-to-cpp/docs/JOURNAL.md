@@ -99,9 +99,19 @@ the huge extent can never leak into a loop bound (`813ed126e`).
 **Storage association across mismatched types.** An implicit interface lets
 a `DOUBLE PRECISION` array bind an integer-copy routine, or a `double` be
 used as an `int*`. A C++ reference can't bind a different type.
-*Fix:* `ftn::storage_ref<To>` / `ftn::reinterpret_array<To>` inserted only
-where the binding would otherwise fail to compile (`docs/CONSTRUCTS.md`
-§"Mismatched types").
+*Fix:* `ftn::storage_ref<To>` / `ftn::reinterpret_array<To>` inserted where
+the binding would otherwise fail to compile (`docs/CONSTRUCTS.md`
+§"Mismatched types").  Extended this session to intent(in) scalar actuals:
+the pun was gated to non-const dummies (a const-ref "converts implicitly"),
+but that conversion converts the *number*, not the *bytes* — wrong for
+storage association.  GETFVN declares `DOUBLE PRECISION INSTID`, lets
+ZZBODS2C write an INTEGER body code into its bytes, then passes it to
+GETFOV's INTEGER dummy; the intent(in) call did a double→int value
+conversion, so the integer bit pattern read as a denormal ~0 and GETFOV
+looked up `INS0_FOV_FRAME` — failing the FOV cluster.  Now an intent(in)
+scalar is punned too, but only when the dummy's type fits within the
+actual's storage (a 4-byte INTEGER reading an 8-byte DOUBLE — the callee
+never reads past the actual).
 
 **COMMON and EQUIVALENCE.** COMMON blocks are byte-offset layouts that
 different routines carve up differently (a `REAL` array here, an `INTEGER`
@@ -298,8 +308,11 @@ instructive, because each fix uncovered the next layer:
    record-loss bug (§4) — one ``clear()`` recovered ~40 families.
 5. **The geometry-finder (GF) FAIL cluster** traced to `array_of` of
    character views building blank coordinate tables (§3) — recovered ~35.
+6. **The FOV cluster** (getfov / zzbods2c) traced to a `DOUBLE
+   PRECISION`-holding-an-INTEGER storage-association actual passed to an
+   intent(in) INTEGER dummy without a byte reinterpret (§2).
 
-Net this session: **PASS 200 → 351, FAIL 127 → 7, CRASH 12 → 1, TIMEOUT
+Net this session: **PASS 200 → 353, FAIL 127 → 5, CRASH 12 → 1, TIMEOUT
 24 → 6, HARD 2 → 0, 0 regressions**, with the SPICE corpus held at 1625
 files / 0 errors and the converter suite green (408 tests) throughout.
 
