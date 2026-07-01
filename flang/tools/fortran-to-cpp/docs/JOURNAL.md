@@ -347,11 +347,17 @@ uncovered the next, so the PASS count moved in large steps
   f_gftfov exceeds 340 s).  A translation-speed gap vs Fortran, not a
   correctness bug.  `f_subpnt` only times out under measurement-load
   contention (13 s alone).
-- `f_ek02` (CRASH) — a bounds-check trip deep in the EK type-04 /
-  DAS write path (`dasuri` copying more integers than the actual's
-  `ArrayRef` extent).  Contained to a debug build; needs runtime probing
-  of the 5-level `ekucei → zzekue04 → zzekad04 → dasudi → dasuri` size
-  chain.
+- `f_ek02` (CRASH) — a debug-build bounds trip in the EK type-04 / DAS
+  write path.  Localized: `dasuri` is asked to copy `n=2` integers from a
+  value view whose tracked extent is 1 (`DASURI: first=38 last=39 n=2
+  datai.size=1`).  The value array `IVALS(MAXVAL)` starts full-size in
+  f_ek02 but its `ArrayRef` extent collapses to 1 down the
+  `ekucei → zzekue04 → zzekad04 → dasudi → dasuri` chain of assumed-size
+  `(*)` dummies.  This is the *array* analogue of the scalar→array
+  sequence-association fix (§2) — but for assumed-size dummies, where the
+  extent should follow the actual's real storage rather than the tracked
+  view.  A general fix (assumed-size dummies trusting the callee's access)
+  is broad; left for supervised work.
 - `f_ddhopn`, `f_dla`, `f_zzasc2` (FAIL) — error-path tests that expect a
   specific SPICE exception (e.g. `SPICE(IMPROPEROPEN)` when ZZDDHOPN is
   handed an already-open file) which the translation does not yet raise.
