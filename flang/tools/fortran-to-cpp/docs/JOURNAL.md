@@ -347,17 +347,31 @@ uncovered the next, so the PASS count moved in large steps
   f_gftfov exceeds 340 s).  A translation-speed gap vs Fortran, not a
   correctness bug.  `f_subpnt` only times out under measurement-load
   contention (13 s alone).
-- `f_ek02` (CRASH) — a debug-build bounds trip in the EK type-04 / DAS
-  write path.  Localized: `dasuri` is asked to copy `n=2` integers from a
-  value view whose tracked extent is 1 (`DASURI: first=38 last=39 n=2
-  datai.size=1`).  The value array `IVALS(MAXVAL)` starts full-size in
-  f_ek02 but its `ArrayRef` extent collapses to 1 down the
-  `ekucei → zzekue04 → zzekad04 → dasudi → dasuri` chain of assumed-size
-  `(*)` dummies.  This is the *array* analogue of the scalar→array
-  sequence-association fix (§2) — but for assumed-size dummies, where the
-  extent should follow the actual's real storage rather than the tracked
-  view.  A general fix (assumed-size dummies trusting the callee's access)
-  is broad; left for supervised work.
+- `f_ek02` (CRASH) — a debug-build bounds trip in the EK type-04/05 / DAS
+  write path, from an `ArrayRef` extent collapsing down a chain of
+  assumed-size `(*)` dummies.  The scalar→array counter fix (assumed-size
+  view for a scalar actual passed to an array dummy) advanced it one layer:
+  the trip moved from `index 2 of [1,1]` to `index 3 of [1,2]`, now in
+  `MOVED(DATAD, LAST-FIRST+1, ...)` at `dasrwr.for:3146` (`DASURD`), where
+  `DATAD` is a `DOUBLE PRECISION DATAD(*)` assumed-size dummy reached via
+  `ekuced → zzekue05 → zzekad05 → dasudd → dasurd`.  The remaining fix —
+  an assumed-size `(*)` dummy's last dimension should be an *unbounded*
+  (`kAssumedExtent`) view rather than inheriting the actual's concrete
+  extent, matching Fortran's absence of an upper-bound check on `(*)` — is
+  broad (touches every assumed-size dummy) and needs a full corpus +
+  tspice re-validation.  Left for supervised work.
+
+**Reproducible builds & clean-load measurement (session).**  Two build
+hazards were fixed so the tspice tally is trustworthy: (a) state-parameter
+order was derived from `set` iteration (hash-seed dependent), so artifacts
+from different converter runs could not link — now `sorted()` (see the
+state-plumbing fix).  (b) A tally is only valid under low load: running two
+`run_families.py` instances at once drove the 4-core box to load ~22 and
+spuriously reclassified compute-heavy families as TIMEOUT/HARD (a bad
+`PASS 292` reading); the same binary under normal load gives the real
+`PASS 348, TIMEOUT 13, FAIL 3, CRASH 1`.  The 13 TIMEOUTs are the known
+slow GF/DSK/SPK/pool families (translation-speed gap), the 3 FAILs and
+1 CRASH are the pre-existing known set below — i.e. no regression.
 - `f_ddhopn`, `f_dla`, `f_zzasc2` (FAIL) — error-path tests that expect a
   specific SPICE exception (e.g. `SPICE(IMPROPEROPEN)` when ZZDDHOPN is
   handed an already-open file) which the translation does not yet raise.
