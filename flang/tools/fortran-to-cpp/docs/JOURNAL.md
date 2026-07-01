@@ -324,9 +324,13 @@ instructive, because each fix uncovered the next layer:
 7. **f_ddhcls** traced to `CLOSE(STATUS='DELETE')` never removing the file
    (§4).
 
-Net this session: **PASS 200 → 357, FAIL 127 → 4, CRASH 12 → 1, TIMEOUT
-24 → 3, HARD 2 → 0, 0 regressions**, with the SPICE corpus held at 1625
-files / 0 errors and the converter suite green (409 tests) throughout.
+Net this session, on the **original 120 s / 6-worker harness** (the same one
+that produced the 200 baseline, so like-for-like): **PASS 200 → 345, FAIL
+127 → 4, CRASH 12 → 1, TIMEOUT 24 → 15, HARD 2 → 0, 0 regressions**.  With a
+300 s timeout on an idle box the count is **~357** — the difference is
+slow-but-correct GF / DSK / illumination families that exceed 120 s under
+load, not correctness failures.  Throughout, the SPICE corpus held at 1625
+files / 0 errors and the converter suite stayed green (409 tests).
 
 The recurring shape across all these runtime bugs: a **silent failure** —
 an empty return, a lost write, an over-strict bounds check, a blank table —
