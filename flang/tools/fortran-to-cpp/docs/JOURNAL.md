@@ -217,6 +217,16 @@ creates a new file instead of dropping writes (`72e3579c4`); `STATUS=
 'SCRATCH'` gets a real temp backing file and REWIND flushes before seeking
 (`db6003c23`).
 
+**CLOSE(STATUS='DELETE') never removed the file (this session).**
+`_lower_close` dropped every CLOSE specifier and always emitted a bare
+`_units.close(unit)`, which only disconnects the unit — so a
+`CLOSE(u, STATUS='DELETE')` left the file on disk.  The DDH file-kill path
+(ZZDDHMAN/ZZDDHCLS with `KILL=.TRUE.`) closed but never deleted, so a later
+`INQUIRE(EXIST=)` still saw the file (f_ddhcls).  *Fix:* `_lower_close`
+reads the STATUS= specifier and passes it through; a new runtime
+`close(unit, status)` overload removes the backing file when the status is
+'DELETE' (evaluated at run time, so a variable status works too).
+
 **DAF/DAS read-modify-write losing records (this session).** A
 ``FortranFile``'s input and output sides are one shared ``std::fstream``.
 The DAF/DAS layer reads a record (even a brand-new one, past EOF), updates
@@ -311,18 +321,38 @@ instructive, because each fix uncovered the next layer:
 6. **The FOV cluster** (getfov / zzbods2c) traced to a `DOUBLE
    PRECISION`-holding-an-INTEGER storage-association actual passed to an
    intent(in) INTEGER dummy without a byte reinterpret (§2).
+7. **f_ddhcls** traced to `CLOSE(STATUS='DELETE')` never removing the file
+   (§4).
 
-Net this session: **PASS 200 → 353, FAIL 127 → 5, CRASH 12 → 1, TIMEOUT
-24 → 6, HARD 2 → 0, 0 regressions**, with the SPICE corpus held at 1625
-files / 0 errors and the converter suite green (408 tests) throughout.
+Net this session: **PASS 200 → 357, FAIL 127 → 4, CRASH 12 → 1, TIMEOUT
+24 → 3, HARD 2 → 0, 0 regressions**, with the SPICE corpus held at 1625
+files / 0 errors and the converter suite green (409 tests) throughout.
 
 The recurring shape across all these runtime bugs: a **silent failure** —
 an empty return, a lost write, an over-strict bounds check, a blank table —
 that stayed hidden until an earlier fix let execution reach it. Each fix
 uncovered the next, so the PASS count moved in large steps
-(200 → ~257 → ~276 → 316 → 351) rather than one at a time. The remaining
-handful are individual issues (an EK crash, a few borderline-slow surface/GF
-families near the run harness's timeout), not shared clusters.
+(200 → ~257 → ~276 → 316 → 351 → 357) rather than one at a time.
+
+**Remaining non-PASS (all individual, no shared cluster):**
+- `f_gftfov`, `f_zzdskbsr` — not broken, just slow: a heavy GF+DSK
+  ray/search that runs ~5 min (f_zzdskbsr passes at 309 s alone;
+  f_gftfov exceeds 340 s).  A translation-speed gap vs Fortran, not a
+  correctness bug.  `f_subpnt` only times out under measurement-load
+  contention (13 s alone).
+- `f_ek02` (CRASH) — a bounds-check trip deep in the EK type-04 /
+  DAS write path (`dasuri` copying more integers than the actual's
+  `ArrayRef` extent).  Contained to a debug build; needs runtime probing
+  of the 5-level `ekucei → zzekue04 → zzekad04 → dasudi → dasuri` size
+  chain.
+- `f_ddhopn`, `f_dla`, `f_zzasc2` (FAIL) — error-path tests that expect a
+  specific SPICE exception (e.g. `SPICE(IMPROPEROPEN)` when ZZDDHOPN is
+  handed an already-open file) which the translation does not yet raise.
+  Adding those checks is shared-behavior and carries regression risk, so
+  it was left for supervised work.
+- `f_slice` (FAIL) — a numeric discrepancy in the INEDPL ellipsoid-plane
+  intersection (`||SMAJOR||` off by orders of magnitude); a contained
+  geometry-routine bug.
 
 **Method that worked repeatedly:** when a family failed, instrument the
 suspected routine with `fprintf` probes (recompile that one file + relink),
