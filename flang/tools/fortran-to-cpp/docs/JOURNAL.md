@@ -323,6 +323,9 @@ instructive, because each fix uncovered the next layer:
    intent(in) INTEGER dummy without a byte reinterpret (§2).
 7. **f_ddhcls** traced to `CLOSE(STATUS='DELETE')` never removing the file
    (§4).
+8. **f_slice** traced to a mixed nested implied-DO DATA statement
+   (`((SMPN(J,I),J=1,3),SMPC(I),I=1,N)`) whose interleaved second array was
+   silently dropped and mis-filled the first (§2, DATA lowering).
 
 Net this session, on the **original 120 s / 6-worker harness** (the same one
 that produced the 200 baseline, so like-for-like): **PASS 200 → 345, FAIL
@@ -354,9 +357,7 @@ uncovered the next, so the PASS count moved in large steps
   handed an already-open file) which the translation does not yet raise.
   Adding those checks is shared-behavior and carries regression risk, so
   it was left for supervised work.
-- `f_slice` (FAIL) — a numeric discrepancy in the INEDPL ellipsoid-plane
-  intersection (`||SMAJOR||` off by orders of magnitude); a contained
-  geometry-routine bug.
+*(f_slice is now fixed — see arc item 8.)*
 
 **Method that worked repeatedly:** when a family failed, instrument the
 suspected routine with `fprintf` probes (recompile that one file + relink),
