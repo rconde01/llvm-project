@@ -906,8 +906,20 @@ def _uses_units(body: list[IRStatement]) -> bool:
             found[0] = True
         return stmt
 
+    def check_expr(expr: IRExpr) -> IRExpr:
+        # ``_units.<op>(...)`` used as an *expression* -- e.g. the value of
+        # ``OPEN(..., IOSTAT=v)`` lowers to ``v = _units.open(...)`` -- so the
+        # units table is used even when no bare ``_units`` statement appears.
+        if isinstance(expr, IRFunctionCall) and expr.callee.startswith(
+            _UNITS_PARAM + "."
+        ):
+            found[0] = True
+        return expr
+
     for stmt in body:
-        map_statement(stmt, on_stmt=check)
+        map_statement(
+            stmt, on_stmt=check, on_expr=lambda e: map_expr(e, check_expr)
+        )
     return found[0]
 
 

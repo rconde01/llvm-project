@@ -3908,6 +3908,8 @@ def _lower_action_inner(inner: Node) -> IRStatement | None:
             return _lower_file_position(inner, "backspace")
         case "RewindStmt":
             return _lower_file_position(inner, "rewind")
+        case "EndfileStmt":
+            return _lower_endfile(inner)
         case "StopStmt":
             return _lower_stop(inner)
         case "AllocateStmt":
@@ -5100,6 +5102,7 @@ def _lower_open(node: Node) -> IRStatement:
     access: IRExpr | None = None
     recl: IRExpr | None = None
     form: IRExpr | None = None
+    position: IRExpr | None = None
     iostat_target: IRExpr | None = None
     for cs in node.children_of_kind("ConnectSpec"):
         if cs.first_child("FileUnitNumber") is not None:
@@ -5138,29 +5141,34 @@ def _lower_open(node: Node) -> IRStatement:
                 access = _lower_expression(e)
             elif tag == "Kind = Form" and e is not None:
                 form = _lower_expression(e)
-            # BLANK=, POSITION=, etc. are not yet modeled.
+            elif tag == "Kind = Position" and e is not None:
+                position = _lower_expression(e)
+            # BLANK=, ACTION=, etc. are not yet modeled.
         elif cs.first_child("Scalar") is not None:
             e = cs.find_first("Expr")
             if e is not None:
                 file = _lower_expression(e)
+    # The runtime signature is positional:
+    #   open(unit, file, status, access, recl, form, position)
+    # so any specifier present forces defaults for every earlier position.
+    need_form = form is not None or position is not None
+    need_recl = recl is not None or need_form
+    need_access = access is not None or need_recl
+    need_status = status is not None or need_access
+    need_file = file is not None or need_status
     args: list[IRExpr] = [unit if unit is not None else IRRaw("0")]
-    have_tail = (
-        file is not None or status is not None
-        or access is not None or recl is not None or form is not None
-    )
-    if have_tail:
+    if need_file:
         args.append(file if file is not None else IRRaw('""sv'))
-    if (
-        status is not None or access is not None
-        or recl is not None or form is not None
-    ):
+    if need_status:
         args.append(status if status is not None else IRRaw('"unknown"sv'))
-    if access is not None or recl is not None or form is not None:
+    if need_access:
         args.append(access if access is not None else IRRaw('"sequential"sv'))
-    if recl is not None or form is not None:
+    if need_recl:
         args.append(recl if recl is not None else IRRaw("0"))
-    if form is not None:
-        args.append(form)
+    if need_form:
+        args.append(form if form is not None else IRRaw('"formatted"sv'))
+    if position is not None:
+        args.append(position)
     if iostat_target is not None:
         # ``iostat = _units.open(...)`` -- capture the open's status.  A tail
         # arg may be needed so the (unit, file, status, ...) positions line
@@ -5308,6 +5316,27 @@ def _lower_file_position(node: Node, op: str) -> IRStatement:
     raise ConversionError(
         op.upper(),
         note="unsupported positional spec (no unit found)",
+        source=node.source.text if node.source else "",
+    )
+
+
+def _lower_endfile(node: Node) -> IRStatement:
+    """``ENDFILE(u)`` -> ``_units.endfile(u)``.  Marks the current position
+    as end-of-file (truncates the backing file there)."""
+    fu = node.find_first("FileUnitNumber")
+    if fu is not None:
+        e = fu.find_first("Expr")
+        if e is not None:
+            return IRCall(callee="_units.endfile", args=[_lower_expression(e)])
+    e = node.first_child("Expr")
+    if e is not None:
+        return IRCall(callee="_units.endfile", args=[_lower_expression(e)])
+    nm = node.find_first("Name")
+    if nm is not None and nm.fortran:
+        return IRCall(callee="_units.endfile", args=[IRRaw(_safe_name(nm.fortran))])
+    raise ConversionError(
+        "ENDFILE",
+        note="unsupported spec (no unit found)",
         source=node.source.text if node.source else "",
     )
 

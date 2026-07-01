@@ -199,12 +199,15 @@ public:
   int open(int unit, std::string_view file,
            std::string_view status = "unknown",
            std::string_view access = "sequential", int recl = 0,
-           std::string_view form = "formatted") {
+           std::string_view form = "formatted",
+           std::string_view position = "asis") {
     std::ios_base::openmode mode{};
-    // STATUS: OLD -> read an existing file; NEW/REPLACE -> truncate;
+    // STATUS: OLD -> an existing file, opened read+write (Fortran files are
+    // writable by default, so POSITION='APPEND' / later WRITE work); a
+    // read-only file falls back to in-only below.  NEW/REPLACE -> truncate;
     // otherwise read+write, creating if needed.
     if (iequals(status, "old")) {
-      mode = std::ios::in;
+      mode = std::ios::in | std::ios::out;
     } else if (iequals(status, "new") || iequals(status, "replace")) {
       // Open for read+write so the program can REWIND a just-written file
       // and read its records back; std::ios::trunc still clears any
@@ -260,6 +263,13 @@ public:
       }
     }
     auto fs{std::make_unique<std::fstream>(path, mode)};
+    if (!fs->is_open() && is_old) {
+      // A read+write open of an existing OLD file failed (e.g. the file is
+      // read-only on disk).  Retry read-only so read access still works.
+      auto ro = std::ios::in | (unformatted ? std::ios::binary
+                                            : std::ios_base::openmode{});
+      fs = std::make_unique<std::fstream>(path, ro);
+    }
     if (!fs->is_open() && !is_old && !(mode & std::ios::trunc)) {
       // The file does not exist yet.  An ``in|out`` open requires an
       // existing file, so it failed; create it for read+write.  This covers
@@ -283,8 +293,35 @@ public:
     }
     file_obj->set_unformatted(unformatted);
     file_obj->set_path(path);
+    // POSITION='APPEND' positions at end-of-file so writes extend it;
+    // 'REWIND'/'ASIS' leave the position at the start (the default).
+    if (iequals(position, "append")) {
+      file_obj->out().seekp(0, std::ios::end);
+      file_obj->raw_in().seekg(0, std::ios::end);
+    }
     files_[unit] = std::move(file_obj);
     return 0;
+  }
+
+  // ``ENDFILE(u)``: write an end-of-file marker at the current position by
+  // flushing pending writes and truncating the backing file there, so a
+  // later REWIND + read sees only the records written up to this point.
+  void endfile(int unit) {
+    auto it = files_.find(unit);
+    if (it == files_.end() || !it->second) {
+      return;
+    }
+    auto &file = *it->second;
+    file.out().flush();
+    const std::streampos pos = file.out().tellp();
+    const std::string &p = file.path();
+    if (pos >= 0 && !p.empty()) {
+      std::error_code ec;
+      std::filesystem::resize_file(
+          p, static_cast<std::uintmax_t>(pos), ec);
+      file.out().clear();
+      file.raw_in().clear();
+    }
   }
 
   // ACCESS='DIRECT' record read.  Returns the bytes of record ``rec``
