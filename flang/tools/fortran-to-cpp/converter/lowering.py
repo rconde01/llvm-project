@@ -2503,32 +2503,24 @@ def _expand_data_implied_do(
     nesting), so ``((a(i,j),i=1,n),j=1,m)`` produces ``a(1,1)``,
     ``a(2,1)`` ... ``a(n,1)``, ``a(1,2)`` ... — the order DATA values are
     listed in source."""
-    # Collect the loop nest, outer-first.  Bounds are kept as their AST
-    # ``Scalar`` nodes (not pre-folded) because an inner bound may name an
-    # *outer* loop variable -- the triangular form
-    # ``((C(N,M), M=0,N), N=1,K)`` where M runs 0..N.  Each bound is
-    # evaluated lazily against the current outer-variable environment.
-    loops: list[tuple[str, Node, Node, Node | None]] = []
-    inner: Node = ido
-    while True:
-        lb = inner.first_child("LoopBounds")
-        if lb is None:
-            return None
-        scalars = lb.children_of_kind("Scalar")
-        # First Scalar holds the loop variable Name; then lo, hi[, step].
-        var_node = scalars[0].find_first("Name") if scalars else None
-        if var_node is None or not var_node.fortran or len(scalars) < 3:
-            return None
-        step_node = scalars[3] if len(scalars) >= 4 else None
-        loops.append((var_node.fortran, scalars[1], scalars[2], step_node))
-        # Descend one level: the next DataImpliedDo is a child of this
-        # one's DataIDoObject.
-        do_obj = inner.first_child("DataIDoObject")
-        nxt = do_obj.first_child("DataImpliedDo") if do_obj is not None else None
-        if nxt is None:
-            break
-        inner = nxt
-    loop_var_names = {v for v, _, _, _ in loops}
+    # Collect every loop variable name anywhere in the nest.  Bounds are
+    # evaluated lazily against the current environment (an inner bound may
+    # name an *outer* loop variable -- the triangular form
+    # ``((C(N,M), M=0,N), N=1,K)`` where M runs 0..N).
+    loop_var_names: set[str] = set()
+
+    def _collect_vars(node: Node) -> None:
+        lb = node.first_child("LoopBounds")
+        if lb is not None:
+            sc = lb.children_of_kind("Scalar")
+            vn = sc[0].find_first("Name") if sc else None
+            if vn is not None and vn.fortran:
+                loop_var_names.add(vn.fortran)
+        for do_obj in node.children_of_kind("DataIDoObject"):
+            nested = do_obj.first_child("DataImpliedDo")
+            if nested is not None:
+                _collect_vars(nested)
+    _collect_vars(ido)
 
     def eval_bound(scalar: Node, env: dict[str, int]) -> int | None:
         """Evaluate a loop-bound ``Scalar`` to an int: a folded constant, or
@@ -2581,32 +2573,55 @@ def _expand_data_implied_do(
             return None
         return arr_name, subs
 
-    # The innermost implied-do may list several objects that share the loop
-    # (``(NAMLST(I), LB(I), UB(I), I=1,N)``).  DATA values are interleaved
-    # one per object per iteration, so we round-robin across them in order.
-    objects: list[tuple[str, list[tuple[str, object]]]] = []
-    for do_obj in inner.children_of_kind("DataIDoObject"):
-        parsed = parse_object(do_obj)
-        if parsed is None:
-            return None
-        objects.append(parsed)
-    if not objects:
-        return None
-
-    # Enumerate the loop nest outer-to-inner (innermost varies fastest,
-    # matching the order DATA values are listed); the leaf body emits one
-    # assignment per object per iteration.
+    # Expand the *actual node tree* recursively.  A DataImpliedDo has a loop
+    # variable and, per iteration, a sequence of DataIDoObject children --
+    # each either a plain array element (emit one value) or a *nested*
+    # DataImpliedDo (recurse).  Processing the children in source order per
+    # iteration reproduces exactly how Fortran interleaves the DATA values.
+    # This handles both the flat multi-object form
+    # ``(NAMLST(I), LB(I), UB(I), I=1,N)`` and the mixed nested form
+    # ``((SMPN(J,I), J=1,3), SMPC(I), I=1,N)`` where an outer level lists a
+    # nested implied-do *and* a plain element together (the latter was
+    # silently dropped by the previous innermost-only flattening).
     out: list[tuple[IRStatement, int]] = []
     env: dict[str, int] = {}
     failed = [False]
 
-    def recurse(li: int) -> None:
+    def process(node: Node) -> None:
         if failed[0]:
             return
-        if li == len(loops):
-            for arr_name, subs in objects:
+        lb = node.first_child("LoopBounds")
+        scalars = lb.children_of_kind("Scalar") if lb is not None else []
+        var_node = scalars[0].find_first("Name") if scalars else None
+        if var_node is None or not var_node.fortran or len(scalars) < 3:
+            failed[0] = True
+            return
+        var = var_node.fortran
+        step_node = scalars[3] if len(scalars) >= 4 else None
+        lo = eval_bound(scalars[1], env)
+        hi = eval_bound(scalars[2], env)
+        st = eval_bound(step_node, env) if step_node is not None else 1
+        if lo is None or hi is None or st is None or st == 0:
+            failed[0] = True
+            return
+        do_objs = node.children_of_kind("DataIDoObject")
+        i = lo
+        while (st > 0 and i <= hi) or (st < 0 and i >= hi):
+            env[var] = i
+            for do_obj in do_objs:
+                if failed[0]:
+                    return
+                nested = do_obj.first_child("DataImpliedDo")
+                if nested is not None:
+                    process(nested)
+                    continue
+                parsed = parse_object(do_obj)
+                if parsed is None:
+                    failed[0] = True
+                    return
                 if start + len(out) >= len(values):
                     return  # values exhausted -- stop emitting
+                arr_name, subs = parsed
                 idx_str = ", ".join(
                     str(val) if kind == "const" else str(env[val])
                     for kind, val in subs
@@ -2618,23 +2633,9 @@ def _expand_data_implied_do(
                     ),
                     1,
                 ))
-            return
-        var, lo_n, hi_n, step_n = loops[li]
-        lo = eval_bound(lo_n, env)
-        hi = eval_bound(hi_n, env)
-        st = eval_bound(step_n, env) if step_n is not None else 1
-        if lo is None or hi is None or st is None or st == 0:
-            failed[0] = True
-            return
-        i = lo
-        while (st > 0 and i <= hi) or (st < 0 and i >= hi):
-            env[var] = i
-            recurse(li + 1)
-            if failed[0]:
-                return
             i += st
 
-    recurse(0)
+    process(ido)
     if failed[0]:
         return None
     return out

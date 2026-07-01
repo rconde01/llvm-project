@@ -122,5 +122,32 @@ class RunTests(unittest.TestCase):
         self.assertEqual(_run(DATA_EXEC_F).split(), ["20", "7", "1"])
 
 
+# A nested, *mixed* implied-do DATA: each I iteration lists a nested
+# implied-do (filling a column of V) AND a plain element (W(I)).  The values
+# are interleaved 3-then-1 per iteration; a flatten that expands only the
+# innermost object would drop W and misfill V (the SPICE f_slice SMPN/SMPC
+# bug).
+INTERLEAVED_DATA_F = """\
+      program p
+      integer v(3,2), w(2)
+      data ((v(j,i), j=1,3), w(i), i=1,2)
+     .   / 1, 2, 3, 10,
+     .     4, 5, 6, 20 /
+      print *, v(1,1), v(2,1), v(3,1), w(1),
+     .         v(1,2), v(2,2), v(3,2), w(2)
+      end
+"""
+
+
+@unittest.skipUnless(_have_flang() and _have_cxx(), "need flang + C++20")
+class InterleavedDataTests(unittest.TestCase):
+    def test_mixed_nested_implied_do_interleaves(self) -> None:
+        # V column 1 = 1,2,3; W(1)=10; V column 2 = 4,5,6; W(2)=20.
+        self.assertEqual(
+            _run(INTERLEAVED_DATA_F).split(),
+            ["1", "2", "3", "10", "4", "5", "6", "20"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
