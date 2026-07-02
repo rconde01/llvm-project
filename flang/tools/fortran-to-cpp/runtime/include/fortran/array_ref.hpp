@@ -936,9 +936,12 @@ public:
       : base_(s.data()), elem_len_(N), lower_(1), count_(1) {}
   /// From a fixed-length character-array *view* (a char array forwarded
   /// from one dummy to another).  Any source lower bound (a static-lb
-  /// ``ARRAY(*)`` dummy view included).
-  template <std::size_t N, std::array<index_t, 1> SrcLower>
-  CharArrayRef(ArrayRef<FortranString<N>, 1, SrcLower> a) noexcept
+  /// ``ARRAY(*)`` dummy view included), and any ``Contiguous`` / static
+  /// ``Extents`` shape (deduced), so a fixed-size static char-array dummy
+  /// -- ``ArrayRef<FortranString<N>, 1, {1}, true, {M}>`` -- still binds.
+  template <std::size_t N, std::array<index_t, 1> SrcLower, bool Contig,
+            std::array<index_t, 1> Ext>
+  CharArrayRef(ArrayRef<FortranString<N>, 1, SrcLower, Contig, Ext> a) noexcept
       : base_(reinterpret_cast<char *>(a.data())), elem_len_(N),
         lower_(a.lbound(1)), count_(a.size()) {}
   /// From a single character scalar view (scalar/array storage assoc).
