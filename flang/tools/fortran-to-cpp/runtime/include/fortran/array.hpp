@@ -153,6 +153,11 @@ total_size(const std::array<index_t, Rank> &extents) noexcept {
 }
 
 #if defined(FORTRAN_RT_BOUNDS_CHECK) || !defined(NDEBUG)
+/// True when subscript bounds checking is compiled in.  When false, the
+/// index path needs neither the per-dimension upper bound nor the
+/// ``upper()`` computation that feeds it -- letting the caller skip that
+/// dead work entirely (measured ~2% of a compute-bound family otherwise).
+inline constexpr bool kBoundsCheck = true;
 [[noreturn]] inline void bounds_error(const char *what, index_t idx,
                                       index_t lo, index_t hi) {
   // Use a runtime exception so that tests can observe the error and
@@ -171,6 +176,7 @@ total_size(const std::array<index_t, Rank> &extents) noexcept {
     }                                                                          \
   } while (0)
 #else
+inline constexpr bool kBoundsCheck = false;
 #define FORTRAN_RT_CHECK_BOUNDS(idx, lo, hi, dim) ((void)0)
 #endif
 
@@ -469,10 +475,12 @@ public:
   T &operator()(Idx... idxs) {
     if constexpr (kStaticLower) {
       return storage_[detail::linear_offset_static<Rank, Lower>(
-          upper(), strides_, idxs...)];
+          detail::kBoundsCheck ? upper() : std::array<index_t, Rank>{},
+          strides_, idxs...)];
     } else {
-      return storage_[detail::linear_offset<Rank>(lower_, upper(), strides_,
-                                                  idxs...)];
+      return storage_[detail::linear_offset<Rank>(
+          lower_, detail::kBoundsCheck ? upper() : std::array<index_t, Rank>{},
+          strides_, idxs...)];
     }
   }
 
@@ -480,10 +488,12 @@ public:
   const T &operator()(Idx... idxs) const {
     if constexpr (kStaticLower) {
       return storage_[detail::linear_offset_static<Rank, Lower>(
-          upper(), strides_, idxs...)];
+          detail::kBoundsCheck ? upper() : std::array<index_t, Rank>{},
+          strides_, idxs...)];
     } else {
-      return storage_[detail::linear_offset<Rank>(lower_, upper(), strides_,
-                                                  idxs...)];
+      return storage_[detail::linear_offset<Rank>(
+          lower_, detail::kBoundsCheck ? upper() : std::array<index_t, Rank>{},
+          strides_, idxs...)];
     }
   }
 

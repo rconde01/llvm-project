@@ -162,12 +162,15 @@ public:
 
   template <typename... Idx>
   T &operator()(Idx... idxs) const {
+    // ``upper()`` is only needed to bounds-check; when checks are compiled
+    // out, skip computing it (a per-dimension loop over extents) entirely.
     if constexpr (kStaticLower) {
       return data_[detail::linear_offset_static<Rank, Lower>(
-          upper(), strides_, idxs...)];
+          detail::kBoundsCheck ? upper() : extent_array{}, strides_, idxs...)];
     } else {
-      return data_[detail::linear_offset<Rank>(lower_, upper(), strides_,
-                                               idxs...)];
+      return data_[detail::linear_offset<Rank>(
+          lower_, detail::kBoundsCheck ? upper() : extent_array{}, strides_,
+          idxs...)];
     }
   }
 
