@@ -820,9 +820,10 @@ void assume_size(ArrayRef<T, R, Lower, C, E> &a) noexcept {
 /// (or array section) be passed to a dummy of a different rank; the
 /// storage is reinterpreted column-major with the dummy's bounds.  Used
 /// at call sites where the actual's rank is below the dummy's.
-template <std::size_t R, typename T, bool C, std::array<index_t, 1> E>
+template <std::size_t R, typename T, std::array<index_t, 1> SrcLower, bool C,
+          std::array<index_t, 1> E>
 ArrayRef<T, R> seq_assoc(
-    const ArrayRef<T, 1, detail::runtime_lower<1>(), C, E> &flat,
+    const ArrayRef<T, 1, SrcLower, C, E> &flat,
     const std::array<index_t, R> &lower,
     const std::array<index_t, R> &extents) {
   return ArrayRef<T, R>(flat.data(), lower, extents);
