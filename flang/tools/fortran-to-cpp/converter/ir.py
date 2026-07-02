@@ -835,6 +835,16 @@ class IRParameter:
             # form (its target may be a non-contiguous section).
             if static_ref is not None and not self.type.is_pointer:
                 ref_type = static_ref[:-1] + ", true>"
+                # A fixed-size dummy (all extents literal, e.g. ``V(3)`` /
+                # ``M(3,3)``) also pins its extents in the type, so the whole
+                # index expression constant-folds and the ``extents_`` member
+                # drops -- the fully-static view is then just a pointer.
+                from .static_lower import static_extents_nttp
+                ext_nttp = static_extents_nttp(
+                    self.type.array_rank, self.type.array_extent_exprs
+                )
+                if ext_nttp is not None:
+                    ref_type = ref_type[:-1] + f", {ext_nttp}>"
             decl = f"{ref_type} {self.name}"
             if self.optional and with_default:
                 # An OPTIONAL array dummy defaults to a null (empty) view,

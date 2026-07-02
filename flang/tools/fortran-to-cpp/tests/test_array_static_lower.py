@@ -184,7 +184,8 @@ class ParamDeclStaticLowerTests(unittest.TestCase):
         decl = p.cpp_param_decl(with_default=False)
         self.assertEqual(
             decl,
-            "ftn::ArrayRef<float, 1, std::array<ftn::index_t, 1>{1}, true> a",
+            "ftn::ArrayRef<float, 1, std::array<ftn::index_t, 1>{1}, true, "
+            "std::array<ftn::index_t, 1>{10}> a",
         )
 
     def test_literal_lb_uses_static_arrayref(self) -> None:
@@ -195,7 +196,8 @@ class ParamDeclStaticLowerTests(unittest.TestCase):
         decl = p.cpp_param_decl(with_default=False)
         self.assertEqual(
             decl,
-            "ftn::ArrayRef<float, 1, std::array<ftn::index_t, 1>{0}, true> a",
+            "ftn::ArrayRef<float, 1, std::array<ftn::index_t, 1>{0}, true, "
+            "std::array<ftn::index_t, 1>{10}> a",
         )
 
     def test_negative_lb_uses_static_arrayref(self) -> None:
@@ -207,7 +209,8 @@ class ParamDeclStaticLowerTests(unittest.TestCase):
         self.assertEqual(
             decl,
             "ftn::ArrayRef<const float, 1, "
-            "std::array<ftn::index_t, 1>{-3}, true> b",
+            "std::array<ftn::index_t, 1>{-3}, true, "
+            "std::array<ftn::index_t, 1>{7}> b",
         )
 
     def test_non_literal_lb_falls_back(self) -> None:

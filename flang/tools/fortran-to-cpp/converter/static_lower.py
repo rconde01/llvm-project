@@ -51,6 +51,27 @@ def static_lower_nttp(rank: int, lowers: tuple[int, ...]) -> str:
     return f"std::array<ftn::index_t, {rank}>{{{inner}}}"
 
 
+def static_extents_nttp(
+    rank: int, extent_exprs: tuple[str, ...]
+) -> str | None:
+    """Render the ``std::array<ftn::index_t, R>{...}`` static-``Extents``
+    NTTP when every extent is a positive literal integer (a fixed-size
+    dummy like ``V(3)`` / ``M(3,3)``), else ``None``.  A non-literal or
+    assumed-size (``*``) extent -- which parses with non-digit text -- is
+    rejected, so those dummies keep runtime extents."""
+    vals = try_static_lower_literals(extent_exprs)
+    if vals is None or len(vals) != rank:
+        return None
+    # Reject any extent <= 1: a declared extent of 1 is almost always the
+    # classic F77 one-element-dummy idiom (``DIMENSION P(1)`` used as an
+    # assumed-size array indexed well past 1), so pinning it to a static
+    # ``{1}`` would wrongly bound the view.  A genuine 1-element dimension
+    # gains nothing from folding anyway.
+    if any(v <= 1 for v in vals):
+        return None
+    return static_lower_nttp(rank, vals)
+
+
 def static_lower_cpp_type(cpp: str, rank: int, lower_exprs: tuple[str, ...]
                           ) -> str | None:
     """Splice the static-``Lower`` NTTP into ``cpp`` (a runtime

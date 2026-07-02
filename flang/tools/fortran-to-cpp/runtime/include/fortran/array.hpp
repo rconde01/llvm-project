@@ -113,6 +113,32 @@ constexpr bool is_static_lower(const std::array<index_t, Rank> &a) noexcept {
   return true;
 }
 
+/// Sentinel extent meaning "this dimension's extent is a runtime value,
+/// stored in the object" -- the counterpart of ``kRuntimeLBound`` for the
+/// optional static-``Extents`` NTTP.  A fixed-size dummy (``V(3)``,
+/// ``M(3,3)``) encodes its extents in the type so the whole index
+/// expression constant-folds and the ``extents_`` member drops out.
+inline constexpr index_t kRuntimeExtent =
+    std::numeric_limits<index_t>::min() / 2;
+
+template <std::size_t Rank>
+constexpr std::array<index_t, Rank> runtime_extents() noexcept {
+  std::array<index_t, Rank> a{};
+  a.fill(kRuntimeExtent);
+  return a;
+}
+
+/// True if every entry of ``a`` is a concrete extent (no sentinel).
+template <std::size_t Rank>
+constexpr bool is_static_extents(const std::array<index_t, Rank> &a) noexcept {
+  for (std::size_t i = 0; i < Rank; ++i) {
+    if (a[i] == kRuntimeExtent) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /// Compute column-major strides from extents.  stride[0] = 1; subsequent
 /// strides are the running product of preceding extents.  This is what
 /// makes ``a(1,1), a(2,1), a(3,1), a(1,2), ...`` contiguous in memory.
@@ -285,7 +311,8 @@ constexpr index_t linear_offset_contig_static(
 // section view keeps ``Contiguous`` == false so its real strides survive.
 template <typename T, std::size_t Rank,
           std::array<index_t, Rank> Lower = detail::runtime_lower<Rank>(),
-          bool Contiguous = false>
+          bool Contiguous = false,
+          std::array<index_t, Rank> Extents = detail::runtime_extents<Rank>()>
 class ArrayRef;
 
 /// Owning, move-only, column-major Fortran-style array.
@@ -393,8 +420,9 @@ public:
   /// requires); does not rebind.  Distinct from the deleted Array copy-
   /// assignment, so ``a = other_array`` still requires an explicit
   /// ``clone()`` (copy cost stays visible, D1).
-  template <typename U, std::array<index_t, Rank> L2, bool C2>
-  Array &operator=(const ArrayRef<U, Rank, L2, C2> &src) {
+  template <typename U, std::array<index_t, Rank> L2, bool C2,
+            std::array<index_t, Rank> E2>
+  Array &operator=(const ArrayRef<U, Rank, L2, C2, E2> &src) {
     const index_t n = size();
     for (index_t i = 0; i < n; ++i) {
       linear_at(i) = static_cast<T>(src.linear_at(i));
@@ -624,11 +652,13 @@ public:
   // -- the latter lets a whole array bind a ``Contiguous`` dummy in one
   // user-defined conversion (chaining two would be ill-formed).
   template <std::array<index_t, Rank> DstLower = detail::runtime_lower<Rank>(),
-            bool DstCon = false>
-  operator ArrayRef<T, Rank, DstLower, DstCon>() noexcept;
+            bool DstCon = false,
+            std::array<index_t, Rank> DstExt = detail::runtime_extents<Rank>()>
+  operator ArrayRef<T, Rank, DstLower, DstCon, DstExt>() noexcept;
   template <std::array<index_t, Rank> DstLower = detail::runtime_lower<Rank>(),
-            bool DstCon = false>
-  operator ArrayRef<const T, Rank, DstLower, DstCon>() const noexcept;
+            bool DstCon = false,
+            std::array<index_t, Rank> DstExt = detail::runtime_extents<Rank>()>
+  operator ArrayRef<const T, Rank, DstLower, DstCon, DstExt>() const noexcept;
 
   /// Fortran sequence association: a whole array passed to a rank-1
   /// (assumed-size) dummy shares its storage as one flat 1-D sequence.
@@ -637,14 +667,16 @@ public:
   /// conversion above still handles an ordinary rank-1 actual.
   template <std::size_t R = Rank,
             std::array<index_t, 1> DstLower = detail::runtime_lower<1>(),
-            bool DstCon = false>
+            bool DstCon = false,
+            std::array<index_t, 1> DstExt = detail::runtime_extents<1>()>
     requires(R != 1)
-  operator ArrayRef<T, 1, DstLower, DstCon>() noexcept;
+  operator ArrayRef<T, 1, DstLower, DstCon, DstExt>() noexcept;
   template <std::size_t R = Rank,
             std::array<index_t, 1> DstLower = detail::runtime_lower<1>(),
-            bool DstCon = false>
+            bool DstCon = false,
+            std::array<index_t, 1> DstExt = detail::runtime_extents<1>()>
     requires(R != 1)
-  operator ArrayRef<const T, 1, DstLower, DstCon>() const noexcept;
+  operator ArrayRef<const T, 1, DstLower, DstCon, DstExt>() const noexcept;
 
   /// Rank-1 section view ``a(lo:hi:stride)``.  Convenience that
   /// forwards to ArrayRef::section (defined in array_ref.hpp).

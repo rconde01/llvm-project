@@ -99,13 +99,42 @@ struct StrideStore<Rank, true> {  // contiguous: derived, zero storage
     return column_major_strides(extents);
   }
 };
+
+// Conditionally-stored per-dimension extents.  A fixed-size dummy
+// (``V(3)``, ``M(3,3)``) carries its extents in the ``Extents`` NTTP, so the
+// ``Static`` specialization holds no runtime data (zero bytes as a
+// ``[[no_unique_address]]`` member) and the whole index expression
+// constant-folds -- the big win in optimized builds, where a runtime extent
+// member is an opaque load the compiler can't fold across a non-inlined
+// call.  The dynamic specialization stores runtime extents (assumed-shape /
+// adjustable / assumed-size dummies).  ``set_last`` supports the
+// assumed-size widening, a no-op on the (never-assumed-size) static form.
+template <std::size_t Rank, std::array<index_t, Rank> Extents, bool Static>
+struct ExtentStore {  // runtime extents
+  std::array<index_t, Rank> v{};
+  constexpr ExtentStore() = default;
+  constexpr ExtentStore(const std::array<index_t, Rank> &a) noexcept : v(a) {}
+  constexpr index_t operator[](std::size_t i) const noexcept { return v[i]; }
+  constexpr std::array<index_t, Rank> array() const noexcept { return v; }
+  constexpr void set_last(index_t e) noexcept { v[Rank - 1] = e; }
+};
+template <std::size_t Rank, std::array<index_t, Rank> Extents>
+struct ExtentStore<Rank, Extents, true> {  // compile-time: zero storage
+  constexpr ExtentStore() = default;
+  constexpr ExtentStore(const std::array<index_t, Rank> &) noexcept {}
+  constexpr index_t operator[](std::size_t i) const noexcept {
+    return Extents[i];
+  }
+  constexpr std::array<index_t, Rank> array() const noexcept { return Extents; }
+  constexpr void set_last(index_t) noexcept {}  // static: never assumed-size
+};
 }  // namespace detail
 
 // Default for ``Lower`` is supplied on the forward declaration in
 // array.hpp; do not repeat it here (C++ allows a default template
 // argument to be given only once across redeclarations).
 template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower,
-          bool Contiguous>
+          bool Contiguous, std::array<index_t, Rank> Extents>
 class ArrayRef {
   static_assert(Rank >= 1, "ftn::ArrayRef rank must be >= 1");
 
@@ -118,6 +147,9 @@ public:
   /// True when this view's strides are compile-time column-major (no
   /// ``strides_`` member is stored; they derive from the extents).
   static constexpr bool kContiguous = Contiguous;
+  /// True when every extent is compile-time (carried in ``Extents``); no
+  /// ``extents_`` member is stored and the index math constant-folds.
+  static constexpr bool kStaticExtents = detail::is_static_extents<Rank>(Extents);
   /// True when every dimension's lower bound is a compile-time constant
   /// (``Lower`` carries no ``kRuntimeLBound`` entries) -- mirrors
   /// ``Array<T, Rank, Lower>::kStaticLower``.
@@ -176,12 +208,14 @@ public:
   /// owning array's contiguous view binding a strided-typed dummy).  The
   /// source's effective strides come through ``other.strides()``; a
   /// ``Contiguous`` destination ignores them (they must be column-major).
-  template <typename U, std::array<index_t, Rank> OtherLower, bool C2>
+  template <typename U, std::array<index_t, Rank> OtherLower, bool C2,
+            std::array<index_t, Rank> E2>
     requires((std::is_same_v<T, U> ||
               (std::is_const_v<T> &&
                std::is_same_v<std::remove_const_t<T>, U>)) &&
-             !(std::is_same_v<T, U> && OtherLower == Lower && C2 == Contiguous))
-  ArrayRef(const ArrayRef<U, Rank, OtherLower, C2> &other) noexcept
+             !(std::is_same_v<T, U> && OtherLower == Lower &&
+               C2 == Contiguous && E2 == Extents))
+  ArrayRef(const ArrayRef<U, Rank, OtherLower, C2, E2> &other) noexcept
       : data_(other.data()),
         lower_(other.lower_bounds()),
         extents_(other.extents()), strides_(other.strides()) {}
@@ -213,9 +247,10 @@ public:
   /// Source lower bound is irrelevant to a flatten (the bytes are the same
   /// either way), so accept any ``SrcLower`` -- a static-lb 2-D dummy
   /// (``POOL(2, LBPOOL:*)``) still flattens to a rank-1 view.
-  template <std::size_t R2, std::array<index_t, R2> SrcLower, bool C2>
+  template <std::size_t R2, std::array<index_t, R2> SrcLower, bool C2,
+            std::array<index_t, R2> E2>
     requires(Rank == 1 && R2 != 1)
-  ArrayRef(const ArrayRef<T, R2, SrcLower, C2> &other) noexcept
+  ArrayRef(const ArrayRef<T, R2, SrcLower, C2, E2> &other) noexcept
       : ArrayRef(other.data(), extent_array{{other.size()}}) {}
 
   // ---- Indexing -------------------------------------------------------
@@ -229,10 +264,10 @@ public:
       // No stored strides: derive the column-major offset in one pass.
       if constexpr (kStaticLower) {
         return data_[detail::linear_offset_contig_static<Rank, Lower>(
-            up, extents_, idxs...)];
+            up, extents_.array(), idxs...)];
       } else {
         return data_[detail::linear_offset_contig<Rank>(
-            lower_.array(), up, extents_, idxs...)];
+            lower_.array(), up, extents_.array(), idxs...)];
       }
     } else {
       // Strided view: index through the stored strides (by ref, no copy).
@@ -271,14 +306,16 @@ public:
     return extents_[dim - 1];
   }
 
-  index_t size() const noexcept { return detail::total_size(extents_); }
+  index_t size() const noexcept { return detail::total_size(extents_.array()); }
   bool empty() const noexcept { return data_ == nullptr || size() == 0; }
 
   /// Widen the last dimension to an unbounded (assumed-size) extent, in
   /// place.  Used at callee entry for an ``A(*)`` / ``A(M,*)`` dummy, whose
   /// last dimension has no Fortran upper-bound check.  See ::ftn::assume_size.
   void set_assumed_last_extent() noexcept {
-    extents_[Rank - 1] = detail::kAssumedExtent;
+    // Only meaningful for a runtime-extents (assumed-size) view; a static-
+    // extents view is never assumed-size, so ``set_last`` is a no-op there.
+    extents_.set_last(detail::kAssumedExtent);
   }
 
   /// For an OPTIONAL array dummy, ``PRESENT(a)`` lowers to
@@ -287,7 +324,7 @@ public:
   bool has_value() const noexcept { return data_ != nullptr; }
 
   lower_array lower_bounds() const noexcept { return lower_.array(); }
-  const extent_array &extents() const noexcept { return extents_; }
+  extent_array extents() const noexcept { return extents_.array(); }
   extent_array strides() const noexcept { return eff_strides(); }
 
   T *data() const noexcept { return data_; }
@@ -336,8 +373,9 @@ public:
     }
     return *this;
   }
-  template <typename U, std::array<index_t, Rank> L2, bool C2>
-  const ArrayRef &operator=(const ArrayRef<U, Rank, L2, C2> &src) {
+  template <typename U, std::array<index_t, Rank> L2, bool C2,
+            std::array<index_t, Rank> E2>
+  const ArrayRef &operator=(const ArrayRef<U, Rank, L2, C2, E2> &src) {
     for (index_t i = 0; i < size(); ++i) {
       linear_at(i) = static_cast<T>(src.linear_at(i));
     }
@@ -471,7 +509,7 @@ public:
     if constexpr (Contiguous) {
       return true;
     } else {
-      return strides_.v == detail::column_major_strides(extents_);
+      return strides_.v == detail::column_major_strides(extents_.array());
     }
   }
 
@@ -506,13 +544,18 @@ private:
     return u;
   }
 
+  /// This view's per-dimension extents (stored or from the ``Extents`` NTTP).
+  extent_array eff_extents() const noexcept { return extents_.array(); }
   /// This view's per-dimension strides -- the stored ones for a strided
   /// section, or column-major-from-extents for a contiguous view.
-  extent_array eff_strides() const noexcept { return strides_.get(extents_); }
+  extent_array eff_strides() const noexcept {
+    return strides_.get(extents_.array());
+  }
 
   T *data_{nullptr};
   [[no_unique_address]] detail::LowerStore<Rank, Lower, kStaticLower> lower_{};
-  extent_array extents_{};
+  [[no_unique_address]] detail::ExtentStore<Rank, Extents, kStaticExtents>
+      extents_{};
   [[no_unique_address]] detail::StrideStore<Rank, Contiguous> strides_{};
 };
 
@@ -524,36 +567,42 @@ private:
 // lb wins" rule, in C++ form.
 
 template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
-template <std::array<index_t, Rank> DstLower, bool DstCon>
-Array<T, Rank, Lower>::operator ArrayRef<T, Rank, DstLower, DstCon>() noexcept {
-  return ArrayRef<T, Rank, DstLower, DstCon>(data(), lower_, extents_,
-                                             strides_);
+template <std::array<index_t, Rank> DstLower, bool DstCon,
+          std::array<index_t, Rank> DstExt>
+Array<T, Rank, Lower>::operator ArrayRef<T, Rank, DstLower, DstCon,
+                                         DstExt>() noexcept {
+  return ArrayRef<T, Rank, DstLower, DstCon, DstExt>(data(), lower_, extents_,
+                                                     strides_);
 }
 
 template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
-template <std::array<index_t, Rank> DstLower, bool DstCon>
-Array<T, Rank, Lower>::operator ArrayRef<const T, Rank, DstLower, DstCon>()
-    const noexcept {
-  return ArrayRef<const T, Rank, DstLower, DstCon>(data(), lower_, extents_,
-                                                   strides_);
+template <std::array<index_t, Rank> DstLower, bool DstCon,
+          std::array<index_t, Rank> DstExt>
+Array<T, Rank, Lower>::operator ArrayRef<const T, Rank, DstLower, DstCon,
+                                         DstExt>() const noexcept {
+  return ArrayRef<const T, Rank, DstLower, DstCon, DstExt>(
+      data(), lower_, extents_, strides_);
 }
 
 // Sequence association: flatten a higher-rank array to a rank-1 view over
 // its contiguous storage (extent = total element count, lower bound 1).
 template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
-template <std::size_t R, std::array<index_t, 1> DstLower, bool DstCon>
+template <std::size_t R, std::array<index_t, 1> DstLower, bool DstCon,
+          std::array<index_t, 1> DstExt>
   requires(R != 1)
-Array<T, Rank, Lower>::operator ArrayRef<T, 1, DstLower, DstCon>() noexcept {
-  return ArrayRef<T, 1, DstLower, DstCon>(data(),
-                                          std::array<index_t, 1>{{size()}});
+Array<T, Rank, Lower>::operator ArrayRef<T, 1, DstLower, DstCon,
+                                         DstExt>() noexcept {
+  return ArrayRef<T, 1, DstLower, DstCon, DstExt>(
+      data(), std::array<index_t, 1>{{size()}});
 }
 
 template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
-template <std::size_t R, std::array<index_t, 1> DstLower, bool DstCon>
+template <std::size_t R, std::array<index_t, 1> DstLower, bool DstCon,
+          std::array<index_t, 1> DstExt>
   requires(R != 1)
-Array<T, Rank, Lower>::operator ArrayRef<const T, 1, DstLower, DstCon>()
-    const noexcept {
-  return ArrayRef<const T, 1, DstLower, DstCon>(
+Array<T, Rank, Lower>::operator ArrayRef<const T, 1, DstLower, DstCon,
+                                         DstExt>() const noexcept {
+  return ArrayRef<const T, 1, DstLower, DstCon, DstExt>(
       data(), std::array<index_t, 1>{{size()}});
 }
 
@@ -618,9 +667,9 @@ std::ostream &operator<<(std::ostream &os, const Array<T, Rank, Lower> &a) {
 
 /// Same for a non-owning view (whole-array or section).
 template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower,
-          bool C>
+          bool C, std::array<index_t, Rank> E>
 std::ostream &operator<<(std::ostream &os,
-                         const ArrayRef<T, Rank, Lower, C> &a) {
+                         const ArrayRef<T, Rank, Lower, C, E> &a) {
   bool first = true;
   a.for_each([&](const T &v) {
     if (!first) {
@@ -646,9 +695,9 @@ std::istream &operator>>(std::istream &is, Array<T, Rank, Lower> &a) {
 }
 
 template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower,
-          bool C>
+          bool C, std::array<index_t, Rank> E>
 std::istream &operator>>(std::istream &is,
-                         const ArrayRef<T, Rank, Lower, C> &a) {
+                         const ArrayRef<T, Rank, Lower, C, E> &a) {
   const index_t n = a.size();
   for (index_t i = 0; i < n; ++i) {
     is >> a.linear_at(i);
@@ -662,8 +711,9 @@ std::istream &operator>>(std::istream &is,
 template <typename T> bool associated(T *p) noexcept { return p != nullptr; }
 
 /// ASSOCIATED for an array pointer (non-owning ArrayRef view).
-template <typename T, std::size_t R, std::array<index_t, R> L, bool C>
-bool associated(const ArrayRef<T, R, L, C> &p) noexcept {
+template <typename T, std::size_t R, std::array<index_t, R> L, bool C,
+          std::array<index_t, R> E>
+bool associated(const ArrayRef<T, R, L, C, E> &p) noexcept {
   return p.data() != nullptr;
 }
 
@@ -702,8 +752,8 @@ ArrayRef<T, 1> elem_tail(Array<T, R, Lower> &a, Idx... idx) {
   return ArrayRef<T, 1>(base, {a.size() - static_cast<index_t>(base - a.data())});
 }
 template <typename T, std::size_t R, std::array<index_t, R> SrcLower, bool C,
-          typename... Idx>
-ArrayRef<T, 1> elem_tail(const ArrayRef<T, R, SrcLower, C> &a, Idx... idx) {
+          std::array<index_t, R> E, typename... Idx>
+ArrayRef<T, 1> elem_tail(const ArrayRef<T, R, SrcLower, C, E> &a, Idx... idx) {
   T *base = &a(static_cast<index_t>(idx)...);
   // If ``a`` is itself an assumed-size view (a scalar sequence-associated
   // with an array dummy, or the tail of one), its real extent is unknown --
@@ -737,8 +787,8 @@ ArrayRef<T, 1> elem_tail_n(Array<T, R, Lower> &a, index_t n, Idx... idx) {
   return ArrayRef<T, 1>(base, {n});
 }
 template <typename T, std::size_t R, std::array<index_t, R> SrcLower, bool C,
-          typename... Idx>
-ArrayRef<T, 1> elem_tail_n(const ArrayRef<T, R, SrcLower, C> &a, index_t n,
+          std::array<index_t, R> E, typename... Idx>
+ArrayRef<T, 1> elem_tail_n(const ArrayRef<T, R, SrcLower, C, E> &a, index_t n,
                            Idx... idx) {
   T *base = &a(static_cast<index_t>(idx)...);
   return ArrayRef<T, 1>(base, {n});
@@ -759,8 +809,9 @@ ArrayRef<T, 1> elem_tail_n(const ArrayRef<T, R, SrcLower, C> &a, index_t n,
 /// Fortran element-wise assignment, not a view rebind, so ``a = assume_size(a)``
 /// would broadcast rather than change the extent.  The emitter calls this as
 /// a statement -- ``ftn::assume_size(a);`` -- on the by-value dummy.
-template <typename T, std::size_t R, std::array<index_t, R> Lower, bool C>
-void assume_size(ArrayRef<T, R, Lower, C> &a) noexcept {
+template <typename T, std::size_t R, std::array<index_t, R> Lower, bool C,
+          std::array<index_t, R> E>
+void assume_size(ArrayRef<T, R, Lower, C, E> &a) noexcept {
   a.set_assumed_last_extent();
 }
 
@@ -769,9 +820,9 @@ void assume_size(ArrayRef<T, R, Lower, C> &a) noexcept {
 /// (or array section) be passed to a dummy of a different rank; the
 /// storage is reinterpreted column-major with the dummy's bounds.  Used
 /// at call sites where the actual's rank is below the dummy's.
-template <std::size_t R, typename T, bool C>
+template <std::size_t R, typename T, bool C, std::array<index_t, 1> E>
 ArrayRef<T, R> seq_assoc(
-    const ArrayRef<T, 1, detail::runtime_lower<1>(), C> &flat,
+    const ArrayRef<T, 1, detail::runtime_lower<1>(), C, E> &flat,
     const std::array<index_t, R> &lower,
     const std::array<index_t, R> &extents) {
   return ArrayRef<T, R>(flat.data(), lower, extents);
