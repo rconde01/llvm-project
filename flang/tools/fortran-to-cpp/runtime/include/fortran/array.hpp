@@ -45,6 +45,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 
@@ -359,7 +360,24 @@ public:
     // specified DATA list) must not be read past its end.
     const index_t n = std::min(size(), src.size());
     for (index_t i = 0; i < n; ++i) {
-      linear_at(i) = static_cast<T>(src.linear_at(i));
+      if constexpr (std::is_integral_v<T> &&
+                    std::is_convertible_v<U, std::string_view>) {
+        // Fortran CHARACTER -> INTEGER type-pun: a numeric COMMON slot
+        // aliased as CHARACTER (or a Hollerith assignment) receives the
+        // character bytes verbatim, blank-padded to the integer's width --
+        // the array analogue of FortranString's ``operator I()``.  (E.g.
+        // NRLMSISE-00's ISDATE/ISTIME/NAME in /DATIM7/.)
+        std::string_view s{src.linear_at(i)};
+        T val{};
+        auto *bytes = reinterpret_cast<unsigned char *>(&val);
+        for (std::size_t k = 0; k < sizeof(T); ++k) {
+          bytes[k] = k < s.size() ? static_cast<unsigned char>(s[k])
+                                  : static_cast<unsigned char>(' ');
+        }
+        linear_at(i) = val;
+      } else {
+        linear_at(i) = static_cast<T>(src.linear_at(i));
+      }
     }
     return *this;
   }

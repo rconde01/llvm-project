@@ -403,20 +403,29 @@ def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
     out.write(_signature(sub, with_defaults=False))
     out.write(" {\n")
 
-    # Assumed-size (``A(*)`` / ``A(M,*)``) array dummies have no Fortran
-    # upper-bound check on their last dimension; the callee may index past
-    # the actual's tracked extent (valid storage the caller owns).  Reset
-    # the received view's last extent to unbounded so a legitimate access
-    # doesn't trip a debug bounds check.  By-value ArrayRef params can be
-    # reassigned; POINTER and character-array dummies are left alone.
+    # Assumed-size array dummies have no Fortran upper-bound check on their
+    # last dimension; the callee may index past the actual's tracked extent
+    # (valid storage the caller owns).  Reset the received view's last extent
+    # to unbounded so a legitimate access doesn't trip a debug bounds check.
+    # Two spellings count as assumed-size for a *dummy*:
+    #   * the standard ``A(*)`` / ``A(M,*)`` (extent marked "assumed"); and
+    #   * the ubiquitous legacy ``A(1)`` idiom -- a dummy declared with a
+    #     trailing extent of literal ``1`` that the callee indexes well past
+    #     (NRLMSISE-00's ``DIMENSION P(1)`` read as P(1..150)).  A genuine
+    #     one-element dummy loses nothing from an unbounded view.
+    # By-value ArrayRef params can be reassigned; POINTER and character-array
+    # dummies are left alone.
     for p in sub.parameters:
         t = p.type
         if (
             t.is_array
             and not t.is_pointer
             and t.array_extent_exprs
-            and "assumed" in t.array_extent_exprs[-1]
             and t.element_type_cpp != "std::string_view"
+            and (
+                "assumed" in t.array_extent_exprs[-1]
+                or t.array_extent_exprs[-1].strip() == "1"
+            )
         ):
             out.write(f"  ftn::assume_size({p.name});\n")
 
