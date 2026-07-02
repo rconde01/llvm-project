@@ -401,3 +401,40 @@ suspected routine with `fprintf` probes (recompile that one file + relink),
 read the actual values, and only then fix — and when a fix worked,
 generalize it and sweep the codebase for sibling cases rather than patching
 the single call site.
+
+---
+
+## Non-SPICE differential testing (atmospheric-model corpora)
+
+To find converter bugs beyond SPICE, the non-SPICE example corpora were
+differentially tested: build each Fortran library + driver two ways -- native
+`gfortran -O0` and via the converter (`g++ -O0`) -- run both, and compare the
+numeric output token-by-token (relative tol 1e-9; -O0 both sides so only libm
+differs).  gfortran needs `-std=legacy -fallow-argument-mismatch
+-fdec-char-conversions` to accept these legacy F77 sources.
+
+**Results:** NRLMSISE-00 (built-in test driver, 777 numbers) and MSIS-90
+(730 numbers) reproduce **bit-identically** (worst relative difference
+0.0).  Two converter bugs were found and fixed along the way:
+
+1. **Whole-array CHARACTER->INTEGER type-pun assignment.**  A numeric COMMON
+   slot aliased as CHARACTER (NRLMSISE-00 `/DATIM7/` ISDATE/ISTIME/NAME)
+   receives `isdate = ftn::array_of("01-F"sv, ...)` where `isdate` is
+   `Array<int32_t>`.  `Array::operator=` did `static_cast<int>(string_view)`
+   and failed to compile.  It now bit-reinterprets the character bytes into
+   the integer (blank-padded) -- the array analogue of
+   `FortranString::operator I()` (`array.hpp`).
+
+2. **Legacy `A(1)` assumed-size dummy idiom.**  NRLMSISE-00 GLOBE7 declares
+   `DIMENSION P(1)` but indexes P(1..150).  A dummy array whose trailing
+   extent is literal `1` is now treated as assumed-size (`ftn::assume_size`,
+   unbounded last dim), alongside `A(*)` (`emit.py`).
+
+**Open (supervised):** MSIS-86 PRMSG5 uses a `/DATIME/` COMMON whose members
+are punned as INTEGER in one routine and CHARACTER (mixed lengths) in
+another; the two layouts have *different total sizes*, so a character
+sub-view straddles two canonical integer fields and the `name` binding is
+dropped (`state_plumbing.py:_canon_field_for_offset`).  The canonical layout
+would need to model punned members as a raw byte span.  The IRI / IGRF /
+radbelt / CIRA corpora need external coefficient data files that aren't
+present in this environment, so they weren't differentially run.
