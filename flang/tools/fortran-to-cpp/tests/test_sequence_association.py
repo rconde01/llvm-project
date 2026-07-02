@@ -191,7 +191,8 @@ class ExplicitShapeDummyOneBasedTests(unittest.TestCase):
         cpp = convert_project(EXPLICIT_SHAPE_REBASE_F, suffix=".f")
         # The explicit-shape dummy carries a static 1-based lower bound...
         self.assertIn(
-            "ftn::ArrayRef<double, 1, std::array<ftn::index_t, 1>{1}> v1", cpp
+            "ftn::ArrayRef<double, 1, std::array<ftn::index_t, 1>{1}, true> v1",
+            cpp
         )
         # ...and the call site is unchanged (no lb1/seq_assoc wrapper).
         self.assertIn("vsclg(2.0e0, q, 4, r)", cpp)
@@ -251,7 +252,8 @@ class NamedConstantLowerBoundTests(unittest.TestCase):
         cpp = convert_project(NAMED_LBCELL_F, suffix=".f")
         # LBCELL (=-5) folded into the dummy's static Lower NTTP.
         self.assertIn(
-            "ftn::ArrayRef<double, 2, std::array<ftn::index_t, 2>{-5,1}> work",
+            "ftn::ArrayRef<double, 2, std::array<ftn::index_t, 2>{-5,1}, true> "
+            "work",
             cpp,
         )
 
@@ -348,7 +350,8 @@ class AssumedSizeLowerBoundTests(unittest.TestCase):
         cpp = convert_project(ASSUMED_SIZE_REBASE_F, suffix=".f")
         # The dummy carries a static lower bound of 1.
         self.assertIn(
-            "ftn::ArrayRef<double, 1, std::array<ftn::index_t, 1>{1}> array",
+            "ftn::ArrayRef<double, 1, std::array<ftn::index_t, 1>{1}, true> "
+            "array",
             cpp,
         )
 

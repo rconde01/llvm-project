@@ -357,7 +357,8 @@ class EmitTests(unittest.TestCase):
         # to a static 1-based ``Lower`` (a Fortran dummy indexes from its own
         # declared lb, which defaults to 1, never the actual's).
         self.assertIn(
-            "ftn::ArrayRef<int32_t, 1, std::array<ftn::index_t, 1>{1}> a", cpp,
+            "ftn::ArrayRef<int32_t, 1, std::array<ftn::index_t, 1>{1}, true> a",
+            cpp,
         )
         self.assertNotIn("ftn::Array<int32_t, 1>& a", cpp)
 

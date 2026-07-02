@@ -827,6 +827,14 @@ class IRParameter:
                 runtime_ref, self.type.array_rank, lower_exprs,
             )
             ref_type = static_ref if static_ref is not None else runtime_ref
+            # A F77 array dummy (explicit-shape or assumed-size) is always
+            # contiguous, so tag the view ``Contiguous`` -- it drops the
+            # per-dimension ``strides_`` member (column-major-derivable),
+            # shrinking the by-value view passed at every call.  Only the
+            # static-lower form is tagged: a POINTER dummy keeps the runtime
+            # form (its target may be a non-contiguous section).
+            if static_ref is not None and not self.type.is_pointer:
+                ref_type = static_ref[:-1] + ", true>"
             decl = f"{ref_type} {self.name}"
             if self.optional and with_default:
                 # An OPTIONAL array dummy defaults to a null (empty) view,

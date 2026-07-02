@@ -229,14 +229,63 @@ constexpr index_t linear_offset_static(
   return off;
 }
 
+// Contiguous (column-major) offset without a materialized strides array:
+// the stride of dimension ``k`` is the running product of the leading
+// extents.  Used by a ``Contiguous`` ArrayRef, which stores no ``strides_``
+// -- one pass, no per-index array copy (so it's no slower than the stored
+// form even at ``-O0``, and folds to a constant at ``-O2``).
+template <std::size_t Rank, typename... Idx>
+constexpr index_t linear_offset_contig(
+    const std::array<index_t, Rank> &lower,
+    [[maybe_unused]] const std::array<index_t, Rank> &upper,
+    const std::array<index_t, Rank> &extents, Idx... idxs) {
+  static_assert(sizeof...(Idx) == Rank, "wrong number of indices");
+  static_assert((std::is_integral_v<Idx> && ...), "indices must be integral");
+  const std::array<index_t, Rank> idx{static_cast<index_t>(idxs)...};
+  index_t off = 0;
+  index_t stride = 1;
+  for (std::size_t k = 0; k < Rank; ++k) {
+    FORTRAN_RT_CHECK_BOUNDS(idx[k], lower[k], upper[k],
+                            k == 0 ? "dim 1" :
+                            k == 1 ? "dim 2" :
+                            k == 2 ? "dim 3" : "dim N");
+    off += (idx[k] - lower[k]) * stride;
+    stride *= extents[k];
+  }
+  return off;
+}
+template <std::size_t Rank, std::array<index_t, Rank> Lower, typename... Idx>
+constexpr index_t linear_offset_contig_static(
+    [[maybe_unused]] const std::array<index_t, Rank> &upper,
+    const std::array<index_t, Rank> &extents, Idx... idxs) {
+  static_assert(sizeof...(Idx) == Rank, "wrong number of indices");
+  static_assert((std::is_integral_v<Idx> && ...), "indices must be integral");
+  const std::array<index_t, Rank> idx{static_cast<index_t>(idxs)...};
+  index_t off = 0;
+  index_t stride = 1;
+  for (std::size_t k = 0; k < Rank; ++k) {
+    FORTRAN_RT_CHECK_BOUNDS(idx[k], Lower[k], upper[k],
+                            k == 0 ? "dim 1" :
+                            k == 1 ? "dim 2" :
+                            k == 2 ? "dim 3" : "dim N");
+    off += (idx[k] - Lower[k]) * stride;
+    stride *= extents[k];
+  }
+  return off;
+}
+
 } // namespace detail
 
-// Forward declaration for the implicit conversion below.  The default
-// for ``Lower`` is provided here once; the full declaration in
-// array_ref.hpp must NOT repeat it (a default argument can be supplied
-// at most once across all redeclarations of a class template).
+// Forward declaration for the implicit conversion below.  The defaults
+// for ``Lower`` and ``Contiguous`` are provided here once; the full
+// declaration in array_ref.hpp must NOT repeat them (a default argument
+// can be supplied at most once across all redeclarations of a class
+// template).  ``Contiguous`` == true drops the per-dimension ``strides_``
+// member (they are column-major-derivable from the extents); a strided
+// section view keeps ``Contiguous`` == false so its real strides survive.
 template <typename T, std::size_t Rank,
-          std::array<index_t, Rank> Lower = detail::runtime_lower<Rank>()>
+          std::array<index_t, Rank> Lower = detail::runtime_lower<Rank>(),
+          bool Contiguous = false>
 class ArrayRef;
 
 /// Owning, move-only, column-major Fortran-style array.
@@ -344,8 +393,8 @@ public:
   /// requires); does not rebind.  Distinct from the deleted Array copy-
   /// assignment, so ``a = other_array`` still requires an explicit
   /// ``clone()`` (copy cost stays visible, D1).
-  template <typename U>
-  Array &operator=(const ArrayRef<U, Rank> &src) {
+  template <typename U, std::array<index_t, Rank> L2, bool C2>
+  Array &operator=(const ArrayRef<U, Rank, L2, C2> &src) {
     const index_t n = size();
     for (index_t i = 0; i < n; ++i) {
       linear_at(i) = static_cast<T>(src.linear_at(i));
@@ -570,10 +619,16 @@ public:
   /// ``lower_`` field on the view is initialized from the destination's
   /// ``Lower``; the source's lb only matters for the ``lower_bounds()``
   /// reading on the source itself.
-  template <std::array<index_t, Rank> DstLower = detail::runtime_lower<Rank>()>
-  operator ArrayRef<T, Rank, DstLower>() noexcept;
-  template <std::array<index_t, Rank> DstLower = detail::runtime_lower<Rank>()>
-  operator ArrayRef<const T, Rank, DstLower>() const noexcept;
+  // An owning Array is always contiguous, so it can convert to either a
+  // strided (``DstCon`` == false) or a contiguous (``true``) view directly
+  // -- the latter lets a whole array bind a ``Contiguous`` dummy in one
+  // user-defined conversion (chaining two would be ill-formed).
+  template <std::array<index_t, Rank> DstLower = detail::runtime_lower<Rank>(),
+            bool DstCon = false>
+  operator ArrayRef<T, Rank, DstLower, DstCon>() noexcept;
+  template <std::array<index_t, Rank> DstLower = detail::runtime_lower<Rank>(),
+            bool DstCon = false>
+  operator ArrayRef<const T, Rank, DstLower, DstCon>() const noexcept;
 
   /// Fortran sequence association: a whole array passed to a rank-1
   /// (assumed-size) dummy shares its storage as one flat 1-D sequence.
@@ -581,13 +636,15 @@ public:
   /// storage order.  Guarded to ``Rank != 1`` so the same-rank
   /// conversion above still handles an ordinary rank-1 actual.
   template <std::size_t R = Rank,
-            std::array<index_t, 1> DstLower = detail::runtime_lower<1>()>
+            std::array<index_t, 1> DstLower = detail::runtime_lower<1>(),
+            bool DstCon = false>
     requires(R != 1)
-  operator ArrayRef<T, 1, DstLower>() noexcept;
+  operator ArrayRef<T, 1, DstLower, DstCon>() noexcept;
   template <std::size_t R = Rank,
-            std::array<index_t, 1> DstLower = detail::runtime_lower<1>()>
+            std::array<index_t, 1> DstLower = detail::runtime_lower<1>(),
+            bool DstCon = false>
     requires(R != 1)
-  operator ArrayRef<const T, 1, DstLower>() const noexcept;
+  operator ArrayRef<const T, 1, DstLower, DstCon>() const noexcept;
 
   /// Rank-1 section view ``a(lo:hi:stride)``.  Convenience that
   /// forwards to ArrayRef::section (defined in array_ref.hpp).
