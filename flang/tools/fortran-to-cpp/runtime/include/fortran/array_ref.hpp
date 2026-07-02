@@ -466,14 +466,14 @@ private:
 template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
 template <std::array<index_t, Rank> DstLower>
 Array<T, Rank, Lower>::operator ArrayRef<T, Rank, DstLower>() noexcept {
-  return ArrayRef<T, Rank, DstLower>(data(), lower_.array(), extents_, strides_);
+  return ArrayRef<T, Rank, DstLower>(data(), lower_, extents_, strides_);
 }
 
 template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
 template <std::array<index_t, Rank> DstLower>
 Array<T, Rank, Lower>::operator ArrayRef<const T, Rank, DstLower>()
     const noexcept {
-  return ArrayRef<const T, Rank, DstLower>(data(), lower_.array(), extents_, strides_);
+  return ArrayRef<const T, Rank, DstLower>(data(), lower_, extents_, strides_);
 }
 
 // Sequence association: flatten a higher-rank array to a rank-1 view over
