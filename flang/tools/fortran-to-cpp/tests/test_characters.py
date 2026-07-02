@@ -67,6 +67,19 @@ ASSUMED_LEN_FN_F90 = """\
 """
 
 
+# A whole INTEGER array initialized with CHARACTER data: the legacy type-pun
+# where a numeric COMMON slot is aliased as CHARACTER (NRLMSISE-00's /DATIM7/
+# ISDATE/ISTIME/NAME).  The character bytes are bit-copied into the integers,
+# so printing them back as A4 recovers the text.
+CHAR_INT_TYPEPUN_F90 = """\
+      program p
+      integer iarr(2)
+      data iarr /'MSIS', 'E-00'/
+      write(*,'(2A4)') iarr(1), iarr(2)
+      end
+"""
+
+
 def _convert(src: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".f90", delete=False, encoding="utf-8"
@@ -187,6 +200,15 @@ class CharacterRunTests(unittest.TestCase):
         # char(92)//'begindata' = "\\begindata".
         out = _compile_and_run(ASSUMED_LEN_FN_F90)
         self.assertIn("[ \\begindata ]", out)
+
+    def test_char_to_integer_array_typepun_runs(self) -> None:
+        # A whole INTEGER array initialized with CHARACTER data (the legacy
+        # numeric-COMMON-aliased-as-CHARACTER type-pun, e.g. NRLMSISE-00's
+        # /DATIM7/ identification strings): the character bytes must be
+        # bit-copied into the integers so printing them back as A4 recovers
+        # the text.
+        out = _compile_and_run(CHAR_INT_TYPEPUN_F90)
+        self.assertIn("MSISE-00", out)
 
 
 if __name__ == "__main__":

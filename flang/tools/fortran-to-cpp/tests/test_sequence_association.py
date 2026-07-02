@@ -305,6 +305,43 @@ class AssumedSizeChainNormalizeTests(unittest.TestCase):
         )
 
 
+# The legacy ``A(1)`` assumed-size dummy idiom: F77 code declares a dummy
+# array with a trailing extent of literal 1 but indexes it well past 1,
+# relying on the caller's storage (NRLMSISE-00 GLOBE7's ``DIMENSION P(1)``
+# read as P(1..150)).  The dummy must be treated as assumed-size (unbounded
+# last dimension) or the callee's ``P(k)`` for k>1 trips the bounds check.
+ONE_ELEMENT_DUMMY_IDIOM_F = """\
+      subroutine fill(p, n)
+      integer n, i
+      double precision p(1)
+      do i = 1, n
+         p(i) = i * 2
+      end do
+      end
+
+      program p
+      double precision buf(5)
+      integer i
+      call fill(buf, 5)
+      print *, buf(1), buf(5)
+      end
+"""
+
+
+@unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")  # noqa: E501
+class OneElementDummyIdiomTests(unittest.TestCase):
+    def test_dummy_normalized_at_entry(self) -> None:
+        cpp = convert_project(ONE_ELEMENT_DUMMY_IDIOM_F, suffix=".f")
+        # The A(1) dummy is treated as assumed-size (unbounded last extent).
+        self.assertIn("ftn::assume_size(p);", cpp)
+
+    def test_runs(self) -> None:
+        # fill writes p(1..5) through the P(1) dummy into buf(1..5).
+        vals = [float(x) for x in run_project(ONE_ELEMENT_DUMMY_IDIOM_F,
+                                              suffix=".f").split()]
+        self.assertEqual(vals, [2.0, 10.0])
+
+
 @unittest.skipUnless(have_flang() and have_cxx(), "need flang and a C++20 compiler")  # noqa: E501
 class AssumedSizeLowerBoundTests(unittest.TestCase):
     def test_assumed_size_dummy_is_one_based(self) -> None:
