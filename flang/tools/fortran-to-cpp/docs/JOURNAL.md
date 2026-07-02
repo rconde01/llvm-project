@@ -468,3 +468,35 @@ Note on debug builds: the same families under the default **-O0 with bounds
 checks** ran 80-300 s; at -O2 -DNDEBUG they run 1-25 s.  The runtime
 bounds check on every array access dominates -O0 time for index-heavy code,
 so perf claims must use -DNDEBUG.
+
+### Shrinking the ArrayRef view (the indirection overhead above)
+
+The "ArrayRef indirection overhead" that makes compute-bound families slower
+is the fat by-value view (pointer + lower + extents + strides = 32-40 bytes)
+plus the runtime index math the optimizer can't fold across non-inlined
+calls.  Three NTTPs progressively drop members and unlock folding, each a
+``[[no_unique_address]]`` conditional store with a uniform read API so the
+indexing code is identical either way:
+
+- **#2 static lower** (``Lower`` NTTP, already present): a literal-lb dummy
+  drops ``lower_`` and folds ``idx - lower``.
+- **#1 contiguous** (``Contiguous`` NTTP): a F77 array dummy is always
+  contiguous, so it drops ``strides_`` and derives the column-major offset
+  in one pass (``linear_offset_contig``).  A strided ``section()`` stays
+  ``Contiguous=false``.
+- **#3 static extents** (``Extents`` NTTP): a fixed-size dummy (``V(3)``,
+  ``M(3,3)``) drops ``extents_`` and constant-folds the whole offset -- the
+  key -O2 win, since a runtime extent member is an opaque load the compiler
+  can't fold across a non-inlined call.  Excludes extent-1 dims (the F77
+  one-element-dummy assumed-size idiom, which a static ``{1}`` would wrongly
+  bound).
+
+Combined, a fully-static contiguous dummy is **just a pointer** (``sizeof``
+8, down from 24/40 at rank 1/2).  The emitter tags every non-POINTER
+static-lower array dummy ``Contiguous=true`` and adds static ``Extents``
+when all extents are literals > 1; POINTER dummies keep the runtime form
+(their target may be a non-contiguous section).  Validated compile-clean
+(corpus 1625/0) and behavior-preserving (434 converter tests, incl.
+compile+run of static/contiguous views and the one-element-dummy idiom).
+The payoff is at -O2 (constant-folded indexing + view elimination); the
+-O0 tspice tally is unaffected (bounds checks still dominate there).
