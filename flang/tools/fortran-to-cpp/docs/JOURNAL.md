@@ -438,3 +438,33 @@ dropped (`state_plumbing.py:_canon_field_for_offset`).  The canonical layout
 would need to model punned members as a raw byte span.  The IRI / IGRF /
 radbelt / CIRA corpora need external coefficient data files that aren't
 present in this environment, so they weren't differentially run.
+
+---
+
+## Optimized performance: converted C++ vs native Fortran
+
+Head-to-head timing of 11 heavy tspice families, both optimized and with no
+bounds checks: converted **g++ -O2 -DNDEBUG** vs native **gfortran -O2**
+(gfortran needed `-std=legacy -fallow-argument-mismatch -fdec-char-conversions`
+to build the whole toolkit; flang's runtime was not built in this
+environment, so gfortran is the reference).  Each family run serially in a
+fresh dir; both binaries pass the same self-checks.
+
+Results were **mixed and family-dependent**: compute-bound families ran
+~1.5-4.4x slower in C++ (f_subpnt 4.4x, f_xdda 3.5x, f_dyn01 2.1x -- the
+state-plumbing / ArrayRef indirection overhead), while several geometry-finder
+and DSK/search families ran *faster* in C++ (f_gftfov 0.10x, f_gfrr 0.16x,
+f_zzdskbsr 0.41x).  Median ~1.65x slower; aggregate total 0.70x (i.e. faster
+overall, skewed by the two heaviest search families).
+
+Caveat: the GF/search families are iterative root-finders whose iteration
+count is sensitive to tiny floating-point differences between the two
+toolchains -- both converge to correct answers (all pass), but the wall time
+reflects convergence-count differences as much as raw speed, so those ratios
+are not a clean compute-speed measure.  The compute-bound families
+(~1.5-4x slower) are the representative translation-overhead figure.
+
+Note on debug builds: the same families under the default **-O0 with bounds
+checks** ran 80-300 s; at -O2 -DNDEBUG they run 1-25 s.  The runtime
+bounds check on every array access dominates -O0 time for index-heavy code,
+so perf claims must use -DNDEBUG.
