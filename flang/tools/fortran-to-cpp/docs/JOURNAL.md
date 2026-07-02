@@ -375,11 +375,25 @@ spuriously reclassified compute-heavy families as TIMEOUT/HARD (a bad
 `PASS 348, TIMEOUT 13, FAIL 3, CRASH 1`.  The 13 TIMEOUTs are the known
 slow GF/DSK/SPK/pool families (translation-speed gap), the 3 FAILs and
 1 CRASH are the pre-existing known set below — i.e. no regression.
-- `f_ddhopn`, `f_dla`, `f_zzasc2` (FAIL) — error-path tests that expect a
-  specific SPICE exception (e.g. `SPICE(IMPROPEROPEN)` when ZZDDHOPN is
-  handed an already-open file) which the translation does not yet raise.
-  Adding those checks is shared-behavior and carries regression risk, so
-  it was left for supervised work.
+- `f_ddhopn`, `f_dla`, `f_zzasc2` (were FAIL, now **PASS**) — error-path
+  tests expecting `SPICE(FILEOPENFAIL)` when an OPEN cannot succeed.  Root
+  cause: the OPEN statement's `IOSTAT=` specifier was dropped during
+  lowering, so the status variable stayed 0 and the failure was never seen.
+  Fix: ``_lower_open`` routes `IOSTAT=var` into ``var = _units.open(...)``,
+  and ``Units::open`` returns the Fortran IOSTAT while enforcing the
+  pre-open existence rules (STATUS='NEW' fails if the file exists,
+  STATUS='OLD' fails if it does not).  A companion ``_uses_units`` fix makes
+  the units table thread when a routine's only unit use is an OPEN with
+  IOSTAT (the call now appears as an expression, not a bare statement).
+  This work also broadened I/O to be Fortran-consistent across modes -- OLD
+  opens read+write (with a read-only fallback), POSITION='APPEND' and the
+  ENDFILE statement are implemented -- pinned by a comprehensive
+  ``tests/test_file_io_modes.py``.
+
+**Final tspice state (clean-load):** `PASS 354, TIMEOUT 11` -- **no FAIL,
+no CRASH, no HARD.** The 11 TIMEOUTs are the compute-heavy GF/DSK/SPK/pool
+families (a translation-speed gap, not a correctness bug; each passes when
+run alone).  Corpus stays 1625 files / 0 errors; 431 converter tests pass.
 *(f_slice is now fixed — see arc item 8.)*
 
 **Method that worked repeatedly:** when a family failed, instrument the
