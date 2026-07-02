@@ -49,6 +49,31 @@
 
 namespace ftn {
 
+namespace detail {
+// Conditionally-stored per-dimension lower bounds.  When the bounds are a
+// compile-time constant (``Static`` -- i.e. ``kStaticLower``), the ``Lower``
+// template value already carries them, so this holds *no* runtime data and,
+// as a ``[[no_unique_address]]`` member, costs zero bytes -- shrinking the
+// ArrayRef value that gets copied into every by-value call.  The dynamic
+// specialization stores the runtime array.  ``operator[]`` / ``array()``
+// give a uniform read API so the indexing code is identical either way.
+template <std::size_t Rank, std::array<index_t, Rank> Lower, bool Static>
+struct LowerStore {  // runtime lower bounds
+  std::array<index_t, Rank> v{};
+  constexpr LowerStore() = default;
+  constexpr LowerStore(const std::array<index_t, Rank> &a) noexcept : v(a) {}
+  constexpr index_t operator[](std::size_t i) const noexcept { return v[i]; }
+  constexpr std::array<index_t, Rank> array() const noexcept { return v; }
+};
+template <std::size_t Rank, std::array<index_t, Rank> Lower>
+struct LowerStore<Rank, Lower, true> {  // compile-time bounds: zero storage
+  constexpr LowerStore() = default;
+  constexpr LowerStore(const std::array<index_t, Rank> &) noexcept {}
+  constexpr index_t operator[](std::size_t i) const noexcept { return Lower[i]; }
+  constexpr std::array<index_t, Rank> array() const noexcept { return Lower; }
+};
+}  // namespace detail
+
 // Default for ``Lower`` is supplied on the forward declaration in
 // array.hpp; do not repeat it here (C++ allows a default template
 // argument to be given only once across redeclarations).
@@ -123,7 +148,7 @@ public:
              !(std::is_same_v<T, U> && OtherLower == Lower))
   ArrayRef(const ArrayRef<U, Rank, OtherLower> &other) noexcept
       : data_(other.data()),
-        lower_(kStaticLower ? Lower : other.lower_bounds()),
+        lower_(other.lower_bounds()),
         extents_(other.extents()), strides_(other.strides()) {}
 
   /// Fortran storage (sequence) association: a scalar actual passed to an
@@ -169,8 +194,8 @@ public:
           detail::kBoundsCheck ? upper() : extent_array{}, strides_, idxs...)];
     } else {
       return data_[detail::linear_offset<Rank>(
-          lower_, detail::kBoundsCheck ? upper() : extent_array{}, strides_,
-          idxs...)];
+          lower_.array(), detail::kBoundsCheck ? upper() : extent_array{},
+          strides_, idxs...)];
     }
   }
 
@@ -214,7 +239,7 @@ public:
   /// (default-constructed) view.
   bool has_value() const noexcept { return data_ != nullptr; }
 
-  const lower_array &lower_bounds() const noexcept { return lower_; }
+  lower_array lower_bounds() const noexcept { return lower_.array(); }
   const extent_array &extents() const noexcept { return extents_; }
   const extent_array &strides() const noexcept { return strides_; }
 
@@ -369,7 +394,7 @@ public:
     if (n == 0 || data_ == nullptr) {
       return;
     }
-    std::array<index_t, Rank> idx = lower_;
+    std::array<index_t, Rank> idx = lower_.array();
     for (index_t count = 0; count < n; ++count) {
       index_t off = 0;
       for (std::size_t k = 0; k < Rank; ++k) {
@@ -426,7 +451,7 @@ private:
   }
 
   T *data_{nullptr};
-  lower_array lower_{};
+  [[no_unique_address]] detail::LowerStore<Rank, Lower, kStaticLower> lower_{};
   extent_array extents_{};
   extent_array strides_{};
 };
@@ -441,14 +466,14 @@ private:
 template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
 template <std::array<index_t, Rank> DstLower>
 Array<T, Rank, Lower>::operator ArrayRef<T, Rank, DstLower>() noexcept {
-  return ArrayRef<T, Rank, DstLower>(data(), lower_, extents_, strides_);
+  return ArrayRef<T, Rank, DstLower>(data(), lower_.array(), extents_, strides_);
 }
 
 template <typename T, std::size_t Rank, std::array<index_t, Rank> Lower>
 template <std::array<index_t, Rank> DstLower>
 Array<T, Rank, Lower>::operator ArrayRef<const T, Rank, DstLower>()
     const noexcept {
-  return ArrayRef<const T, Rank, DstLower>(data(), lower_, extents_, strides_);
+  return ArrayRef<const T, Rank, DstLower>(data(), lower_.array(), extents_, strides_);
 }
 
 // Sequence association: flatten a higher-rank array to a rank-1 view over
