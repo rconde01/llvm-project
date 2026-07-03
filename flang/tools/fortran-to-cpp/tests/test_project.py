@@ -96,15 +96,17 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(len(results), 4)
         self.assertIn(Path(SHARED_HEADER_NAME), results)
         circle_cpp = results[self.circle]
-        self.assertIn("area", circle_cpp)
+        header = results[Path(SHARED_HEADER_NAME)]
         self.assertNotIn("TODO", circle_cpp)
+        # ``area`` is a state-free leaf (no COMMON/SAVE/module/units/workspace
+        # state), so it is emitted ``inline`` in the shared header for
+        # cross-TU inlining rather than in circle.cpp.
+        self.assertIn("area", header)
         # ``pi`` is a module PARAMETER (compile-time constant): the shared
-        # header exposes it as a free ``inline constexpr`` referenced
-        # without any threaded module instance.
-        self.assertIn(
-            "inline constexpr float pi", results[Path(SHARED_HEADER_NAME)]
-        )
-        self.assertIn("pi", circle_cpp)
+        # header exposes it as a free ``inline constexpr``, and area's inline
+        # body references it there.
+        self.assertIn("inline constexpr float pi", header)
+        self.assertIn("pi", header)
 
     def test_unparseable_file_is_skipped_not_fatal(self) -> None:
         # A file flang can't parse must not abort the whole project: the
