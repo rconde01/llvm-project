@@ -101,7 +101,11 @@ def emit_translation_unit(
     # (emit_shared_header), not here.  In single-file mode (no shared
     # header) everything is one TU, so templates are defined here as usual.
     for sub in tu.subprograms:
-        if shared_header is not None and _is_template_sub(sub):
+        if shared_header is not None and (
+            _is_template_sub(sub) or _is_inline_leaf(sub)
+        ):
+            # Templates and state-free leaves are both defined in the shared
+            # header (templates for deduction, leaves for cross-TU inlining).
             continue
         out.write("\n")
         _emit_subprogram(out, sub)
@@ -140,6 +144,15 @@ def emit_shared_header(tu: IRTranslationUnit, *, guard: str) -> str:
         seen.add(sub.name)
         out.write("\n")
         _emit_subprogram(out, sub)
+    # State-free leaves (the vector/matrix primitives): defined ``inline``
+    # here so every caller can inline them across .cpp boundaries.  The
+    # prototypes above already declare them; a leaf calling another leaf
+    # resolves regardless of order.
+    for sub in tu.subprograms:
+        if _is_inline_leaf(sub) and sub.name not in seen:
+            seen.add(sub.name)
+            out.write("\n")
+            _emit_subprogram(out, sub, inline=True)
     out.write(f"\n#endif  // {guard}\n")
     return out.getvalue()
 
@@ -302,6 +315,48 @@ def _is_template_sub(sub: IRSubprogram) -> bool:
     return sub.kind != "main" and bool(_proc_param_indices(sub))
 
 
+# A routine with no threaded state (no COMMON / SAVE / module / units /
+# workspace parameter) and a small body is a "pure leaf" -- the vector /
+# matrix primitives (VCRSS, MXV, VHAT, ...) are exactly this shape.  Its
+# definition is emitted ``inline`` in the shared header so every ``.cpp``
+# that calls it can inline the body across translation units -- recovering
+# most of the whole-program-LTO win for the hottest small ops without
+# actually enabling LTO.  Bodies larger than this many statements stay in
+# their own ``.cpp`` (marking a big function ``inline`` only bloats the
+# header and every TU that includes it).
+_MAX_INLINE_LEAF_STMTS = 60
+
+
+def _count_statements(body: list) -> int:
+    from .transform import map_statement
+
+    n = [0]
+
+    def bump(s):
+        n[0] += 1
+        return s
+
+    for s in body:
+        map_statement(s, on_stmt=bump)
+    return n[0]
+
+
+def _is_inline_leaf(sub: IRSubprogram) -> bool:
+    """True when ``sub`` should be emitted ``inline`` in the shared header
+    (a small, state-free leaf).  No state parameters means no COMMON / SAVE
+    / module / I/O-units / workspace threading -- so no error-signalling or
+    file I/O either, since those reach the routine only through such state.
+    ENTRY-group members are left in the ``.cpp`` (they share a definition
+    and storage, which the inline path doesn't model)."""
+    if sub.kind == "main" or _is_template_sub(sub):
+        return False
+    if sub.state_params or sub.workspace or sub.save_struct:
+        return False
+    if sub.entry_group is not None or sub.entry_points:
+        return False
+    return _count_statements(sub.body) <= _MAX_INLINE_LEAF_STMTS
+
+
 def _template_prefix(sub: IRSubprogram) -> str:
     """``template <class F0, class F1, ...>`` for a procedure-taking
     routine, one type parameter per dummy procedure; ``""`` otherwise."""
@@ -396,10 +451,17 @@ def _emit_equiv_group(out: StringIO, g, idx: int) -> None:
         out.write(f"{pad}auto& {m.name} = _eq{idx}.{m.name};\n")
 
 
-def _emit_subprogram(out: StringIO, sub: IRSubprogram) -> None:
+def _emit_subprogram(
+    out: StringIO, sub: IRSubprogram, *, inline: bool = False
+) -> None:
     _emit_comment_block(out, sub.leading_comments, indent=0)
     # The prototype carries default arguments; the definition omits them.
     out.write(_template_prefix(sub))
+    if inline:
+        # A state-free leaf defined in the shared header: ``inline`` gives it
+        # ODR permission to appear in every including TU and lets each caller
+        # inline it.
+        out.write("inline ")
     out.write(_signature(sub, with_defaults=False))
     out.write(" {\n")
 

@@ -803,6 +803,35 @@ def _build_save_structs(tu: IRTranslationUnit) -> None:
 # ---------------------------------------------------------------------------
 
 
+# A fully-static local array with no more than this many elements stays a
+# stack local (a plain ``ftn::Array``) instead of being hoisted into the
+# per-routine Workspace struct and threaded as a parameter.  The workspace
+# exists to allocate *large* scratch buffers once; a small fixed temp
+# (a ``R(3)`` vector, a ``M(3,3)`` matrix) is cheaper on the stack -- it
+# avoids a threaded parameter on the routine and every one of its callers,
+# and lets the optimizer keep the temp in registers (matters most for the
+# hot vector/matrix leaf routines).
+_MAX_STACK_ARRAY_ELEMS = 64
+
+
+def _static_array_elem_count(t: "IRType") -> int | None:
+    """Total element count of a fully-static array whose every extent is a
+    plain integer literal; ``None`` if any extent is a named constant or
+    otherwise non-literal (those keep the conservative hoist)."""
+    total = 1
+    for e in t.array_extent_exprs:
+        try:
+            total *= int(e.strip())
+        except (ValueError, AttributeError):
+            return None
+    return total
+
+
+def _stays_on_stack(t: "IRType") -> bool:
+    n = _static_array_elem_count(t)
+    return n is not None and n <= _MAX_STACK_ARRAY_ELEMS
+
+
 def _build_workspaces(tu: IRTranslationUnit) -> None:
     recursive = _recursive_routines(tu)
     for sub in tu.subprograms:
@@ -819,6 +848,7 @@ def _build_workspaces(tu: IRTranslationUnit) -> None:
             loc
             for loc in sub.locals
             if loc.type.is_array and loc.type.array_static and not loc.is_save
+            and not _stays_on_stack(loc.type)
         ]
         if not hoist:
             continue
