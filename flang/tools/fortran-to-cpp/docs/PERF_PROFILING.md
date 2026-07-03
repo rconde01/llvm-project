@@ -91,3 +91,64 @@ memset entirely.
 4. **Measurement (not a code change):** the tspice tally's TIMEOUTs are the
    `-O0` build.  Running the RUN phase with `-O2 -DNDEBUG` (crash
    classification can stay on the `-O0` build) would show 0 timeouts.
+
+## Second family: f_xdda (DSK ray traversal) — the tiny-vector-op tax
+
+Profiling a *different* compute-bound family (`f_xdda`, XDDA voxel ray
+traversal; 23.3 G instructions) shows a hotspot profile unlike f_subpnt's
+memset dominance.  After the ray/voxel routines (`zzraybox` 21.8%, `surfpt`
+9.3%, `xdda` 4.5%) and test-harness code (`t_chkvox`, `chcksc`, `zzrepsub`
+string substitution ~7%), the striking cost is the **small vector library**:
+
+| routine | share |
+|---------|------:|
+| `vnorm` | 5.4% |
+| `vperp` | 4.3% |
+| `vproj` | 4.2% |
+| `vhat`  | 2.4% |
+| `vsub`  | 1.7% |
+| `vlcom` | 1.7% |
+| ...     | (memset only 5.7% here) |
+
+**~20% of the run is 3-element vector ops** — each a separate `.cpp`
+function, called millions of times, that at `-O2` (no LTO) **cannot be
+inlined into its hot caller**.  Two translation-specific overheads pile on
+top of the raw call: the `ArrayRef` descriptor args, and — for `vperp` /
+`vproj` / `mxv` etc. — a `Workspace&` param that hoists a 3-element local
+temp (`DOUBLE PRECISION R(3)` in Fortran) into a caller-owned struct.
+
+### Isolated A/B (cross-TU, `-O2 -DNDEBUG`, vproj-shaped kernel)
+
+| variant                        | no LTO  | `-flto` |
+|--------------------------------|--------:|--------:|
+| workspace param (as emitted)   | 1808 ms |  267 ms |
+| stack-local temp               | 1665 ms |  184 ms |
+| header-inline                  | 1039 ms |  188 ms |
+
+- **LTO is the big lever: 6.8x** on the workspace variant — it inlines the
+  leaf op across the TU boundary and even sees through the workspace param.
+- **Stack-local temps: ~8%** on their own (and remove the threaded param,
+  which also lightens every caller).
+- **Header-inline: 1.74x** without LTO — most of the LTO win, targeted.
+
+### Approaches (new, prioritized) — closing the compute-bound gap
+
+5. **Build with `-flto`.**  The single biggest lever for the geometry
+   families: the SPICE vector/matrix leaf library (`vadd`/`vsub`/`vhat`/
+   `vnorm`/`vdot`/`vproj`/`vperp`/`vlcom`/`mxv`/...) inlines into the hot
+   callers, folding away the call + descriptor + workspace overhead.  A fair
+   gfortran baseline would also use `-flto`, but the converted code has more
+   per-call overhead to reclaim, so it benefits more.  (Cost: whole-program
+   LTO link of ~2000 TUs is memory/time heavy — verify feasibility.)
+
+6. **Emit the tiny pure leaf routines as header `inline` functions** rather
+   than separate `.cpp` files.  Gets most of the LTO benefit for the hottest
+   ops *without* a whole-program LTO build — a routine with no COMMON/SAVE,
+   no I/O, no error-signalling, and only small fixed-size local temps is a
+   safe candidate (the vector/matrix primitives are exactly this shape).
+
+7. **Don't hoist *small* fixed-size local arrays into a `Workspace`.**  A
+   non-SAVE `R(3)` temp in a leaf routine should be a stack `std::array`, not
+   a threaded workspace member (~8% on the op, plus it removes the `Workspace&`
+   param from hot routines and improves both LTO and non-LTO codegen).  Gate
+   on a small element-count threshold; keep large scratch arrays hoisted.
