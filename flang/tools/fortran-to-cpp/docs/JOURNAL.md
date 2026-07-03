@@ -388,12 +388,14 @@ slow GF/DSK/SPK/pool families (translation-speed gap), the 3 FAILs and
   This work also broadened I/O to be Fortran-consistent across modes -- OLD
   opens read+write (with a read-only fallback), POSITION='APPEND' and the
   ENDFILE statement are implemented -- pinned by a comprehensive
-  ``tests/test_file_io_modes.py``.
+  ``tests/test_file_io_modes.py`` (STATUS, CLOSE STATUS, REWIND, BACKSPACE,
+  ENDFILE, DIRECT+RECL, UNFORMATTED, POSITION='APPEND', INQUIRE).
 
-**Final tspice state (clean-load):** `PASS 354, TIMEOUT 11` -- **no FAIL,
-no CRASH, no HARD.** The 11 TIMEOUTs are the compute-heavy GF/DSK/SPK/pool
-families (a translation-speed gap, not a correctness bug; each passes when
-run alone).  Corpus stays 1625 files / 0 errors; 431 converter tests pass.
+**Final tspice state (clean-load):** **no FAIL, no CRASH, no HARD** -- only
+the compute-heavy GF/DSK/SPK/pool families TIME OUT (a translation-speed
+gap, not a correctness bug; each passes when run alone; the exact count --
+e.g. `PASS 356, TIMEOUT 9` -- shifts a little with measurement load).
+Corpus stays 1625 files / 0 errors; 431 converter tests pass.
 *(f_slice is now fixed — see arc item 8.)*
 
 **Method that worked repeatedly:** when a family failed, instrument the
