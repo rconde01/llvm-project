@@ -541,3 +541,61 @@ With both fixes a fresh reconvert is corpus-clean again (1625/0).  Separately,
 GCC 13.3 ICEs (``in modify_call, at ipa-param-manipulation``) at ``-O2`` on
 the big GF routines with the new ``[[no_unique_address]]`` members;
 ``-fno-ipa-sra`` (still ``-O2``) is a clean workaround for those TUs.
+
+---
+
+## Perf items 2 & 3, the DO-bound bug, and the SPK type-01/21 precision FAIL
+
+Following the f_xdda profiling (tiny-vector-op tax), two codegen levers landed:
+
+- **#2 inline pure-leaf routines.**  A routine with no threaded state (no
+  COMMON/SAVE/module/units/workspace parameter) and a small body -- the
+  vector/matrix primitives -- is emitted ``inline`` in ``fortran_modules.hpp``
+  instead of its ``.cpp``, so every caller inlines it across TU boundaries
+  (recovers most of the whole-program-LTO win without LTO).  Gate:
+  ``emit._is_inline_leaf`` (no ``state_params``/``workspace``/``save_struct``,
+  not a template, not an ENTRY member, <= 60 statements).
+- **#3 keep small fixed temps on the stack.**  ``_build_workspaces`` hoisted
+  *every* static local array into the per-routine Workspace struct; a tiny
+  literal-dimensioned temp (<= 64 elements: a ``R(3)`` vector, a ``M(3,3)``)
+  now stays a stack ``ftn::Array`` -- no threaded parameter on the routine or
+  its callers.  Large / named-dimension buffers still hoist.
+
+Both are validated corpus-clean (1625/0) and drop the tspice binary ~35%
+(430 MB -> 278 MB from inline dedup + lighter signatures).
+
+**Counted-DO trip count must be frozen.**  A Fortran ``DO I = LO, HI`` fixes
+its iteration count on entry; the naive ``for (i=lo; i<=hi; ++i)`` re-reads a
+``HI`` the body reassigns.  The SPICE f_spk21 read-back ``DO I = J, K`` sets
+``K = (I-1)*DLSIZE+1`` each pass, so the C++ loop ran past K and overran
+TBUFF (``index 10100 out of range [1,10099]`` -> CRASH).  Lowering now detects
+a bound variable assigned in the body (``IRDo.capture_bounds``) and emit
+freezes the bound (and a variable step) into block-scoped ``const
+ftn::index_t`` temps; ordinary loops keep the clean form.  This fixed
+f_spk21's crash.
+
+**f_spk01 / f_spk21 "recover states" FAIL: an ill-conditioned-solver
+precision limit, not a fixable logic bug.**  Both fail Test Case "Recover
+states from the type NN segment" with a relative error ~1.2e-9 against a
+5e-12 tolerance.  Ruled out by elimination + instrumentation:
+- **Not items 2/3** -- the isolation build (both disabled) fails identically.
+- **spke01 (the evaluator) is exact** -- instrumenting it showed ``dt``,
+  ``g``, ``refpos``, ``refvel`` matching the raw record to 17 digits, and
+  spke01's output equals SPKEZ's (no frame rotation in the path).
+- **DAF record I/O is exact** -- the ``'='`` round-trip test cases pass.
+- The fit coefficients come from the test-utility chain ``T_T13XMD`` ->
+  ``T_TAYHRM`` -> ``T_SOLVEG_2``: Gaussian elimination on a 2N=16
+  Vandermonde-like Hermite matrix (highly ill-conditioned).  Position
+  component **x is exact, y/z are off by ~1e-9** -- the signature of the
+  ill-conditioned solve amplifying a ULP-level expression-ordering difference
+  between the C++ and the reference Fortran.  No ``float`` contamination in
+  the chain.
+
+At ``-O0`` the double arithmetic is deterministic, so the ArrayRef refactor
+(layout-only, same integer offsets) cannot have changed the computed values;
+these families almost certainly just started *linking* (367 vs 365 live) and
+exposed a pre-existing precision limitation.  A fix would require bit-exact
+reproduction of Fortran's operation order inside a Gaussian solver, which is
+impractical to guarantee -- left documented rather than chased.  Net tspice
+with the crash fixed: PASS 342, TIMEOUT 23 (known slow families), FAIL 2,
+CRASH 0.
