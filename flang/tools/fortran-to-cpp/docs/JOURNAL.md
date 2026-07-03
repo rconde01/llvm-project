@@ -500,3 +500,42 @@ when all extents are literals > 1; POINTER dummies keep the runtime form
 compile+run of static/contiguous views and the one-element-dummy idiom).
 The payoff is at -O2 (constant-folded indexing + view elimination); the
 -O0 tspice tally is unaffected (bounds checks still dominate there).
+
+### Measured -O2 payoff (after the shrink)
+
+Isolated A/B (same Fortran 3x3 ``mxv`` kernel, fixed-size dummies, hot loop
+across a TU boundary, ``g++ -O2 -DNDEBUG`` pre-refactor vs HEAD): the dummy
+view drops from **56 bytes to 8** (a bare pointer) and the kernel runs
+**6.15 s -> 3.15 s = 1.95x faster**, identical result -- the clean isolation
+of the win.
+
+Full compute-bound families, converted ``-O2 -DNDEBUG`` vs native
+``gfortran -O2`` (both built here, same box, low load, best-of-3):
+
+| family    | converted | gfortran | ratio (HEAD) | ratio (pre-shrink) |
+|-----------|-----------|----------|--------------|--------------------|
+| f_subpnt  | 1.72 s    | 0.46 s   | 3.77x        | 4.4x               |
+| f_xdda    | 3.24 s    | 1.39 s   | 2.33x        | 3.5x               |
+| f_dyn01   | 9.57 s    | 5.56 s   | 1.72x        | 2.1x               |
+
+Every compute-bound family narrowed the gap to native (f_xdda by ~33%).
+Family-level gains are smaller than the 1.95x microbenchmark because
+families mix fixed-size dummies (which fold to a pointer) with
+assumed-shape/assumed-size dummies (runtime extents kept) and spend time in
+I/O / string / kernel-parse work outside the indexing hot path.
+
+### Regressions the refactor left (found rebuilding at -O2, now fixed)
+
+The shrink was pushed with the corpus validated on *stale* pre-refactor
+``.cpp``; a fresh reconvert exposed helpers whose ArrayRef parameter still
+named the old 3-parameter form (hard-coded ``Lower`` / missing
+``Contiguous``/``Extents``), so the new static-contiguous dummy no longer
+bound:
+- **CharArrayRef**'s ``ArrayRef<FortranString<N>,...>`` ctor -- broke
+  zzbodker/zzsrfker/zzbodini (in the corpus).  Fixed (deduce all params).
+- **seq_assoc**'s contiguous overload pinned ``Lower=runtime_lower`` -- broke
+  a contiguous static-lower actual.  Fixed (deduce ``Lower``).
+With both fixes a fresh reconvert is corpus-clean again (1625/0).  Separately,
+GCC 13.3 ICEs (``in modify_call, at ipa-param-manipulation``) at ``-O2`` on
+the big GF routines with the new ``[[no_unique_address]]`` members;
+``-fno-ipa-sra`` (still ``-O2``) is a clean workaround for those TUs.
