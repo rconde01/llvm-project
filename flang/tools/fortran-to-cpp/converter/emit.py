@@ -1705,6 +1705,17 @@ def _emit_do(out: StringIO, node: IRDo, *, indent: int) -> None:
     lo = _render_expr(node.lower)
     hi = _render_expr(node.upper)
     step = _render_expr(node.step) if node.step is not None else "1"
+    if node.capture_bounds:
+        # The body reassigns a variable in the bound; Fortran fixes the
+        # iteration count on entry, so freeze the bound (and variable step)
+        # into block-scoped temps.  The block scopes the temps so nested
+        # captured loops don't collide.
+        out.write(f"{pad}{{\n")
+        out.write(f"{pad}  const ftn::index_t _do_hi = {hi};\n")
+        hi = "_do_hi"
+        if step != "1":
+            out.write(f"{pad}  const ftn::index_t _do_st = {step};\n")
+            step = "_do_st"
     # For the common step==1 case, write a clean ``i <= hi`` form.
     if step == "1":
         out.write(
@@ -1719,6 +1730,8 @@ def _emit_do(out: StringIO, node: IRDo, *, indent: int) -> None:
     for s in node.body:
         _emit_statement(out, s, indent=indent + 1)
     out.write(f"{pad}}}\n")
+    if node.capture_bounds:
+        out.write(f"{pad}}}\n")
     _emit_trailing(out, node.trailing_comments)
 
 

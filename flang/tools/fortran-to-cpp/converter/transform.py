@@ -369,6 +369,7 @@ def _map_statement_children(
             step=_e(stmt.step, on_expr) if stmt.step is not None else None,
             body=_b(stmt.body, on_expr, on_stmt),
             declare=stmt.declare,
+            capture_bounds=stmt.capture_bounds,
             leading_comments=stmt.leading_comments,
             trailing_comments=stmt.trailing_comments,
         )

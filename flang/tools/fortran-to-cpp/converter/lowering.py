@@ -5773,7 +5773,43 @@ def _lower_do_construct(node: Node) -> IRStatement:
     # step.
     var, lo, hi, step = _lower_loop_bounds(bounds)
     body = _lower_block(body_block) if body_block else []
-    return IRDo(var=var, lower=lo, upper=hi, step=step, body=body)
+    return IRDo(
+        var=var, lower=lo, upper=hi, step=step, body=body,
+        capture_bounds=_do_bounds_modified_in_body(hi, step, body),
+    )
+
+
+def _do_bounds_modified_in_body(
+    hi: IRExpr, step: IRExpr | None, body: list[IRStatement]
+) -> bool:
+    """True when a variable appearing in the loop's upper bound or step is
+    assigned within the body.  Fortran fixes a counted DO's iteration count
+    on entry, so such a loop must freeze its bounds -- otherwise the C++
+    ``for (i = lo; i <= hi; ++i)`` re-reads the mutated ``hi`` and runs the
+    wrong number of times (the SPICE f_spk21 ``DO I=J,K`` that reassigns K).
+    Errs toward capturing (a bound that is only *read* is frozen to an
+    identical value), so it is always safe."""
+    from .emit import _render_expr
+
+    bound_text = _render_expr(hi)
+    if step is not None:
+        bound_text += " " + _render_expr(step)
+    names = set(re.findall(r"[A-Za-z_]\w*", bound_text))
+    if not names:
+        return False
+
+    assigned: set[str] = set()
+
+    def see(stmt: IRStatement) -> IRStatement:
+        if isinstance(stmt, IRAssignment) and isinstance(stmt.target, IRName):
+            assigned.add(stmt.target.name)
+        elif isinstance(stmt, IRDo):
+            assigned.add(stmt.var)
+        return stmt
+
+    for s in body:
+        map_statement(s, on_stmt=see)
+    return bool(names & assigned)
 
 
 def _lower_do_concurrent(concurrent: Node, body_block: Node | None) -> IRStatement:

@@ -482,6 +482,13 @@ class IRDo:
     loops (e.g. whole-array assignment expansion); user ``do`` loops use
     a pre-declared variable."""
 
+    capture_bounds: bool = False
+    """When True the emitter freezes ``upper`` (and ``step``) into temps at
+    loop entry, matching Fortran's iteration count -- which is fixed on
+    entry, so a body that reassigns a variable appearing in the bound must
+    not change how many times the loop runs.  Set only when the body
+    actually modifies such a variable, so ordinary loops stay clean."""
+
     leading_comments: list[Comment] = field(default_factory=list)
     trailing_comments: list[Comment] = field(default_factory=list)
 

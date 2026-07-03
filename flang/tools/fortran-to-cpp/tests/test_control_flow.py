@@ -107,11 +107,55 @@ def _convert(src: str) -> str:
         tmp.unlink(missing_ok=True)
 
 
+# A counted DO whose body reassigns the loop bound.  Fortran fixes the
+# iteration count on entry, so this runs exactly (5 - 2 + 1) = 4 times; a
+# naive ``for (i = j; i <= k; ++i)`` would re-read the mutated ``k`` and run
+# far longer (the SPICE f_spk21 ``DO I=J,K`` that reassigns K each pass).
+DO_MODIFIED_BOUND_F90 = """\
+      program p
+      integer i, j, k, cnt
+      j = 2
+      k = 5
+      cnt = 0
+      do i = j, k
+         cnt = cnt + 1
+         k = 100
+      end do
+      print *, cnt
+      end
+"""
+
+# A counted DO whose bound is *not* modified -- must stay the clean form.
+DO_NORMAL_F90 = """\
+      program p
+      integer i, n, s
+      n = 5
+      s = 0
+      do i = 1, n
+         s = s + i
+      end do
+      print *, s
+      end
+"""
+
+
 @unittest.skipUnless(_have_flang(), "flang binary not available")
 class ControlFlowEmitTests(unittest.TestCase):
     def test_do_while_emits_while(self) -> None:
         cpp = _convert(CONTROL_F90)
         self.assertIn("while (i < 5) {", cpp)
+
+    def test_do_modified_bound_is_frozen(self) -> None:
+        # The bound is captured into a temp at loop entry.
+        cpp = _convert(DO_MODIFIED_BOUND_F90)
+        self.assertIn("const ftn::index_t _do_hi = k;", cpp)
+        self.assertIn("i <= _do_hi;", cpp)
+
+    def test_do_normal_bound_not_frozen(self) -> None:
+        # An ordinary loop keeps the clean ``i <= n`` form (no temp).
+        cpp = _convert(DO_NORMAL_F90)
+        self.assertIn("for (i = 1; i <= n; ++i)", cpp)
+        self.assertNotIn("_do_hi", cpp)
 
     def test_cycle_and_exit(self) -> None:
         cpp = _convert(CONTROL_F90)
@@ -197,6 +241,11 @@ class ControlFlowRunTests(unittest.TestCase):
         self.assertIn("low", out)
         self.assertIn("mid", out)
         self.assertIn("high", out)
+
+    def test_do_modified_bound_runs(self) -> None:
+        # DO I=2,5 runs 4 times even though the body sets K=100 each pass.
+        out = self._run(DO_MODIFIED_BOUND_F90)
+        self.assertEqual(out.split(), ["4"])
 
 
 class SelectCaseSwitchEligibilityTests(unittest.TestCase):
