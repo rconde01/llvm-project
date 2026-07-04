@@ -391,10 +391,14 @@ slow GF/DSK/SPK/pool families (translation-speed gap), the 3 FAILs and
   ``tests/test_file_io_modes.py`` (STATUS, CLOSE STATUS, REWIND, BACKSPACE,
   ENDFILE, DIRECT+RECL, UNFORMATTED, POSITION='APPEND', INQUIRE).
 
-**Final tspice state (clean-load):** **no FAIL, no CRASH, no HARD** -- only
-the compute-heavy GF/DSK/SPK/pool families TIME OUT (a translation-speed
-gap, not a correctness bug; each passes when run alone; the exact count --
-e.g. `PASS 356, TIMEOUT 9` -- shifts a little with measurement load).
+**Final tspice state (clean-load):** **no CRASH, no HARD**; the only FAILs
+are `f_spk01` / `f_spk21`, which now *link* (367 live families, up from 365,
+as the I/O and units fixes let more routines compile) and expose a
+pre-existing ill-conditioned-solver precision limit (~1.2e-9 vs a 5e-12
+tolerance -- see the SPK type-01/21 section below), not a logic bug.
+Everything else passes or TIMES OUT -- the compute-heavy GF/DSK/SPK/pool
+families are a translation-speed gap, not a correctness bug (each passes
+when run alone; the exact PASS/TIMEOUT split shifts with measurement load).
 Corpus stays 1625 files / 0 errors; 431 converter tests pass.
 *(f_slice is now fixed — see arc item 8.)*
 
