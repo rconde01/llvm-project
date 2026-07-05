@@ -402,6 +402,11 @@ when run alone; the exact PASS/TIMEOUT split shifts with measurement load).
 Corpus stays 1625 files / 0 errors; 431 converter tests pass.
 *(f_slice is now fixed — see arc item 8.)*
 
+**File-I/O status (all correctness families now PASS).**  After the OPEN
+IOSTAT= fix the tspice tally is CRASH 0 / FAIL 0; every remaining non-PASS
+family is a compute-heavy geometry/GF/DSK/SPK TIMEOUT (a translation-speed
+gap -- each passes when run alone under low load), not a correctness bug.
+
 **Method that worked repeatedly:** when a family failed, instrument the
 suspected routine with `fprintf` probes (recompile that one file + relink),
 read the actual values, and only then fix — and when a fix worked,
